@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: jc-proxy
+    runtime: go
+    region: singapore
+    plan: free
+    buildCommand: cd web && npm ci && npm run build && cd .. && go build -o bin/jc_proxy ./cmd/jc_proxy
+    startCommand: ./bin/jc_proxy -config ./deploy/render/config.yaml
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JC_PROXY_STORAGE_MODE
+        value: pgsql
+      - key: JC_PROXY_STORAGE_CONFIG_PGSQL_RECORD_KEY
+        value: default
+      - key: JC_PROXY_STORAGE_CONFIG_PGSQL_TABLE
+        value: jc_proxy_configs
+      - key: JC_PROXY_STORAGE_UPSTREAM_KEYS_PGSQL_TABLE
+        value: jc_proxy_upstream_keys
+      - key: JC_PROXY_STORAGE_PGSQL_MAX_OPEN_CONNS
+        value: "4"
+      - key: JC_PROXY_STORAGE_PGSQL_MAX_IDLE_CONNS
+        value: "2"
+      - key: JC_PROXY_STORAGE_PGSQL_CONN_MAX_LIFETIME
+        value: 30m

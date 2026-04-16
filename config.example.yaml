@@ -1,0 +1,177 @@
+server:
+  listen: ":8092"
+  read_timeout: 30s
+  # 流式接口建议保持 0s，避免长连接在固定时长后被服务端切断
+  write_timeout: 0s
+  idle_timeout: 90s
+  shutdown_timeout: 10s
+
+admin:
+  # 推荐默认关闭；启用后若 password / password_hash 都留空，首次启动会自动生成随机口令并打印到控制台
+  enabled: false
+  username: "admin"
+  # 二选一：推荐 password_hash；若两者都留空，将在首次启动时自动生成随机口令
+  password: ""
+  password_hash: ""
+  session_ttl: 12h
+  audit_log_path: "./data/admin_audit.log"
+  # 留空表示不限制来源地址；如需控制来源，可填写办公网/堡垒机 CIDR
+  allowed_cidrs: []
+
+storage:
+  config:
+    # file | pgsql
+    driver: "file"
+    pgsql:
+      dsn: "postgres://postgres:postgres@127.0.0.1:5432/jc_proxy?sslmode=disable"
+      table: "jc_proxy_configs"
+      record_key: "default"
+      max_open_conns: 4
+      max_idle_conns: 2
+      conn_max_lifetime: 30m
+  upstream_keys:
+    # file | pgsql
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+    pgsql:
+      dsn: "postgres://postgres:postgres@127.0.0.1:5432/jc_proxy?sslmode=disable"
+      table: "jc_proxy_upstream_keys"
+      max_open_conns: 4
+      max_idle_conns: 2
+      conn_max_lifetime: 30m
+
+vendors:
+  openai:
+    provider: "openai"
+    upstream:
+      base_url: "https://api.openai.com"
+    load_balance: "round_robin"
+    upstream_auth:
+      mode: "bearer"
+      header: "Authorization"
+      prefix: "Bearer "
+    client_auth:
+      enabled: true
+      keys:
+        - "client-key-a"
+        - "client-key-b"
+    client_headers:
+      allowlist:
+        - "Content-Type"
+        - "Accept"
+        - "User-Agent"
+        - "Authorization"
+        - "X-Request-Id"
+    inject_headers:
+      X-Gateway: "jc_proxy"
+      X-Vendor: "{{vendor}}"
+    path_rewrites:
+      "/v1/chat/completions": "/v1/fim/completions"
+      "/v1/files/*": "/v1/storage/*"
+    backoff:
+      threshold: 3
+      duration: 3h
+    error_policy:
+      auto_disable:
+        invalid_key: true
+        payment_required: true
+        quota_exhausted: true
+      cooldown:
+        request_error:
+          enabled: true
+          duration: 2s
+        unauthorized:
+          enabled: true
+          duration: 30m
+        payment_required:
+          enabled: true
+          duration: 3h
+        forbidden:
+          enabled: true
+          duration: 30m
+        rate_limit:
+          enabled: true
+          duration: 5s
+        server_error:
+          enabled: true
+          duration: 2s
+        openai_slow_down:
+          enabled: true
+          duration: 15m
+      failover:
+        request_error: true
+        unauthorized: true
+        payment_required: true
+        forbidden: true
+        rate_limit: true
+        server_error: true
+    resin:
+      enabled: true
+      url: "http://127.0.0.1:2260/my-token"
+      platform: "Default"
+      mode: "reverse"
+
+  anthropic:
+    provider: "anthropic"
+    upstream:
+      base_url: "https://api.anthropic.com"
+    load_balance: "least_used"
+    upstream_auth:
+      mode: "header"
+      header: "x-api-key"
+      prefix: ""
+    client_auth:
+      enabled: false
+      keys: []
+    client_headers:
+      allowlist:
+        - "Content-Type"
+        - "Accept"
+        - "X-API-Key"
+        - "Authorization"
+    inject_headers:
+      Anthropic-Version: "2023-06-01"
+    path_rewrites:
+      "/v1/messages": "/v1/messages"
+    backoff:
+      threshold: 3
+      duration: 3h
+    error_policy:
+      auto_disable:
+        invalid_key: true
+        payment_required: true
+        quota_exhausted: true
+      cooldown:
+        request_error:
+          enabled: true
+          duration: 2s
+        unauthorized:
+          enabled: true
+          duration: 30m
+        payment_required:
+          enabled: true
+          duration: 3h
+        forbidden:
+          enabled: true
+          duration: 30m
+        rate_limit:
+          enabled: true
+          duration: 5s
+        server_error:
+          enabled: true
+          duration: 2s
+        openai_slow_down:
+          enabled: true
+          duration: 15m
+      failover:
+        request_error: true
+        unauthorized: true
+        payment_required: true
+        forbidden: true
+        rate_limit: true
+        server_error: true
+    resin:
+      enabled: false
+      url: ""
+      platform: "Default"
+      mode: "reverse"

@@ -1,0 +1,7 @@
+web/node_modules/
+web/.vite/
+web/dist/
+config.yaml
+
+data/
+internal/ui/dist/
