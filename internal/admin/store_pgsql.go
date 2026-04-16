@@ -56,7 +56,7 @@ func (b *PGConfigBackend) Load() (*config.Config, error) {
 		}
 		return nil, fmt.Errorf("load config from pgsql: %w", err)
 	}
-	cfg, err := config.LoadBytes([]byte(payload))
+	cfg, err := config.LoadBootstrapBytes([]byte(payload))
 	if err != nil {
 		return nil, fmt.Errorf("parse config from pgsql: %w", err)
 	}

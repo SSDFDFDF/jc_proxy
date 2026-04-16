@@ -72,3 +72,42 @@ func TestStoreGeneratesInitialAdminPassword(t *testing.T) {
 		t.Fatal("config file should persist generated password hash")
 	}
 }
+
+func TestStoreAllowsBootstrapConfigWithoutLocalConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Admin: config.AdminConfig{
+			Enabled:  true,
+			Username: "admin",
+		},
+		Storage: config.StorageConfig{
+			UpstreamKeys: config.UpstreamKeyStoreConfig{
+				Driver:   "file",
+				FilePath: filepath.Join(tmpDir, "upstream_keys.json"),
+			},
+		},
+	}
+	if err := cfg.PrepareBootstrap(); err != nil {
+		t.Fatalf("PrepareBootstrap() error = %v", err)
+	}
+
+	store, err := NewStore("", cfg)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if store.GeneratedAdminPassword() == "" {
+		t.Fatal("GeneratedAdminPassword() returned empty password")
+	}
+	saved, err := store.GetConfig()
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if saved.Admin.PasswordHash == "" {
+		t.Fatal("saved admin password_hash is empty")
+	}
+	if len(saved.Vendors) != 0 {
+		t.Fatalf("len(saved.Vendors) = %d, want 0", len(saved.Vendors))
+	}
+}

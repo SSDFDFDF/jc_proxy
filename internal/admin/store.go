@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"jc_proxy/internal/config"
@@ -34,15 +35,12 @@ type RuntimeStats struct {
 }
 
 func NewStore(configPath string, bootstrap *config.Config) (*Store, error) {
-	if configPath == "" {
-		return nil, errors.New("config path required")
-	}
 	if bootstrap == nil {
 		return nil, errors.New("bootstrap config is nil")
 	}
 
 	s := &Store{
-		path:      configPath,
+		path:      strings.TrimSpace(configPath),
 		bootstrap: bootstrap.Storage,
 	}
 
@@ -93,7 +91,7 @@ func NewStore(configPath string, bootstrap *config.Config) (*Store, error) {
 			return nil, err
 		}
 	}
-	if s.initAdminPassword != "" {
+	if s.initAdminPassword != "" && s.path != "" {
 		if err := writeConfigFile(s.path, s.cfg); err != nil {
 			if s.remote != nil {
 				_ = s.remote.Close()
@@ -141,8 +139,10 @@ func (s *Store) UpdateConfig(next *config.Config) error {
 			return err
 		}
 	}
-	if err := writeConfigFile(s.path, sanitized); err != nil {
-		return err
+	if s.path != "" {
+		if err := writeConfigFile(s.path, sanitized); err != nil {
+			return err
+		}
 	}
 
 	s.mu.Lock()

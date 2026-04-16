@@ -178,16 +178,46 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return LoadBytes(b)
+	return loadBytes(b, false)
+}
+
+func LoadBootstrap(path string) (*Config, error) {
+	if err := loadDotEnv(path); err != nil {
+		return nil, err
+	}
+	cfg, err := loadBytes(nil, true)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Storage.Config.Driver != "pgsql" {
+		return nil, errors.New("bootstrap without config file requires storage.config.driver=pgsql")
+	}
+	return cfg, nil
 }
 
 func LoadBytes(b []byte) (*Config, error) {
+	return loadBytes(b, false)
+}
+
+func LoadBootstrapBytes(b []byte) (*Config, error) {
+	return loadBytes(b, true)
+}
+
+func loadBytes(b []byte, bootstrap bool) (*Config, error) {
 	var cfg Config
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config yaml: %w", err)
+	if len(b) > 0 {
+		if err := yaml.Unmarshal(b, &cfg); err != nil {
+			return nil, fmt.Errorf("parse config yaml: %w", err)
+		}
 	}
 	if err := cfg.applyCriticalEnvOverrides(os.LookupEnv); err != nil {
 		return nil, err
+	}
+	if bootstrap {
+		if err := cfg.PrepareBootstrap(); err != nil {
+			return nil, err
+		}
+		return &cfg, nil
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		return nil, err
@@ -221,6 +251,34 @@ func (c *Config) applyCriticalEnvOverrides(lookup envLookup) error {
 		return err
 	} else if ok {
 		c.Server.Listen = listen
+	}
+	if enabled, ok, err := lookupEnvBool(lookup, "JC_PROXY_ADMIN_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		c.Admin.Enabled = enabled
+	}
+	if username, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_USERNAME"); ok {
+		c.Admin.Username = username
+	}
+	if password, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_PASSWORD"); ok {
+		c.Admin.Password = password
+		if password != "" {
+			c.Admin.PasswordHash = ""
+		}
+	}
+	if passwordHash, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_PASSWORD_HASH"); ok {
+		c.Admin.PasswordHash = passwordHash
+		if passwordHash != "" {
+			c.Admin.Password = ""
+		}
+	}
+	if value, ok, err := lookupEnvDuration(lookup, "JC_PROXY_ADMIN_SESSION_TTL"); err != nil {
+		return err
+	} else if ok {
+		c.Admin.SessionTTL = value
+	}
+	if auditLogPath, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_AUDIT_LOG_PATH"); ok {
+		c.Admin.AuditLogPath = auditLogPath
 	}
 	if cidrs, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_ALLOWED_CIDRS"); ok {
 		c.Admin.AllowedCIDRs = splitEnvList(cidrs)
@@ -352,6 +410,18 @@ func lookupEnvInt(lookup envLookup, key string) (int, bool, error) {
 	return value, true, nil
 }
 
+func lookupEnvBool(lookup envLookup, key string) (bool, bool, error) {
+	raw, ok := lookupEnvValue(lookup, key)
+	if !ok {
+		return false, false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false, fmt.Errorf("invalid env %s: %w", key, err)
+	}
+	return value, true, nil
+}
+
 func lookupEnvValue(lookup envLookup, keys ...string) (string, bool) {
 	value, _, ok := lookupEnv(lookup, keys...)
 	return value, ok
@@ -407,7 +477,7 @@ func (c *Config) Clone() (*Config, error) {
 	if err := yaml.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("unmarshal config clone: %w", err)
 	}
-	if err := out.PrepareAndValidate(); err != nil {
+	if err := out.PrepareBootstrap(); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -419,6 +489,14 @@ func (c *Config) PrepareAndValidate() error {
 	}
 	c.applyDefaults()
 	return c.Validate()
+}
+
+func (c *Config) PrepareBootstrap() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	c.applyDefaults()
+	return c.ValidateBootstrap()
 }
 
 func (c *Config) applyDefaults() {
@@ -527,7 +605,15 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) Validate() error {
-	if len(c.Vendors) == 0 {
+	return c.validate(true)
+}
+
+func (c *Config) ValidateBootstrap() error {
+	return c.validate(false)
+}
+
+func (c *Config) validate(requireVendors bool) error {
+	if requireVendors && len(c.Vendors) == 0 {
 		return errors.New("config vendors is empty")
 	}
 	if c.Admin.Enabled {

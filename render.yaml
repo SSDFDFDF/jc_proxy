@@ -5,11 +5,13 @@ services:
     region: singapore
     plan: free
     buildCommand: cd web && npm ci && npm run build && cd .. && go build -o bin/jc_proxy ./cmd/jc_proxy
-    startCommand: ./bin/jc_proxy -config ./deploy/render/config.yaml
+    startCommand: ./bin/jc_proxy
     healthCheckPath: /healthz
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: JC_PROXY_ADMIN_ENABLED
+        value: "true"
       - key: JC_PROXY_STORAGE_MODE
         value: pgsql
       - key: JC_PROXY_STORAGE_CONFIG_PGSQL_RECORD_KEY

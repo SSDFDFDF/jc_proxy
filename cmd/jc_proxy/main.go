@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"jc_proxy/internal/admin"
@@ -19,12 +21,27 @@ func main() {
 	configPath := flag.String("config", "./config.yaml", "config file path")
 	flag.Parse()
 
-	bootstrapCfg, err := config.Load(*configPath)
+	bootstrapPath := strings.TrimSpace(*configPath)
+	var (
+		bootstrapCfg *config.Config
+		err          error
+	)
+	switch {
+	case bootstrapPath == "":
+		bootstrapCfg, err = config.LoadBootstrap(bootstrapPath)
+	case fileExists(bootstrapPath):
+		bootstrapCfg, err = config.Load(bootstrapPath)
+	default:
+		bootstrapCfg, err = config.LoadBootstrap(bootstrapPath)
+		if err == nil {
+			bootstrapPath = ""
+		}
+	}
 	if err != nil {
 		log.Fatalf("load config failed: %v", err)
 	}
 
-	store, err := admin.NewStore(*configPath, bootstrapCfg)
+	store, err := admin.NewStore(bootstrapPath, bootstrapCfg)
 	if err != nil {
 		log.Fatalf("init admin store failed: %v", err)
 	}
@@ -94,4 +111,9 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !errors.Is(err, os.ErrNotExist)
 }

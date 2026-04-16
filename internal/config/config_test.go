@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,6 +123,52 @@ func TestLoadKeepsExplicitEnvHigherThanDotEnv(t *testing.T) {
 
 	if cfg.Server.Listen != ":20000" {
 		t.Fatalf("Server.Listen = %q, want %q", cfg.Server.Listen, ":20000")
+	}
+}
+
+func TestLoadBootstrapBytesAllowsEnvOnlyPGSQL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://bootstrap:bootstrap@127.0.0.1:5432/jc_proxy?sslmode=disable")
+	t.Setenv("JC_PROXY_STORAGE_MODE", "pgsql")
+	t.Setenv("JC_PROXY_ADMIN_ENABLED", "true")
+	t.Setenv("JC_PROXY_ADMIN_SESSION_TTL", "6h")
+
+	cfg, err := LoadBootstrapBytes(nil)
+	if err != nil {
+		t.Fatalf("LoadBootstrapBytes() error = %v", err)
+	}
+
+	if !cfg.Admin.Enabled {
+		t.Fatal("Admin.Enabled = false, want true")
+	}
+	if cfg.Admin.SessionTTL != 6*time.Hour {
+		t.Fatalf("Admin.SessionTTL = %v, want 6h", cfg.Admin.SessionTTL)
+	}
+	if cfg.Storage.Config.Driver != "pgsql" || cfg.Storage.UpstreamKeys.Driver != "pgsql" {
+		t.Fatalf("storage drivers = (%q, %q), want both pgsql", cfg.Storage.Config.Driver, cfg.Storage.UpstreamKeys.Driver)
+	}
+	if cfg.Storage.Config.PGSQL.DSN != "postgres://bootstrap:bootstrap@127.0.0.1:5432/jc_proxy?sslmode=disable" {
+		t.Fatalf("Storage.Config.PGSQL.DSN = %q", cfg.Storage.Config.PGSQL.DSN)
+	}
+	if len(cfg.Vendors) != 0 {
+		t.Fatalf("len(Vendors) = %d, want 0", len(cfg.Vendors))
+	}
+}
+
+func TestLoadBootstrapRequiresPGSQLWhenConfigFileMissing(t *testing.T) {
+	preserveEnv(t,
+		"DATABASE_URL",
+		"JC_PROXY_STORAGE_MODE",
+		"JC_PROXY_STORAGE_CONFIG_DRIVER",
+		"JC_PROXY_STORAGE_PGSQL_DSN",
+	)
+
+	missingPath := filepath.Join(t.TempDir(), "missing.yaml")
+	cfg, err := LoadBootstrap(missingPath)
+	if err == nil {
+		t.Fatalf("LoadBootstrap() cfg = %#v, want error", cfg)
+	}
+	if !strings.Contains(err.Error(), "storage.config.driver=pgsql") {
+		t.Fatalf("LoadBootstrap() error = %v, want storage.config.driver=pgsql", err)
 	}
 }
 
