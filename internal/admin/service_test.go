@@ -93,11 +93,49 @@ func TestVendorAndKeyCRUD(t *testing.T) {
 
 func TestRotatePassword(t *testing.T) {
 	s := newTestService(t)
+	token, _, err := s.Login("admin", "admin123")
+	if err != nil {
+		t.Fatalf("login before rotate failed: %v", err)
+	}
 	if err := s.RotatePassword("admin", "new-pass"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.Login("admin", "new-pass"); err != nil {
 		t.Fatalf("login with rotated password failed: %v", err)
+	}
+	if _, ok := s.sessions.Validate(token); ok {
+		t.Fatal("session should be invalidated after password rotate")
+	}
+
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Admin.Password != "" {
+		t.Fatalf("Admin.Password = %q, want empty after rotate", cfg.Admin.Password)
+	}
+	if cfg.Admin.PasswordHash == "" {
+		t.Fatal("Admin.PasswordHash is empty after rotate")
+	}
+}
+
+func TestUpdateConfigInvalidatesSessionsWhenAdminUsernameChanges(t *testing.T) {
+	s := newTestService(t)
+	token, _, err := s.Login("admin", "admin123")
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Admin.Username = "next-admin"
+	if err := s.UpdateConfig("admin", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.sessions.Validate(token); ok {
+		t.Fatal("session should be invalidated after admin username update")
 	}
 }
 
@@ -124,5 +162,88 @@ func TestEnableDisableUpstreamKey(t *testing.T) {
 	}
 	if got := list.Items["openai"][0].Status; got != keystore.KeyStatusActive {
 		t.Fatalf("unexpected key status after enable: %q", got)
+	}
+}
+
+func TestBuildRuntimeStatsResponse(t *testing.T) {
+	vendors := map[string][]map[string]any{
+		"openai": {
+			{
+				"key_masked":                "sk-jcp-active",
+				"status":                    keystore.KeyStatusActive,
+				"backoff_remaining_seconds": 0,
+				"inflight":                  0,
+				"failures":                  0,
+				"unauthorized_count":        0,
+				"forbidden_count":           0,
+				"rate_limit_count":          0,
+				"other_error_count":         0,
+				"last_error":                "",
+			},
+			{
+				"key_masked":                "sk-jcp-disabled",
+				"status":                    keystore.KeyStatusDisabledAuto,
+				"backoff_remaining_seconds": 0,
+				"inflight":                  0,
+				"failures":                  1,
+				"unauthorized_count":        0,
+				"forbidden_count":           0,
+				"rate_limit_count":          0,
+				"other_error_count":         0,
+				"last_error":                "quota exhausted",
+			},
+			{
+				"key_masked":                "sk-jcp-backoff",
+				"status":                    keystore.KeyStatusActive,
+				"backoff_remaining_seconds": 12,
+				"inflight":                  1,
+				"failures":                  0,
+				"unauthorized_count":        0,
+				"forbidden_count":           0,
+				"rate_limit_count":          2,
+				"other_error_count":         0,
+				"last_error":                "rate limit",
+			},
+		},
+	}
+
+	resp := buildRuntimeStatsResponse(vendors, RuntimeStatsQuery{
+		Vendor:   "openai",
+		Filter:   "issues",
+		Page:     1,
+		PageSize: 1,
+	})
+
+	meta, ok := resp["meta"].(RuntimeStatsMeta)
+	if !ok {
+		t.Fatalf("unexpected meta type: %T", resp["meta"])
+	}
+	if meta.Total != 2 {
+		t.Fatalf("unexpected filtered total: %d", meta.Total)
+	}
+
+	rows, ok := resp["vendors"].(map[string][]map[string]any)
+	if !ok {
+		t.Fatalf("unexpected vendors type: %T", resp["vendors"])
+	}
+	if got := len(rows["openai"]); got != 1 {
+		t.Fatalf("unexpected page size after pagination: %d", got)
+	}
+	if got := rows["openai"][0]["key_masked"]; got != "sk-jcp-disabled" {
+		t.Fatalf("unexpected first filtered row: %v", got)
+	}
+
+	resp = buildRuntimeStatsResponse(vendors, RuntimeStatsQuery{
+		Vendor:   "openai",
+		Q:        "rate limit",
+		Page:     1,
+		PageSize: 20,
+	})
+	rows = resp["vendors"].(map[string][]map[string]any)
+	if got := len(rows["openai"]); got != 1 {
+		t.Fatalf("unexpected keyword match count: %d", got)
+	}
+	if got := rows["openai"][0]["key_masked"]; got != "sk-jcp-backoff" {
+		t.Fatalf("unexpected keyword match row: %v", got)
 	}
 }

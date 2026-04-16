@@ -13,9 +13,14 @@ import (
 )
 
 type configBackend interface {
-	Load() (*config.Config, error)
+	Load() (*loadedConfig, error)
 	Save(*config.Config) error
 	Close() error
+}
+
+type loadedConfig struct {
+	cfg        *config.Config
+	adminLayer config.AdminCredentialLayer
 }
 
 type Store struct {
@@ -64,8 +69,12 @@ func NewStore(configPath string, bootstrap *config.Config) (*Store, error) {
 			return nil, err
 		}
 		if loaded != nil {
-			loaded.Storage = bootstrap.Storage
-			effective = loaded
+			nextEffective, err := mergeLoadedConfig(effective, loaded)
+			if err != nil {
+				_ = backend.Close()
+				return nil, err
+			}
+			effective = nextEffective
 		} else {
 			seedRemote = true
 		}
@@ -178,6 +187,45 @@ func sanitizeConfigForStore(next *config.Config, storage config.StorageConfig) (
 	cloned.Storage = storage
 	cloned.StripExternalizedData()
 	return cloned, nil
+}
+
+func mergeLoadedConfig(base *config.Config, loaded *loadedConfig) (*config.Config, error) {
+	if loaded == nil || loaded.cfg == nil {
+		return nil, errors.New("loaded config is nil")
+	}
+
+	merged, err := loaded.cfg.Clone()
+	if err != nil {
+		return nil, err
+	}
+	if base != nil {
+		merged.Storage = base.Storage
+		mergeAdminCredentials(&merged.Admin, base.Admin, loaded.adminLayer)
+	}
+	return merged, nil
+}
+
+func mergeAdminCredentials(dst *config.AdminConfig, fallback config.AdminConfig, layer config.AdminCredentialLayer) {
+	if dst == nil {
+		return
+	}
+
+	if layer.Username == nil || strings.TrimSpace(*layer.Username) == "" {
+		dst.Username = fallback.Username
+	}
+
+	hasPassword := layer.Password != nil && strings.TrimSpace(*layer.Password) != ""
+	hasPasswordHash := layer.PasswordHash != nil && strings.TrimSpace(*layer.PasswordHash) != ""
+	if !hasPassword && !hasPasswordHash {
+		dst.Password = fallback.Password
+		dst.PasswordHash = fallback.PasswordHash
+		return
+	}
+	if hasPasswordHash {
+		dst.Password = ""
+		return
+	}
+	dst.PasswordHash = ""
 }
 
 func writeConfigFile(path string, cfg *config.Config) error {

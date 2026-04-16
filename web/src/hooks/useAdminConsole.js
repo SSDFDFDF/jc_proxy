@@ -35,6 +35,32 @@ function buildErrorPolicyDurationTexts(policy) {
   }
 }
 
+function emptyStatsResult() {
+  return {
+    vendors: {},
+    meta: {
+      page: 1,
+      page_size: 50,
+      total: 0
+    }
+  }
+}
+
+function buildStatsPath(query = {}) {
+  const params = new URLSearchParams()
+  const vendor = String(query.vendor || '').trim()
+  const filter = String(query.filter || 'all').trim()
+  const keyword = String(query.q || '').trim()
+
+  if (vendor) params.set('vendor', vendor)
+  if (filter && filter !== 'all') params.set('filter', filter)
+  if (keyword) params.set('q', keyword)
+  params.set('page', String(Math.max(1, Number(query.page) || 1)))
+  params.set('page_size', String(Math.max(1, Number(query.pageSize) || 50)))
+
+  return `/admin/stats?${params.toString()}`
+}
+
 export function useAdminConsole() {
   const [token, setToken] = useState(localStorage.getItem(STORAGE_TOKEN) || '')
   const [username, setUsername] = useState(localStorage.getItem(STORAGE_USER) || 'admin')
@@ -50,10 +76,18 @@ export function useAdminConsole() {
   const [maskedConfig, setMaskedConfig] = useState(EMPTY_CONFIG)
   const [rawConfigText, setRawConfigText] = useState(JSON.stringify(EMPTY_CONFIG, null, 2))
   const [stats, setStats] = useState({ vendors: {} })
+  const [statsResult, setStatsResult] = useState(emptyStatsResult())
   const [upstreamKeysData, setUpstreamKeysData] = useState(EMPTY_UPSTREAM_KEYS)
 
   const [autoRefreshStats, setAutoRefreshStats] = useState(true)
   const [refreshEverySec, setRefreshEverySec] = useState('4')
+  const [statsFilters, setStatsFilters] = useState({
+    vendor: '',
+    filter: 'all',
+    q: '',
+    page: 1,
+    pageSize: 50
+  })
 
   const [selectedVendor, setSelectedVendor] = useState('')
   const [vendorDraft, setVendorDraft] = useState(null)
@@ -77,10 +111,25 @@ export function useAdminConsole() {
     setNotice({ tone, text })
   }
 
+  // Auto-dismiss notices based on type
+  // success: 3s, info: 5s, warn: 8s, error: no auto-dismiss
+  useEffect(() => {
+    if (!notice.text) return
+    const delays = { success: 3000, info: 5000, warn: 8000 }
+    const delay = delays[notice.tone]
+    if (delay) {
+      const timer = setTimeout(() => {
+        setNotice({ tone: 'info', text: '' })
+      }, delay)
+      return () => clearTimeout(timer)
+    }
+  }, [notice])
+
   const clearSession = (message) => {
     setToken('')
     setMe({ username: '' })
     localStorage.removeItem(STORAGE_TOKEN)
+    localStorage.removeItem(STORAGE_USER)
     if (message) setStatus('warn', message)
   }
 
@@ -110,7 +159,8 @@ export function useAdminConsole() {
       adminUsername: cfg.admin?.username || 'admin',
       adminSessionTTL: nsToText(cfg.admin?.session_ttl),
       auditLogPath: cfg.admin?.audit_log_path || './data/admin_audit.log',
-      adminAllowedCIDRsText: listToText(cfg.admin?.allowed_cidrs || [])
+      adminAllowedCIDRsText: listToText(cfg.admin?.allowed_cidrs || []),
+      adminTrustedProxyCIDRsText: listToText(cfg.admin?.trusted_proxy_cidrs || [])
     })
   }
 
@@ -157,6 +207,30 @@ export function useAdminConsole() {
     }
   }
 
+  const loadFilteredStats = async (overrides = {}, silent = false, touchBusy = false) => {
+    const nextQuery = {
+      ...statsFilters,
+      ...overrides
+    }
+
+    if (!nextQuery.vendor) {
+      setStatsResult(emptyStatsResult())
+      return
+    }
+
+    if (touchBusy) setBusy(true)
+    try {
+      const data = await api(buildStatsPath(nextQuery))
+      setStatsResult(data || emptyStatsResult())
+      setLastSyncAt(Date.now())
+      if (!silent) setStatus('success', '运行状态已刷新')
+    } catch (err) {
+      if (!silent) setStatus('error', String(err?.message || err))
+    } finally {
+      if (touchBusy) setBusy(false)
+    }
+  }
+
   const refreshAll = async (preferredVendor = '', preferredKeyVendor = '') => {
     setBusy(true)
     try {
@@ -180,6 +254,14 @@ export function useAdminConsole() {
       const nextVendor = pickName(vendorNames, preferredVendor, selectedVendor)
       setSelectedVendor(nextVendor)
       syncVendorDraft(raw || EMPTY_CONFIG, nextVendor)
+      setStatsFilters((prev) => {
+        const nextStatsVendor = pickName(vendorNames, preferredVendor || nextVendor, prev.vendor)
+        return {
+          ...prev,
+          vendor: nextStatsVendor,
+          page: nextStatsVendor === prev.vendor ? prev.page : 1
+        }
+      })
 
       const upstreamVendorNames = (upstreamKeys?.vendors || []).map((item) => item.vendor)
       const nextKeyVendor = pickName(upstreamVendorNames, preferredKeyVendor || nextVendor, selectedKeyVendor)
@@ -411,6 +493,7 @@ export function useAdminConsole() {
       next.admin.session_ttl = parseDurationToNs(systemForm.adminSessionTTL, next.admin.session_ttl)
       next.admin.audit_log_path = systemForm.auditLogPath.trim()
       next.admin.allowed_cidrs = textToList(systemForm.adminAllowedCIDRsText)
+      next.admin.trusted_proxy_cidrs = textToList(systemForm.adminTrustedProxyCIDRsText)
 
       await api('/admin/config', {
         method: 'PUT',
@@ -458,8 +541,7 @@ export function useAdminConsole() {
         body: JSON.stringify({ password: next })
       })
       setNewPassword('')
-      await refreshAll(selectedVendor, selectedKeyVendor)
-      setStatus('success', '管理员密码已轮换')
+      clearSession('管理员密码已轮换，请使用新密码重新登录')
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -486,12 +568,18 @@ export function useAdminConsole() {
   }, [token])
 
   useEffect(() => {
-    if (!isAuthed || !autoRefreshStats) return undefined
+    if (!isAuthed || nav !== 'stats' || !statsFilters.vendor) return undefined
+    loadFilteredStats({}, true, false).catch(() => {})
+    return undefined
+  }, [isAuthed, nav, statsFilters.vendor, statsFilters.filter, statsFilters.q, statsFilters.page, statsFilters.pageSize])
+
+  useEffect(() => {
+    if (!isAuthed || nav !== 'stats' || !autoRefreshStats || !statsFilters.vendor) return undefined
     const interval = window.setInterval(() => {
-      loadStats(true, false).catch(() => {})
+      loadFilteredStats({}, true, false).catch(() => {})
     }, Number(refreshEverySec) * 1000)
     return () => window.clearInterval(interval)
-  }, [isAuthed, autoRefreshStats, refreshEverySec])
+  }, [isAuthed, nav, autoRefreshStats, refreshEverySec, statsFilters.vendor, statsFilters.filter, statsFilters.q, statsFilters.page, statsFilters.pageSize])
 
   const vendorRows = useMemo(() => {
     const keyCountMap = Object.fromEntries((upstreamKeysData.vendors || []).map((item) => [item.vendor, item.count]))
@@ -547,8 +635,6 @@ export function useAdminConsole() {
     }
   }, [rawConfig, upstreamKeysData, stats])
 
-  const selectedVendorStats = stats.vendors?.[selectedVendor] || []
-
   return {
     auth: {
       token,
@@ -589,7 +675,6 @@ export function useAdminConsole() {
       rewriteRows,
       newVendorForm,
       systemForm,
-      selectedVendorStats,
       setVendorBackoffDuration,
       setErrorPolicyDurations,
       setAllowlistText,
@@ -618,11 +703,15 @@ export function useAdminConsole() {
     },
     statsView: {
       stats,
+      statsResult,
+      statsFilters,
       autoRefreshStats,
       refreshEverySec,
+      setStatsFilters,
       setAutoRefreshStats,
       setRefreshEverySec,
-      loadStats
+      loadStats,
+      loadFilteredStats
     },
     security: {
       newPassword,

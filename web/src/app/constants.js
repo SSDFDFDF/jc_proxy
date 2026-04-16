@@ -26,7 +26,8 @@ export const EMPTY_CONFIG = {
     password_hash: '******',
     session_ttl: 43_200_000_000_000,
     audit_log_path: './data/admin_audit.log',
-    allowed_cidrs: []
+    allowed_cidrs: [],
+    trusted_proxy_cidrs: []
   },
   vendors: {}
 }
@@ -47,7 +48,8 @@ export const DEFAULT_SYSTEM_FORM = {
   adminUsername: 'admin',
   adminSessionTTL: '12h',
   auditLogPath: './data/admin_audit.log',
-  adminAllowedCIDRsText: ''
+  adminAllowedCIDRsText: '',
+  adminTrustedProxyCIDRsText: ''
 }
 
 export const DURATION_UNITS = {

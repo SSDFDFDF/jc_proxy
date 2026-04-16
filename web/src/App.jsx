@@ -41,7 +41,7 @@ function App() {
       upstreamStorage={upstream.upstreamKeysData.storage}
       busy={auth.busy}
       onRefreshAll={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
-      onRefreshStats={() => statsView.loadStats(false, true)}
+      onRefreshStats={() => statsView.loadFilteredStats({}, false, true)}
       onLogout={auth.logout}
     >
       {shell.nav === 'overview' && (
@@ -80,9 +80,6 @@ function App() {
           injectRows={config.injectRows}
           rewriteRows={config.rewriteRows}
           newVendorForm={config.newVendorForm}
-          selectedVendorStats={config.selectedVendorStats}
-          showSecrets={upstream.showSecrets}
-          onToggleSecrets={() => upstream.setShowSecrets((prev) => !prev)}
           onSelectVendor={config.selectVendor}
           onRefresh={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
           onNewVendorFormChange={config.setNewVendorForm}
@@ -102,12 +99,15 @@ function App() {
       {shell.nav === 'stats' && (
         <StatsPage
           busy={auth.busy}
-          stats={statsView.stats}
+          vendorRows={overview.vendorRows}
+          statsResult={statsView.statsResult}
+          statsFilters={statsView.statsFilters}
           autoRefreshStats={statsView.autoRefreshStats}
           refreshEverySec={statsView.refreshEverySec}
+          onStatsFiltersChange={statsView.setStatsFilters}
           onToggleAutoRefresh={() => statsView.setAutoRefreshStats((prev) => !prev)}
           onRefreshEverySecChange={statsView.setRefreshEverySec}
-          onRefresh={() => statsView.loadStats(false, true)}
+          onRefresh={() => statsView.loadFilteredStats({}, false, true)}
         />
       )}
 

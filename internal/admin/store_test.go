@@ -111,3 +111,117 @@ func TestStoreAllowsBootstrapConfigWithoutLocalConfigPath(t *testing.T) {
 		t.Fatalf("len(saved.Vendors) = %d, want 0", len(saved.Vendors))
 	}
 }
+
+func TestMergeLoadedConfigPrefersRemoteAdminCredentials(t *testing.T) {
+	base := &config.Config{
+		Admin: config.AdminConfig{
+			Enabled:      true,
+			Username:     "file-admin",
+			PasswordHash: "file-hash",
+		},
+		Storage: config.StorageConfig{
+			Config: config.ConfigStoreConfig{
+				Driver: "pgsql",
+				PGSQL: config.ConfigStorePGSQLConfig{
+					DSN: "postgres://bootstrap",
+				},
+			},
+			UpstreamKeys: config.UpstreamKeyStoreConfig{
+				Driver: "file",
+			},
+		},
+	}
+	if err := base.PrepareBootstrap(); err != nil {
+		t.Fatalf("PrepareBootstrap() error = %v", err)
+	}
+
+	remote := &config.Config{
+		Admin: config.AdminConfig{
+			Enabled:      true,
+			Username:     "db-admin",
+			PasswordHash: "db-hash",
+		},
+		Storage: config.StorageConfig{
+			Config: config.ConfigStoreConfig{Driver: "file"},
+		},
+	}
+	if err := remote.PrepareBootstrap(); err != nil {
+		t.Fatalf("PrepareBootstrap() error = %v", err)
+	}
+
+	merged, err := mergeLoadedConfig(base, &loadedConfig{
+		cfg: remote,
+		adminLayer: config.AdminCredentialLayer{
+			Username:     strPtr("db-admin"),
+			PasswordHash: strPtr("db-hash"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("mergeLoadedConfig() error = %v", err)
+	}
+
+	if merged.Admin.Username != "db-admin" {
+		t.Fatalf("Admin.Username = %q, want db-admin", merged.Admin.Username)
+	}
+	if merged.Admin.PasswordHash != "db-hash" {
+		t.Fatalf("Admin.PasswordHash = %q, want db-hash", merged.Admin.PasswordHash)
+	}
+	if merged.Storage.Config.PGSQL.DSN != "postgres://bootstrap" {
+		t.Fatalf("Storage.Config.PGSQL.DSN = %q, want bootstrap dsn", merged.Storage.Config.PGSQL.DSN)
+	}
+}
+
+func TestMergeLoadedConfigFallsBackToBootstrapAdminCredentials(t *testing.T) {
+	base := &config.Config{
+		Admin: config.AdminConfig{
+			Enabled:      true,
+			Username:     "file-admin",
+			PasswordHash: "file-hash",
+		},
+		Storage: config.StorageConfig{
+			Config: config.ConfigStoreConfig{
+				Driver: "pgsql",
+				PGSQL: config.ConfigStorePGSQLConfig{
+					DSN: "postgres://bootstrap",
+				},
+			},
+			UpstreamKeys: config.UpstreamKeyStoreConfig{
+				Driver: "file",
+			},
+		},
+	}
+	if err := base.PrepareBootstrap(); err != nil {
+		t.Fatalf("PrepareBootstrap() error = %v", err)
+	}
+
+	remote := &config.Config{
+		Admin: config.AdminConfig{
+			Enabled: true,
+		},
+	}
+	if err := remote.PrepareBootstrap(); err != nil {
+		t.Fatalf("PrepareBootstrap() error = %v", err)
+	}
+
+	merged, err := mergeLoadedConfig(base, &loadedConfig{
+		cfg:        remote,
+		adminLayer: config.AdminCredentialLayer{},
+	})
+	if err != nil {
+		t.Fatalf("mergeLoadedConfig() error = %v", err)
+	}
+
+	if merged.Admin.Username != "file-admin" {
+		t.Fatalf("Admin.Username = %q, want file-admin", merged.Admin.Username)
+	}
+	if merged.Admin.PasswordHash != "file-hash" {
+		t.Fatalf("Admin.PasswordHash = %q, want file-hash", merged.Admin.PasswordHash)
+	}
+	if merged.Admin.Password != "" {
+		t.Fatalf("Admin.Password = %q, want empty", merged.Admin.Password)
+	}
+}
+
+func strPtr(value string) *string {
+	return &value
+}

@@ -40,12 +40,13 @@ var hopHeaders = map[string]struct{}{
 }
 
 type Router struct {
-	vendors        map[string]*vendorGateway
-	bufPool        sync.Pool
-	uiFS           http.Handler
-	uiRead         fs.FS
-	consoleEnabled bool
-	adminCIDRs     []netip.Prefix
+	vendors                map[string]*vendorGateway
+	bufPool                sync.Pool
+	uiFS                   http.Handler
+	uiRead                 fs.FS
+	consoleEnabled         bool
+	adminCIDRs             []netip.Prefix
+	adminTrustedProxyCIDRs []netip.Prefix
 }
 
 type vendorGateway struct {
@@ -75,6 +76,11 @@ type rewriteMatcher struct {
 }
 
 const maxReplayableRequestBodyBytes = 4 << 20
+
+const (
+	pooledResponseCopyBufferBytes    = 32 << 10
+	streamingResponseCopyBufferBytes = 4 << 10
+)
 
 type flushWriter struct {
 	writer  io.Writer
@@ -136,6 +142,10 @@ func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]key
 	adminCIDRs, err := config.ParseAdminAllowedCIDRs(cfg.Admin.AllowedCIDRs)
 	if err != nil {
 		return nil, fmt.Errorf("parse admin allowed cidrs: %w", err)
+	}
+	adminTrustedProxyCIDRs, err := config.ParseAdminTrustedProxyCIDRs(cfg.Admin.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("parse admin trusted proxy cidrs: %w", err)
 	}
 
 	vendors := make(map[string]*vendorGateway, len(cfg.Vendors))
@@ -238,14 +248,15 @@ func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]key
 		vendors: vendors,
 		bufPool: sync.Pool{
 			New: func() any {
-				buf := make([]byte, 32*1024)
+				buf := make([]byte, pooledResponseCopyBufferBytes)
 				return &buf
 			},
 		},
-		uiFS:           newUIHandler(),
-		uiRead:         newUIReadFS(),
-		consoleEnabled: cfg.Admin.Enabled,
-		adminCIDRs:     adminCIDRs,
+		uiFS:                   newUIHandler(),
+		uiRead:                 newUIReadFS(),
+		consoleEnabled:         cfg.Admin.Enabled,
+		adminCIDRs:             adminCIDRs,
+		adminTrustedProxyCIDRs: adminTrustedProxyCIDRs,
 	}, nil
 }
 
@@ -256,7 +267,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if req.URL.Path == "/console" || strings.HasPrefix(req.URL.Path, "/console/") {
-		if !r.consoleEnabled || !config.RemoteAddrAllowed(req.RemoteAddr, r.adminCIDRs) {
+		if !r.consoleEnabled || !config.RequestAddrAllowed(req.RemoteAddr, req.Header, r.adminCIDRs, r.adminTrustedProxyCIDRs) {
 			http.NotFound(w, req)
 			return
 		}
@@ -718,6 +729,12 @@ func prepareRequestBody(req *http.Request) (*requestBodySource, error) {
 		}, nil
 	}
 
+	// Unknown-length request bodies are commonly chunked/streamed uploads.
+	// Avoid pre-reading them into memory before the first upstream attempt.
+	if req.ContentLength < 0 {
+		return newSingleUseBodySource(req.Body, req.ContentLength, safeRetry), nil
+	}
+
 	if !shouldBufferRequestBody(req.Header.Get("Content-Type")) {
 		return newSingleUseBodySource(req.Body, req.ContentLength, safeRetry), nil
 	}
@@ -853,6 +870,17 @@ func captureResponsePreview(body io.ReadCloser, limit int) ([]byte, io.Reader, e
 	return preview, io.MultiReader(bytes.NewReader(preview), body), nil
 }
 
+func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
+	if streaming {
+		return make([]byte, streamingResponseCopyBufferBytes), func() {}
+	}
+
+	buf := r.bufPool.Get().(*[]byte)
+	return *buf, func() {
+		r.bufPool.Put(buf)
+	}
+}
+
 func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, decision keyDecision, decisionApplied bool) {
 	defer resp.Body.Close()
 
@@ -863,10 +891,10 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
-	buf := r.bufPool.Get().(*[]byte)
-	defer r.bufPool.Put(buf)
-
 	streaming := shouldFlushResponse(req, resp)
+	buf, releaseBuf := r.responseCopyBuffer(streaming)
+	defer releaseBuf()
+
 	writer := io.Writer(w)
 	if streaming {
 		if flusher, ok := w.(http.Flusher); ok {
@@ -875,7 +903,7 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 		}
 	}
 
-	_, copyErr := io.CopyBuffer(writer, body, *buf)
+	_, copyErr := io.CopyBuffer(writer, body, buf)
 	if copyErr != nil {
 		if !decisionApplied {
 			if resp.StatusCode >= http.StatusBadRequest {

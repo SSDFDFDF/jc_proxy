@@ -61,3 +61,9 @@ func (m *SessionManager) Delete(token string) {
 	delete(m.sessions, token)
 	m.mu.Unlock()
 }
+
+func (m *SessionManager) DeleteAll() {
+	m.mu.Lock()
+	m.sessions = map[string]Session{}
+	m.mu.Unlock()
+}

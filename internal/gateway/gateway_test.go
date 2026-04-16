@@ -3,11 +3,13 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -62,6 +64,11 @@ type brokenPipeWriter struct {
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
+type trackingReadCloser struct {
+	readCalls int
+	err       error
+}
+
 func (w *brokenPipeWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
@@ -82,6 +89,18 @@ func (w *brokenPipeWriter) Write(p []byte) (int, error) {
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func (r *trackingReadCloser) Read(p []byte) (int, error) {
+	r.readCalls++
+	if r.err != nil {
+		return 0, r.err
+	}
+	return 0, io.EOF
+}
+
+func (r *trackingReadCloser) Close() error {
+	return nil
 }
 
 func (t *testKeyController) ListAll() (map[string][]keystore.Record, error) {
@@ -293,6 +312,45 @@ func TestConsoleRouteAllowsRemoteAddrWhenCIDRsEmpty(t *testing.T) {
 	}
 }
 
+func TestConsoleRouteAllowsTrustedProxyForwardedAddr(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Admin: config.AdminConfig{
+			Enabled:           true,
+			PasswordHash:      "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
+			AllowedCIDRs:      []string{"203.0.113.8/32"},
+			TrustedProxyCIDRs: []string{"10.0.0.0/8"},
+		},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL: "https://api.openai.com",
+					Keys:    []string{"k1"},
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/console/", nil)
+	req.RemoteAddr = "10.1.2.3:10001"
+	req.Header.Set("X-Forwarded-For", "203.0.113.8")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("trusted proxy console request should be allowed, got %d", w.Code)
+	}
+}
+
 func TestForwardHeadersDropAuthByDefault(t *testing.T) {
 	v := &vendorGateway{
 		allowlist:     map[string]struct{}{},
@@ -368,6 +426,59 @@ func TestCopyResponseHeadersDropConnectionScopedHeaders(t *testing.T) {
 	}
 	if got := dst.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("content-type should remain, got %q", got)
+	}
+}
+
+func TestPrepareRequestBodySkipsPrefetchForUnknownLength(t *testing.T) {
+	body := &trackingReadCloser{err: errors.New("unexpected eager read")}
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", body)
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+
+	src, err := prepareRequestBody(req)
+	if err != nil {
+		t.Fatalf("prepareRequestBody returned error for unknown-length body: %v", err)
+	}
+	if src.replayable {
+		t.Fatal("unknown-length body should remain single-use")
+	}
+	if body.readCalls != 0 {
+		t.Fatalf("prepareRequestBody should not pre-read unknown-length body, got %d reads", body.readCalls)
+	}
+
+	reader, err := src.Body()
+	if err != nil {
+		t.Fatalf("Body() returned error: %v", err)
+	}
+	_, readErr := io.ReadAll(reader)
+	if !errors.Is(readErr, body.err) {
+		t.Fatalf("expected deferred body read error %v, got %v", body.err, readErr)
+	}
+	if body.readCalls == 0 {
+		t.Fatal("expected body to be read only after forwarding starts")
+	}
+}
+
+func TestResponseCopyBufferSkipsPoolForStreaming(t *testing.T) {
+	newCalls := 0
+	router := &Router{
+		bufPool: sync.Pool{
+			New: func() any {
+				newCalls++
+				buf := make([]byte, pooledResponseCopyBufferBytes)
+				return &buf
+			},
+		},
+	}
+
+	buf, release := router.responseCopyBuffer(true)
+	defer release()
+
+	if newCalls != 0 {
+		t.Fatalf("streaming response should not borrow pooled buffer, got %d pool allocations", newCalls)
+	}
+	if len(buf) != streamingResponseCopyBufferBytes {
+		t.Fatalf("streaming buffer len = %d, want %d", len(buf), streamingResponseCopyBufferBytes)
 	}
 }
 

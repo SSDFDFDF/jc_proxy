@@ -1,12 +1,14 @@
 import { buttonClass, panelClass } from '../app/utils'
+import logoImg from '../../logo/logo.png'
 
 export function LoginPage({ username, password, onUsernameChange, onPasswordChange, onLogin, busy, notice }) {
   return (
     <div className="flex h-screen w-full items-center justify-center bg-[#f8fafc] text-slate-900 px-4">
       <div className="w-full max-w-sm">
         <section className="login-panel rounded-lg border border-slate-200 bg-white p-8">
-          <div className="mb-6">
-            <h1 className="text-xl font-semibold text-slate-900">jc_proxy 管理后台</h1>
+          <div className="mb-6 text-center">
+            <img src={logoImg} alt="JCProxy" className="mx-auto mb-3 h-12 w-auto" />
+            <h1 className="text-xl font-semibold text-slate-900">JCProxy 管理后台</h1>
             <p className="mt-1 text-xs text-slate-500">用于维护供应商配置、上游密钥和运行状态。</p>
           </div>
 

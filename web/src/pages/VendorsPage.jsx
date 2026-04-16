@@ -1,7 +1,6 @@
-import { buttonClass, normalizeKeys, panelClass } from '../app/utils'
+import { buildVendorRequestEndpoint, buttonClass, generateClientKey, normalizeKeys, panelClass } from '../app/utils'
 import { KeyTableEditor } from '../components/KeyTableEditor'
 import { MapRowsEditor } from '../components/MapRowsEditor'
-import { RuntimeKeyStatCard } from '../components/RuntimeKeyStatCard'
 
 export function VendorsPage({
   busy,
@@ -14,9 +13,6 @@ export function VendorsPage({
   injectRows,
   rewriteRows,
   newVendorForm,
-  selectedVendorStats,
-  showSecrets,
-  onToggleSecrets,
   onSelectVendor,
   onRefresh,
   onNewVendorFormChange,
@@ -49,6 +45,39 @@ export function VendorsPage({
     { key: 'rate_limit', label: '429 切换' },
     { key: 'server_error', label: '5xx/529 切换' }
   ]
+
+  const requestEndpoint = buildVendorRequestEndpoint(selectedVendor)
+  const clientKeys = normalizeKeys(vendorDraft?.client_auth?.keys || [])
+
+  const updateClientKeys = (keys) => {
+    const nextKeys = normalizeKeys(keys)
+    onMutateVendorDraft((draft) => {
+      const hadKeys = normalizeKeys(draft.client_auth.keys || []).length > 0
+      draft.client_auth.keys = nextKeys
+      if (!nextKeys.length) {
+        draft.client_auth.enabled = false
+      } else if (!hadKeys) {
+        draft.client_auth.enabled = true
+      }
+    })
+  }
+
+  const handleGenerateClientKey = () => {
+    const nextKey = generateClientKey()
+    onMutateVendorDraft((draft) => {
+      draft.client_auth.keys = normalizeKeys([...(draft.client_auth.keys || []), nextKey])
+      draft.client_auth.enabled = true
+    })
+  }
+
+  const copyRequestEndpoint = async () => {
+    if (!requestEndpoint || typeof navigator?.clipboard?.writeText !== 'function') return
+    try {
+      await navigator.clipboard.writeText(requestEndpoint)
+    } catch (_) {
+      // ignore clipboard failures in unsupported contexts
+    }
+  }
 
   return (
     <section className="grid gap-4 2xl:grid-cols-[280px_1fr]">
@@ -108,9 +137,6 @@ export function VendorsPage({
                 <h3 className="section-title">{selectedVendor}</h3>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button className={buttonClass('ghost')} onClick={onToggleSecrets}>
-                  {showSecrets ? '隐藏密钥' : '显示密钥'}
-                </button>
                 <button className={buttonClass('ghost')} onClick={onOpenUpstreamKeys}>
                   上游密钥
                 </button>
@@ -358,31 +384,46 @@ export function VendorsPage({
             />
 
             <div className="space-y-3 pt-4 border-t border-slate-100 mt-6">
-              <div className="flex items-center justify-between">
-                <h3 className="section-title text-sm">客户端密钥</h3>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="section-title text-sm">客户端密钥</h3>
+                  <p className="mt-1 text-xs text-slate-500">支持手动导入，也支持自动生成 `sk-jcp-...` 格式密钥。</p>
+                </div>
+                <button className={buttonClass('ghost')} type="button" onClick={handleGenerateClientKey}>
+                  自动生成
+                </button>
               </div>
-              <textarea
-                className="textarea-base h-20"
-                placeholder="在此输入客户端密钥，每行一个..."
-                value={(vendorDraft.client_auth?.keys || []).join('\n')}
-                onChange={(e) => onMutateVendorDraft((draft) => {
-                  draft.client_auth.keys = normalizeKeys(e.target.value.split('\n'))
-                  if (draft.client_auth.keys.length === 0) {
-                    draft.client_auth.enabled = false
-                  }
-                })}
-              />
-            </div>
 
-            <div className="space-y-3 pt-4 border-t border-slate-100 mt-6">
-              <div className="flex items-center justify-between">
-                <h3 className="section-title text-sm">运行态</h3>
-              </div>
-              <div className="grid gap-3 lg:grid-cols-2">
-                {selectedVendorStats.map((item, idx) => (
-                  <RuntimeKeyStatCard key={idx} item={item} />
-                ))}
-                {!selectedVendorStats.length && <p className="text-sm text-slate-400">暂无统计数据</p>}
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <KeyTableEditor
+                  title="客户端密钥"
+                  keys={clientKeys}
+                  onChange={updateClientKeys}
+                  showSecrets
+                  scopeKey={selectedVendor}
+                  toneClass="text-slate-800"
+                />
+
+                <aside className="rounded-md border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-medium text-slate-800">客户端请求端点</h4>
+                    <button className="text-xs font-medium text-blue-600 hover:text-blue-700" type="button" onClick={copyRequestEndpoint}>
+                      复制
+                    </button>
+                  </div>
+
+                  <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 break-all">
+                    {requestEndpoint || '--'}
+                  </div>
+
+                  <div className="mt-3 space-y-2 text-xs text-slate-500">
+                    <p>示例请求:</p>
+                    <div className="rounded-md border border-slate-200 bg-white px-3 py-2 font-mono text-[11px] text-slate-700 break-all">
+                      {requestEndpoint ? `${requestEndpoint}/v1/chat/completions` : '--'}
+                    </div>
+                    <p>客户端可通过 `Authorization: Bearer sk-jcp-...` 或 `X-API-Key` 进行鉴权。</p>
+                  </div>
+                </aside>
               </div>
             </div>
           </div>

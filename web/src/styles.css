@@ -95,6 +95,14 @@ code, .font-mono {
   align-items: center;
   padding: 0 20px;
   border-bottom: 1px solid var(--line);
+  gap: 10px;
+}
+
+.sidebar-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
 .sidebar-brand-title {

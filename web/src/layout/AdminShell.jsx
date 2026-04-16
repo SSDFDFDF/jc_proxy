@@ -1,4 +1,5 @@
 import { buttonClass, formatClock, panelClass, storageSummary, tokenPreview } from '../app/utils'
+import logoImg from '../../logo/logo.png'
 
 export function AdminShell({
   navItems,
@@ -22,7 +23,8 @@ export function AdminShell({
       {/* Sidebar Focus Area */}
       <aside className="shell-sidebar">
         <div className="sidebar-header">
-          <h1 className="sidebar-brand-title">jc_proxy Console</h1>
+          <img src={logoImg} alt="JCProxy" className="sidebar-logo" />
+          <h1 className="sidebar-brand-title">JCProxy Console</h1>
         </div>
 
         <nav className="sidebar-nav">

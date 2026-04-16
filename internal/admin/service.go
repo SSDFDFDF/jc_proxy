@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,19 +54,23 @@ func (s *Service) Login(username, password string) (token string, expiresAt stri
 	return t, exp.UTC().Format("2006-01-02T15:04:05Z"), nil
 }
 
-func (s *Service) AdminAccessPrefixes() (bool, []netip.Prefix, error) {
+func (s *Service) AdminAccess() (bool, []netip.Prefix, []netip.Prefix, error) {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	if !cfg.Admin.Enabled {
-		return false, nil, nil
+		return false, nil, nil, nil
 	}
-	prefixes, err := config.ParseAdminAllowedCIDRs(cfg.Admin.AllowedCIDRs)
+	allowed, err := config.ParseAdminAllowedCIDRs(cfg.Admin.AllowedCIDRs)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
-	return true, prefixes, nil
+	trusted, err := config.ParseAdminTrustedProxyCIDRs(cfg.Admin.TrustedProxyCIDRs)
+	if err != nil {
+		return false, nil, nil, err
+	}
+	return true, allowed, trusted, nil
 }
 
 func (s *Service) Logout(token, actor string) {
@@ -103,12 +108,7 @@ func (s *Service) UpdateConfig(actor string, next *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if next.Admin.Password == "******" || strings.TrimSpace(next.Admin.Password) == "" {
-		next.Admin.Password = prev.Admin.Password
-	}
-	if next.Admin.PasswordHash == "******" || strings.TrimSpace(next.Admin.PasswordHash) == "" {
-		next.Admin.PasswordHash = prev.Admin.PasswordHash
-	}
+	normalizeAdminCredentials(next, prev)
 	next.Storage = prev.Storage
 	if err := next.PrepareAndValidate(); err != nil {
 		return err
@@ -118,6 +118,9 @@ func (s *Service) UpdateConfig(actor string, next *config.Config) error {
 	}
 	if err := s.store.UpdateConfig(next); err != nil {
 		return err
+	}
+	if adminSessionsNeedReset(prev, next) {
+		s.sessions.DeleteAll()
 	}
 	s.audit.Log(actor, "config.update", map[string]any{"vendors": len(next.Vendors)})
 	return nil
@@ -139,6 +142,39 @@ func (s *Service) RotatePassword(actor, plaintext string) error {
 	}
 	s.audit.Log(actor, "admin.password.rotate", nil)
 	return nil
+}
+
+func normalizeAdminCredentials(next, prev *config.Config) {
+	if next == nil || prev == nil {
+		return
+	}
+
+	if next.Admin.Password == "******" {
+		next.Admin.Password = prev.Admin.Password
+	}
+	if next.Admin.PasswordHash == "******" {
+		next.Admin.PasswordHash = prev.Admin.PasswordHash
+	}
+
+	switch {
+	case strings.TrimSpace(next.Admin.PasswordHash) != "":
+		next.Admin.Password = ""
+	case strings.TrimSpace(next.Admin.Password) != "":
+		next.Admin.PasswordHash = ""
+	default:
+		next.Admin.Password = prev.Admin.Password
+		next.Admin.PasswordHash = prev.Admin.PasswordHash
+	}
+}
+
+func adminSessionsNeedReset(prev, next *config.Config) bool {
+	if prev == nil || next == nil {
+		return false
+	}
+	return prev.Admin.Enabled != next.Admin.Enabled ||
+		prev.Admin.Username != next.Admin.Username ||
+		prev.Admin.Password != next.Admin.Password ||
+		prev.Admin.PasswordHash != next.Admin.PasswordHash
 }
 
 func (s *Service) UpsertVendor(actor, vendor string, vc config.VendorConfig) error {
@@ -418,12 +454,22 @@ func (s *Service) DeleteClientKey(actor, vendor, key string) error {
 	return nil
 }
 
-func (s *Service) Stats() map[string]any {
+func (s *Service) Stats(query RuntimeStatsQuery) map[string]any {
 	r := s.runtime.Snapshot()
 	if r == nil {
-		return map[string]any{"vendors": map[string]any{}}
+		return map[string]any{
+			"vendors": map[string][]map[string]any{},
+			"meta": RuntimeStatsMeta{
+				Vendor:   strings.TrimSpace(query.Vendor),
+				Filter:   normalizeRuntimeStatsFilter(query.Filter),
+				Q:        strings.TrimSpace(query.Q),
+				Page:     normalizeRuntimeStatsPage(query.Page),
+				PageSize: normalizeRuntimeStatsPageSize(query.PageSize),
+				Total:    0,
+			},
+		}
 	}
-	return map[string]any{"vendors": r.VendorStats()}
+	return buildRuntimeStatsResponse(r.VendorStats(), query)
 }
 
 func (s *Service) requireVendor(vendor string) error {
@@ -435,4 +481,191 @@ func (s *Service) requireVendor(vendor string) error {
 		return fmt.Errorf("vendor %q not found", vendor)
 	}
 	return nil
+}
+
+func buildRuntimeStatsResponse(vendors map[string][]map[string]any, query RuntimeStatsQuery) map[string]any {
+	vendor := strings.TrimSpace(query.Vendor)
+	filter := normalizeRuntimeStatsFilter(query.Filter)
+	keyword := strings.ToLower(strings.TrimSpace(query.Q))
+	page := normalizeRuntimeStatsPage(query.Page)
+	pageSize := normalizeRuntimeStatsPageSize(query.PageSize)
+
+	if vendor == "" {
+		out := make(map[string][]map[string]any, len(vendors))
+		for name, items := range vendors {
+			out[name] = filterRuntimeStatsItems(items, filter, keyword)
+		}
+		return map[string]any{
+			"vendors": out,
+			"meta": RuntimeStatsMeta{
+				Filter:   filter,
+				Q:        strings.TrimSpace(query.Q),
+				Page:     1,
+				PageSize: pageSize,
+				Total:    0,
+			},
+		}
+	}
+
+	items := filterRuntimeStatsItems(vendors[vendor], filter, keyword)
+	total := len(items)
+	if total == 0 {
+		page = 1
+	} else {
+		lastPage := (total-1)/pageSize + 1
+		if page > lastPage {
+			page = lastPage
+		}
+	}
+
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
+	return map[string]any{
+		"vendors": map[string][]map[string]any{
+			vendor: items[start:end],
+		},
+		"meta": RuntimeStatsMeta{
+			Vendor:   vendor,
+			Filter:   filter,
+			Q:        strings.TrimSpace(query.Q),
+			Page:     page,
+			PageSize: pageSize,
+			Total:    total,
+		},
+	}
+}
+
+func filterRuntimeStatsItems(items []map[string]any, filter, keyword string) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if !matchesRuntimeStatsFilter(item, filter) {
+			continue
+		}
+		if keyword != "" && !matchesRuntimeStatsKeyword(item, keyword) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func matchesRuntimeStatsFilter(item map[string]any, filter string) bool {
+	status := strings.TrimSpace(stringValue(item["status"]))
+	backoff := intValue(item["backoff_remaining_seconds"])
+	inflight := intValue(item["inflight"])
+	failures := intValue(item["failures"])
+	unauthorized := intValue(item["unauthorized_count"])
+	forbidden := intValue(item["forbidden_count"])
+	rateLimit := intValue(item["rate_limit_count"])
+	otherErrors := intValue(item["other_error_count"])
+	hasError := strings.TrimSpace(stringValue(item["disable_reason"])) != "" || strings.TrimSpace(stringValue(item["last_error"])) != ""
+	hasIssue := status != "" && status != keystore.KeyStatusActive
+	hasIssue = hasIssue || backoff > 0 || failures > 0 || unauthorized > 0 || forbidden > 0 || rateLimit > 0 || otherErrors > 0 || hasError
+
+	switch filter {
+	case "active":
+		return status == keystore.KeyStatusActive
+	case "disabled":
+		return status == keystore.KeyStatusDisabledAuto || status == keystore.KeyStatusDisabledManual
+	case "backoff":
+		return backoff > 0
+	case "issues":
+		return hasIssue
+	case "inflight":
+		return inflight > 0
+	default:
+		return true
+	}
+}
+
+func matchesRuntimeStatsKeyword(item map[string]any, keyword string) bool {
+	haystack := strings.ToLower(strings.Join([]string{
+		stringValue(item["key_masked"]),
+		stringValue(item["status"]),
+		stringValue(item["disable_reason"]),
+		stringValue(item["disabled_by"]),
+		stringValue(item["last_error"]),
+	}, " "))
+	return strings.Contains(haystack, keyword)
+}
+
+func normalizeRuntimeStatsFilter(filter string) string {
+	switch strings.TrimSpace(strings.ToLower(filter)) {
+	case "active", "disabled", "backoff", "issues", "inflight":
+		return strings.TrimSpace(strings.ToLower(filter))
+	default:
+		return "all"
+	}
+}
+
+func normalizeRuntimeStatsPage(page int) int {
+	if page <= 0 {
+		return 1
+	}
+	return page
+}
+
+func normalizeRuntimeStatsPageSize(pageSize int) int {
+	switch {
+	case pageSize <= 0:
+		return 50
+	case pageSize > 200:
+		return 200
+	default:
+		return pageSize
+	}
+}
+
+func intValue(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int8:
+		return int(v)
+	case int16:
+		return int(v)
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint8:
+		return int(v)
+	case uint16:
+		return int(v)
+	case uint32:
+		return int(v)
+	case uint64:
+		return int(v)
+	case float32:
+		return int(v)
+	case float64:
+		return int(v)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(v))
+		return n
+	default:
+		return 0
+	}
+}
+
+func stringValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

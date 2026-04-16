@@ -6,8 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/gateway"
@@ -155,5 +158,98 @@ func TestAdminLoginAllowsRemoteAddrWhenCIDRsEmpty(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("remote admin request should be allowed when cidrs empty, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminLoginAllowsTrustedProxyForwardedAddr(t *testing.T) {
+	h := makeHandlerForTest(t)
+	cfg, err := h.service.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Admin.AllowedCIDRs = []string{"203.0.113.8/32"}
+	cfg.Admin.TrustedProxyCIDRs = []string{"10.0.0.0/8"}
+	if err := h.service.store.UpdateConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "admin123"})
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", bytes.NewReader(loginBody))
+	req.RemoteAddr = "10.1.2.3:43210"
+	req.Header.Set("X-Forwarded-For", "203.0.113.8")
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("trusted proxy forwarded admin request should be allowed, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminLoginIgnoresSpoofedForwardedAddrFromUntrustedPeer(t *testing.T) {
+	h := makeHandlerForTest(t)
+	cfg, err := h.service.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Admin.AllowedCIDRs = []string{"203.0.113.8/32"}
+	if err := h.service.store.UpdateConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "admin123"})
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", bytes.NewReader(loginBody))
+	req.RemoteAddr = "198.51.100.12:43210"
+	req.Header.Set("X-Forwarded-For", "203.0.113.8")
+
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("spoofed forwarded admin request should be hidden, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminLoginRateLimitedAndAudited(t *testing.T) {
+	h := makeHandlerForTest(t)
+	h.loginGuard.limit = 2
+	h.loginGuard.baseDelay = 30 * time.Second
+	h.loginGuard.maxDelay = 30 * time.Second
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "wrong-pass"})
+	for i, want := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
+		rr := httptest.NewRecorder()
+		req := makeLoopbackRequest(http.MethodPost, "/admin/login", bytes.NewReader(loginBody))
+		mux.ServeHTTP(rr, req)
+		if rr.Code != want {
+			t.Fatalf("attempt %d code = %d, want %d (%s)", i+1, rr.Code, want, rr.Body.String())
+		}
+	}
+
+	lockedReqBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "admin123"})
+	lockedReq := makeLoopbackRequest(http.MethodPost, "/admin/login", bytes.NewReader(lockedReqBody))
+	lockedResp := httptest.NewRecorder()
+	mux.ServeHTTP(lockedResp, lockedReq)
+	if lockedResp.Code != http.StatusTooManyRequests {
+		t.Fatalf("locked login should be rate limited, got %d %s", lockedResp.Code, lockedResp.Body.String())
+	}
+
+	auditLog, err := os.ReadFile(h.service.audit.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(auditLog)
+	if !strings.Contains(text, `"action":"admin.login.failed"`) {
+		t.Fatalf("audit log missing failed login entry: %s", text)
+	}
+	if !strings.Contains(text, `"action":"admin.login.rate_limited"`) {
+		t.Fatalf("audit log missing rate limited login entry: %s", text)
 	}
 }

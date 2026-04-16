@@ -17,9 +17,12 @@ admin:
   audit_log_path: "./data/admin_audit.log"
   # 留空表示不限制来源地址；如需控制来源，可填写办公网/堡垒机 CIDR
   allowed_cidrs: []
+  # 部署在反向代理 / LB 后时使用；仅当 RemoteAddr 命中这些 CIDR 时，才信任 X-Forwarded-For / X-Real-IP
+  trusted_proxy_cidrs: []
 
 storage:
   config:
+    # 启动前配置：优先级为 环境变量 > .env > 本文件；运行时数据库配置不会反向覆盖这里
     # file | pgsql
     driver: "file"
     pgsql:
@@ -30,6 +33,7 @@ storage:
       max_idle_conns: 2
       conn_max_lifetime: 30m
   upstream_keys:
+    # 启动前配置：切换 file/pgsql 后需要重启服务
     # file | pgsql
     driver: "file"
     file_path: "./data/upstream_keys.json"

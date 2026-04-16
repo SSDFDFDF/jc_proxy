@@ -3,20 +3,29 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/netip"
+	"strconv"
 	"strings"
+	"time"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
 )
 
 type Handler struct {
-	service  *Service
-	sessions *SessionManager
+	service    *Service
+	sessions   *SessionManager
+	loginGuard *LoginGuard
 }
 
 func NewHandler(service *Service, sessions *SessionManager) *Handler {
-	return &Handler{service: service, sessions: sessions}
+	return &Handler{
+		service:    service,
+		sessions:   sessions,
+		loginGuard: NewLoginGuard(),
+	}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -35,22 +44,27 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/vendors/", h.withAuth(h.handleVendorByPath))
 }
 
-func (h *Handler) allowRequest(w http.ResponseWriter, r *http.Request) bool {
-	enabled, prefixes, err := h.service.AdminAccessPrefixes()
+func (h *Handler) allowRequest(w http.ResponseWriter, r *http.Request) (netip.Addr, bool) {
+	enabled, allowed, trusted, err := h.service.AdminAccess()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return false
+		return netip.Addr{}, false
 	}
-	if !enabled || !config.RemoteAddrAllowed(r.RemoteAddr, prefixes) {
+	if !enabled {
 		http.NotFound(w, r)
-		return false
+		return netip.Addr{}, false
 	}
-	return true
+	addr, err := config.ResolveRequestAddr(r.RemoteAddr, r.Header, trusted)
+	if err != nil || !config.AddrAllowed(addr, allowed) {
+		http.NotFound(w, r)
+		return netip.Addr{}, false
+	}
+	return addr, true
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !h.allowRequest(w, r) {
+		if _, ok := h.allowRequest(w, r); !ok {
 			return
 		}
 		token := extractToken(r)
@@ -69,7 +83,8 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !h.allowRequest(w, r) {
+	clientAddr, ok := h.allowRequest(w, r)
+	if !ok {
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -81,11 +96,32 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	token, exp, err := h.service.Login(req.Username, req.Password)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+	clientKey := clientAddr.String()
+	if wait, blocked := h.loginGuard.Blocked(clientKey); blocked {
+		h.auditLoginEvent(strings.TrimSpace(req.Username), "admin.login.rate_limited", clientAddr, map[string]any{
+			"retry_after_seconds": int(wait.Round(time.Second) / time.Second),
+		})
+		writeError(w, http.StatusTooManyRequests, rateLimitMessage(wait))
 		return
 	}
+	token, exp, err := h.service.Login(req.Username, req.Password)
+	if err != nil {
+		wait := h.loginGuard.Failed(clientKey)
+		action := "admin.login.failed"
+		status := http.StatusUnauthorized
+		message := err.Error()
+		detail := map[string]any{}
+		if wait > 0 {
+			action = "admin.login.rate_limited"
+			status = http.StatusTooManyRequests
+			message = rateLimitMessage(wait)
+			detail["retry_after_seconds"] = int(wait.Round(time.Second) / time.Second)
+		}
+		h.auditLoginEvent(strings.TrimSpace(req.Username), action, clientAddr, detail)
+		writeError(w, status, message)
+		return
+	}
+	h.loginGuard.Succeeded(clientKey)
 	writeJSON(w, http.StatusOK, LoginResponse{Token: token, ExpiresAt: exp, Username: req.Username})
 }
 
@@ -150,7 +186,15 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.service.Stats())
+	page, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page")))
+	pageSize, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page_size")))
+	writeJSON(w, http.StatusOK, h.service.Stats(RuntimeStatsQuery{
+		Vendor:   strings.TrimSpace(r.URL.Query().Get("vendor")),
+		Filter:   strings.TrimSpace(r.URL.Query().Get("filter")),
+		Q:        strings.TrimSpace(r.URL.Query().Get("q")),
+		Page:     page,
+		PageSize: pageSize,
+	}))
 }
 
 func (h *Handler) handleUpstreamKeyIndex(w http.ResponseWriter, r *http.Request) {
@@ -437,4 +481,29 @@ func decodeKeysPayload(r *http.Request) ([]string, error) {
 		return []string{batch.Key}, nil
 	}
 	return nil, errors.New("key or keys is required")
+}
+
+func (h *Handler) auditLoginEvent(actor, action string, clientAddr netip.Addr, detail map[string]any) {
+	if h == nil || h.service == nil || h.service.audit == nil {
+		return
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	if clientAddr.IsValid() {
+		detail["client_ip"] = clientAddr.String()
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "anonymous"
+	}
+	h.service.audit.Log(actor, action, detail)
+}
+
+func rateLimitMessage(wait time.Duration) string {
+	seconds := int(wait.Round(time.Second) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return fmt.Sprintf("too many login attempts, retry in %ds", seconds)
 }

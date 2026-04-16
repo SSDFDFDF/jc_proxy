@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +66,77 @@ func TestLoadBytesAppliesCriticalEnvOverrides(t *testing.T) {
 	}
 	if cfg.Storage.UpstreamKeys.PGSQL.MaxOpenConns != 9 {
 		t.Fatalf("Storage.UpstreamKeys.PGSQL.MaxOpenConns = %d, want 9", cfg.Storage.UpstreamKeys.PGSQL.MaxOpenConns)
+	}
+}
+
+func TestLoadBootstrapBytesKeepsAdminCredentialsFromConfigOverEnv(t *testing.T) {
+	t.Setenv("JC_PROXY_ADMIN_USERNAME", "env-admin")
+	t.Setenv("JC_PROXY_ADMIN_PASSWORD", "env-password")
+	t.Setenv("JC_PROXY_ADMIN_PASSWORD_HASH", "pbkdf2$120000$envsalt$envhash")
+
+	cfg, err := LoadBootstrapBytes([]byte(`
+admin:
+  enabled: true
+  username: db-admin
+  password: ""
+  password_hash: "pbkdf2$120000$dbsalt$dbhash"
+
+storage:
+  config:
+    driver: "pgsql"
+    pgsql:
+      dsn: "postgres://db-user:db-pass@127.0.0.1:5432/jc_proxy?sslmode=disable"
+  upstream_keys:
+    driver: "pgsql"
+    pgsql:
+      dsn: "postgres://db-user:db-pass@127.0.0.1:5432/jc_proxy?sslmode=disable"
+`))
+	if err != nil {
+		t.Fatalf("LoadBootstrapBytes() error = %v", err)
+	}
+
+	if cfg.Admin.Username != "db-admin" {
+		t.Fatalf("Admin.Username = %q, want db-admin", cfg.Admin.Username)
+	}
+	if cfg.Admin.Password != "" {
+		t.Fatalf("Admin.Password = %q, want empty", cfg.Admin.Password)
+	}
+	if cfg.Admin.PasswordHash != "pbkdf2$120000$dbsalt$dbhash" {
+		t.Fatalf("Admin.PasswordHash = %q, want db hash", cfg.Admin.PasswordHash)
+	}
+}
+
+func TestLoadBootstrapBytesNoEnvDoesNotApplyAdminCredentialOverrides(t *testing.T) {
+	t.Setenv("JC_PROXY_ADMIN_USERNAME", "env-admin")
+	t.Setenv("JC_PROXY_ADMIN_PASSWORD", "env-password")
+	t.Setenv("JC_PROXY_ADMIN_PASSWORD_HASH", "pbkdf2$120000$envsalt$envhash")
+
+	cfg, err := LoadBootstrapBytesNoEnv([]byte(`
+admin:
+  enabled: true
+
+storage:
+  config:
+    driver: "pgsql"
+    pgsql:
+      dsn: "postgres://db-user:db-pass@127.0.0.1:5432/jc_proxy?sslmode=disable"
+  upstream_keys:
+    driver: "pgsql"
+    pgsql:
+      dsn: "postgres://db-user:db-pass@127.0.0.1:5432/jc_proxy?sslmode=disable"
+`))
+	if err != nil {
+		t.Fatalf("LoadBootstrapBytesNoEnv() error = %v", err)
+	}
+
+	if cfg.Admin.Username != "admin" {
+		t.Fatalf("Admin.Username = %q, want default admin", cfg.Admin.Username)
+	}
+	if cfg.Admin.Password != "" {
+		t.Fatalf("Admin.Password = %q, want empty", cfg.Admin.Password)
+	}
+	if cfg.Admin.PasswordHash != "" {
+		t.Fatalf("Admin.PasswordHash = %q, want empty", cfg.Admin.PasswordHash)
 	}
 }
 
@@ -241,6 +314,7 @@ vendors:
 
 func TestLoadBytesAppliesAdminCIDROverride(t *testing.T) {
 	t.Setenv("JC_PROXY_ADMIN_ALLOWED_CIDRS", "10.0.0.0/8,192.168.0.0/16")
+	t.Setenv("JC_PROXY_ADMIN_TRUSTED_PROXY_CIDRS", "172.16.0.0/12")
 
 	cfg, err := LoadBytes([]byte(testConfigYAML))
 	if err != nil {
@@ -255,6 +329,64 @@ func TestLoadBytesAppliesAdminCIDROverride(t *testing.T) {
 		if cfg.Admin.AllowedCIDRs[i] != item {
 			t.Fatalf("Admin.AllowedCIDRs[%d] = %q, want %q", i, cfg.Admin.AllowedCIDRs[i], item)
 		}
+	}
+	if len(cfg.Admin.TrustedProxyCIDRs) != 1 || cfg.Admin.TrustedProxyCIDRs[0] != "172.16.0.0/12" {
+		t.Fatalf("Admin.TrustedProxyCIDRs = %#v, want [172.16.0.0/12]", cfg.Admin.TrustedProxyCIDRs)
+	}
+}
+
+func TestResolveRequestAddrUsesTrustedProxyHeaders(t *testing.T) {
+	trusted, err := ParseAdminTrustedProxyCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseAdminTrustedProxyCIDRs() error = %v", err)
+	}
+	headers := http.Header{}
+	headers.Set("X-Forwarded-For", "203.0.113.8, 10.2.3.4")
+
+	addr, err := ResolveRequestAddr("10.1.1.1:443", headers, trusted)
+	if err != nil {
+		t.Fatalf("ResolveRequestAddr() error = %v", err)
+	}
+	if addr != netip.MustParseAddr("203.0.113.8") {
+		t.Fatalf("ResolveRequestAddr() = %s, want 203.0.113.8", addr)
+	}
+}
+
+func TestResolveRequestAddrIgnoresForwardedHeadersFromUntrustedPeer(t *testing.T) {
+	trusted, err := ParseAdminTrustedProxyCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseAdminTrustedProxyCIDRs() error = %v", err)
+	}
+	headers := http.Header{}
+	headers.Set("X-Forwarded-For", "203.0.113.8")
+
+	addr, err := ResolveRequestAddr("198.51.100.9:443", headers, trusted)
+	if err != nil {
+		t.Fatalf("ResolveRequestAddr() error = %v", err)
+	}
+	if addr != netip.MustParseAddr("198.51.100.9") {
+		t.Fatalf("ResolveRequestAddr() = %s, want 198.51.100.9", addr)
+	}
+}
+
+func TestParseAdminCredentialLayerYAML(t *testing.T) {
+	layer, err := ParseAdminCredentialLayerYAML([]byte(`
+admin:
+  username: db-admin
+  password_hash: db-hash
+`))
+	if err != nil {
+		t.Fatalf("ParseAdminCredentialLayerYAML() error = %v", err)
+	}
+
+	if layer.Username == nil || *layer.Username != "db-admin" {
+		t.Fatalf("Username = %#v, want db-admin", layer.Username)
+	}
+	if layer.Password != nil {
+		t.Fatalf("Password = %#v, want nil", layer.Password)
+	}
+	if layer.PasswordHash == nil || *layer.PasswordHash != "db-hash" {
+		t.Fatalf("PasswordHash = %#v, want db-hash", layer.PasswordHash)
 	}
 }
 

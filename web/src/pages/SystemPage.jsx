@@ -47,6 +47,14 @@ export function SystemPage({ busy, systemForm, maskedConfig, onSystemFormChange,
               onChange={(e) => onSystemFormChange((prev) => ({ ...prev, adminAllowedCIDRsText: e.target.value }))}
             />
           </label>
+          <label className="field-wrap xl:col-span-2">
+            <span className="field-label">受信代理 CIDR</span>
+            <textarea
+              className="textarea-base h-24"
+              value={systemForm.adminTrustedProxyCIDRsText}
+              onChange={(e) => onSystemFormChange((prev) => ({ ...prev, adminTrustedProxyCIDRsText: e.target.value }))}
+            />
+          </label>
           <label className="field-wrap">
             <span className="field-label">启用后台</span>
             <select
@@ -60,7 +68,7 @@ export function SystemPage({ busy, systemForm, maskedConfig, onSystemFormChange,
           </label>
         </div>
 
-        <p className="mt-3 text-xs text-slate-500">每行一个 CIDR。留空表示不限制来源地址。</p>
+        <p className="mt-3 text-xs text-slate-500">每行一个 CIDR。若服务部署在反向代理后，请把 LB / 网关网段填到“受信代理 CIDR”，系统才会按 X-Forwarded-For 识别真实来源。</p>
 
         <button className={`mt-4 ${buttonClass('primary')}`} disabled={busy} onClick={onSave}>
           保存系统配置

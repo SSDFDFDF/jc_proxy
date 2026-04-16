@@ -75,3 +75,20 @@ type UpstreamKeysResponse struct {
 	Vendors []UpstreamKeyVendorSummary             `json:"vendors"`
 	Items   map[string][]UpstreamKeyRecordResponse `json:"items"`
 }
+
+type RuntimeStatsQuery struct {
+	Vendor   string `json:"vendor,omitempty"`
+	Filter   string `json:"filter,omitempty"`
+	Q        string `json:"q,omitempty"`
+	Page     int    `json:"page,omitempty"`
+	PageSize int    `json:"page_size,omitempty"`
+}
+
+type RuntimeStatsMeta struct {
+	Vendor   string `json:"vendor,omitempty"`
+	Filter   string `json:"filter,omitempty"`
+	Q        string `json:"q,omitempty"`
+	Page     int    `json:"page"`
+	PageSize int    `json:"page_size"`
+	Total    int    `json:"total"`
+}

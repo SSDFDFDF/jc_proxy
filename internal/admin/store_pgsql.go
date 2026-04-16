@@ -46,7 +46,7 @@ func newPGConfigBackend(cfg config.ConfigStorePGSQLConfig) (*PGConfigBackend, er
 	return backend, nil
 }
 
-func (b *PGConfigBackend) Load() (*config.Config, error) {
+func (b *PGConfigBackend) Load() (*loadedConfig, error) {
 	query := fmt.Sprintf("SELECT payload FROM %s WHERE config_key = $1", b.tableSQL)
 	var payload string
 	err := b.db.QueryRow(query, b.recordKey).Scan(&payload)
@@ -56,11 +56,15 @@ func (b *PGConfigBackend) Load() (*config.Config, error) {
 		}
 		return nil, fmt.Errorf("load config from pgsql: %w", err)
 	}
-	cfg, err := config.LoadBootstrapBytes([]byte(payload))
+	adminLayer, err := config.ParseAdminCredentialLayerYAML([]byte(payload))
+	if err != nil {
+		return nil, fmt.Errorf("parse admin credential layer from pgsql: %w", err)
+	}
+	cfg, err := config.LoadBootstrapBytesNoEnv([]byte(payload))
 	if err != nil {
 		return nil, fmt.Errorf("parse config from pgsql: %w", err)
 	}
-	return cfg, nil
+	return &loadedConfig{cfg: cfg, adminLayer: adminLayer}, nil
 }
 
 func (b *PGConfigBackend) Save(cfg *config.Config) error {

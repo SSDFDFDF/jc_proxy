@@ -72,6 +72,37 @@ export function parseKeysText(text) {
   return normalizeKeys(String(text || '').split('\n').map((line) => line.trim()))
 }
 
+function randomAlphaNum(length = 24) {
+  const size = Math.max(1, Number(length) || 24)
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(size)
+
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes)
+  } else {
+    for (let idx = 0; idx < size; idx += 1) {
+      bytes[idx] = Math.floor(Math.random() * 256)
+    }
+  }
+
+  let out = ''
+  for (let idx = 0; idx < size; idx += 1) {
+    out += alphabet[bytes[idx] % alphabet.length]
+  }
+  return out
+}
+
+export function generateClientKey() {
+  return `sk-jcp-${randomAlphaNum(24)}`
+}
+
+export function buildVendorRequestEndpoint(vendorName) {
+  const vendor = String(vendorName || '').trim()
+  if (!vendor) return ''
+  if (typeof window === 'undefined') return `/${vendor}`
+  return `${window.location.origin}/${vendor}`
+}
+
 export function emptyVendorConfig() {
   return {
     provider: 'generic',

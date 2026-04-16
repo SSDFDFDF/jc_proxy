@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -17,6 +18,12 @@ import (
 )
 
 type envLookup func(string) (string, bool)
+
+type AdminCredentialLayer struct {
+	Username     *string
+	Password     *string
+	PasswordHash *string
+}
 
 type Config struct {
 	Server  ServerConfig            `yaml:"server" json:"server"`
@@ -34,13 +41,14 @@ type ServerConfig struct {
 }
 
 type AdminConfig struct {
-	Enabled      bool          `yaml:"enabled" json:"enabled"`
-	Username     string        `yaml:"username" json:"username"`
-	Password     string        `yaml:"password" json:"password"`
-	PasswordHash string        `yaml:"password_hash" json:"password_hash"`
-	SessionTTL   time.Duration `yaml:"session_ttl" json:"session_ttl"`
-	AuditLogPath string        `yaml:"audit_log_path" json:"audit_log_path"`
-	AllowedCIDRs []string      `yaml:"allowed_cidrs" json:"allowed_cidrs"`
+	Enabled           bool          `yaml:"enabled" json:"enabled"`
+	Username          string        `yaml:"username" json:"username"`
+	Password          string        `yaml:"password" json:"password"`
+	PasswordHash      string        `yaml:"password_hash" json:"password_hash"`
+	SessionTTL        time.Duration `yaml:"session_ttl" json:"session_ttl"`
+	AuditLogPath      string        `yaml:"audit_log_path" json:"audit_log_path"`
+	AllowedCIDRs      []string      `yaml:"allowed_cidrs" json:"allowed_cidrs"`
+	TrustedProxyCIDRs []string      `yaml:"trusted_proxy_cidrs" json:"trusted_proxy_cidrs"`
 }
 
 type StorageConfig struct {
@@ -178,14 +186,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return loadBytes(b, false)
+	return loadBytesWithEnv(b, false)
 }
 
 func LoadBootstrap(path string) (*Config, error) {
 	if err := loadDotEnv(path); err != nil {
 		return nil, err
 	}
-	cfg, err := loadBytes(nil, true)
+	cfg, err := loadBytesWithEnv(nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -196,21 +204,50 @@ func LoadBootstrap(path string) (*Config, error) {
 }
 
 func LoadBytes(b []byte) (*Config, error) {
-	return loadBytes(b, false)
+	return loadBytesWithEnv(b, false)
 }
 
 func LoadBootstrapBytes(b []byte) (*Config, error) {
-	return loadBytes(b, true)
+	return loadBytesWithEnv(b, true)
 }
 
-func loadBytes(b []byte, bootstrap bool) (*Config, error) {
+func LoadBootstrapBytesNoEnv(b []byte) (*Config, error) {
+	return loadBytes(b, true, nil)
+}
+
+func ParseAdminCredentialLayerYAML(b []byte) (AdminCredentialLayer, error) {
+	var raw struct {
+		Admin struct {
+			Username     *string `yaml:"username"`
+			Password     *string `yaml:"password"`
+			PasswordHash *string `yaml:"password_hash"`
+		} `yaml:"admin"`
+	}
+	if len(b) == 0 {
+		return AdminCredentialLayer{}, nil
+	}
+	if err := yaml.Unmarshal(b, &raw); err != nil {
+		return AdminCredentialLayer{}, fmt.Errorf("parse admin credential layer yaml: %w", err)
+	}
+	return AdminCredentialLayer{
+		Username:     raw.Admin.Username,
+		Password:     raw.Admin.Password,
+		PasswordHash: raw.Admin.PasswordHash,
+	}, nil
+}
+
+func loadBytesWithEnv(b []byte, bootstrap bool) (*Config, error) {
+	return loadBytes(b, bootstrap, os.LookupEnv)
+}
+
+func loadBytes(b []byte, bootstrap bool, lookup envLookup) (*Config, error) {
 	var cfg Config
 	if len(b) > 0 {
 		if err := yaml.Unmarshal(b, &cfg); err != nil {
 			return nil, fmt.Errorf("parse config yaml: %w", err)
 		}
 	}
-	if err := cfg.applyCriticalEnvOverrides(os.LookupEnv); err != nil {
+	if err := cfg.applyCriticalEnvOverrides(lookup); err != nil {
 		return nil, err
 	}
 	if bootstrap {
@@ -257,18 +294,16 @@ func (c *Config) applyCriticalEnvOverrides(lookup envLookup) error {
 	} else if ok {
 		c.Admin.Enabled = enabled
 	}
-	if username, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_USERNAME"); ok {
+	if username, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_USERNAME"); ok && strings.TrimSpace(c.Admin.Username) == "" {
 		c.Admin.Username = username
 	}
-	if password, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_PASSWORD"); ok {
-		c.Admin.Password = password
-		if password != "" {
+	if !c.Admin.HasCredentials() {
+		if password, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_PASSWORD"); ok {
+			c.Admin.Password = password
 			c.Admin.PasswordHash = ""
 		}
-	}
-	if passwordHash, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_PASSWORD_HASH"); ok {
-		c.Admin.PasswordHash = passwordHash
-		if passwordHash != "" {
+		if passwordHash, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_PASSWORD_HASH"); ok {
+			c.Admin.PasswordHash = passwordHash
 			c.Admin.Password = ""
 		}
 	}
@@ -282,6 +317,9 @@ func (c *Config) applyCriticalEnvOverrides(lookup envLookup) error {
 	}
 	if cidrs, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_ALLOWED_CIDRS"); ok {
 		c.Admin.AllowedCIDRs = splitEnvList(cidrs)
+	}
+	if cidrs, ok := lookupEnvValue(lookup, "JC_PROXY_ADMIN_TRUSTED_PROXY_CIDRS"); ok {
+		c.Admin.TrustedProxyCIDRs = splitEnvList(cidrs)
 	}
 
 	if driver, ok := lookupEnvValue(lookup, "JC_PROXY_STORAGE_MODE"); ok {
@@ -624,6 +662,9 @@ func (c *Config) validate(requireVendors bool) error {
 	if _, err := ParseAdminAllowedCIDRs(c.Admin.AllowedCIDRs); err != nil {
 		return fmt.Errorf("admin.allowed_cidrs invalid: %w", err)
 	}
+	if _, err := ParseAdminTrustedProxyCIDRs(c.Admin.TrustedProxyCIDRs); err != nil {
+		return fmt.Errorf("admin.trusted_proxy_cidrs invalid: %w", err)
+	}
 
 	switch c.Storage.Config.Driver {
 	case "file", "pgsql":
@@ -856,6 +897,14 @@ func (c *Config) NeedsBootstrapAdminPassword() bool {
 }
 
 func ParseAdminAllowedCIDRs(values []string) ([]netip.Prefix, error) {
+	return parseCIDRs(values)
+}
+
+func ParseAdminTrustedProxyCIDRs(values []string) ([]netip.Prefix, error) {
+	return parseCIDRs(values)
+}
+
+func parseCIDRs(values []string) ([]netip.Prefix, error) {
 	prefixes := make([]netip.Prefix, 0, len(values))
 	seen := make(map[netip.Prefix]struct{}, len(values))
 	for _, raw := range values {
@@ -878,12 +927,16 @@ func ParseAdminAllowedCIDRs(values []string) ([]netip.Prefix, error) {
 }
 
 func RemoteAddrAllowed(remoteAddr string, prefixes []netip.Prefix) bool {
-	if len(prefixes) == 0 {
-		return true
-	}
 	addr, err := ParseRemoteAddr(remoteAddr)
 	if err != nil {
 		return false
+	}
+	return AddrAllowed(addr, prefixes)
+}
+
+func AddrAllowed(addr netip.Addr, prefixes []netip.Prefix) bool {
+	if len(prefixes) == 0 {
+		return true
 	}
 	for _, prefix := range prefixes {
 		if prefix.Contains(addr) {
@@ -891,6 +944,60 @@ func RemoteAddrAllowed(remoteAddr string, prefixes []netip.Prefix) bool {
 		}
 	}
 	return false
+}
+
+func ResolveRequestAddr(remoteAddr string, headers http.Header, trustedProxies []netip.Prefix) (netip.Addr, error) {
+	peer, err := ParseRemoteAddr(remoteAddr)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if len(trustedProxies) == 0 || !AddrAllowed(peer, trustedProxies) {
+		return peer, nil
+	}
+
+	forwarded := parseForwardedAddrs(headers)
+	if len(forwarded) == 0 {
+		return peer, nil
+	}
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		if !AddrAllowed(forwarded[i], trustedProxies) {
+			return forwarded[i], nil
+		}
+	}
+	return forwarded[0], nil
+}
+
+func RequestAddrAllowed(remoteAddr string, headers http.Header, allowed, trustedProxies []netip.Prefix) bool {
+	addr, err := ResolveRequestAddr(remoteAddr, headers, trustedProxies)
+	if err != nil {
+		return false
+	}
+	return AddrAllowed(addr, allowed)
+}
+
+func parseForwardedAddrs(headers http.Header) []netip.Addr {
+	if headers == nil {
+		return nil
+	}
+
+	values := headers.Values("X-Forwarded-For")
+	if len(values) == 0 {
+		if raw := strings.TrimSpace(headers.Get("X-Real-IP")); raw != "" {
+			values = []string{raw}
+		}
+	}
+
+	out := make([]netip.Addr, 0)
+	for _, raw := range values {
+		for _, part := range strings.Split(raw, ",") {
+			addr, err := ParseRemoteAddr(strings.TrimSpace(part))
+			if err != nil {
+				continue
+			}
+			out = append(out, addr)
+		}
+	}
+	return out
 }
 
 func ParseRemoteAddr(remoteAddr string) (netip.Addr, error) {
