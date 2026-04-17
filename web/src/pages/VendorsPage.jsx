@@ -1,5 +1,6 @@
-import { buildVendorRequestEndpoint, buttonClass, generateClientKey, normalizeKeys, panelClass } from '../app/utils'
-import { KeyTableEditor } from '../components/KeyTableEditor'
+import { useEffect, useState } from 'react'
+
+import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass } from '../app/utils'
 import { MapRowsEditor } from '../components/MapRowsEditor'
 
 export function VendorsPage({
@@ -8,7 +9,10 @@ export function VendorsPage({
   selectedVendor,
   vendorDraft,
   vendorBackoffDuration,
-  errorPolicyDurations,
+  invalidKeyStatusCodesText,
+  invalidKeyKeywordsText,
+  responseRuleRows,
+  failoverResponseStatusCodesText,
   allowlistText,
   injectRows,
   rewriteRows,
@@ -22,32 +26,21 @@ export function VendorsPage({
   onDeleteVendor,
   onMutateVendorDraft,
   onVendorBackoffDurationChange,
-  onErrorPolicyDurationsChange,
+  onInvalidKeyStatusCodesTextChange,
+  onInvalidKeyKeywordsTextChange,
+  setResponseRuleRows,
+  onFailoverResponseStatusCodesTextChange,
   onAllowlistTextChange,
   setInjectRows,
   setRewriteRows
 }) {
-  const cooldownFields = [
-    { key: 'requestError', configKey: 'request_error', label: '请求错误' },
-    { key: 'unauthorized', configKey: 'unauthorized', label: '401 未授权' },
-    { key: 'paymentRequired', configKey: 'payment_required', label: '402 计费/额度' },
-    { key: 'forbidden', configKey: 'forbidden', label: '403 禁止访问' },
-    { key: 'rateLimit', configKey: 'rate_limit', label: '429 限流' },
-    { key: 'serverError', configKey: 'server_error', label: '5xx/529 服务异常' },
-    { key: 'openAISlowDown', configKey: 'openai_slow_down', label: 'OpenAI slow down' }
-  ]
-
-  const failoverFields = [
-    { key: 'request_error', label: '请求错误切换' },
-    { key: 'unauthorized', label: '401 切换' },
-    { key: 'payment_required', label: '402 切换' },
-    { key: 'forbidden', label: '403 切换' },
-    { key: 'rate_limit', label: '429 切换' },
-    { key: 'server_error', label: '5xx/529 切换' }
-  ]
-
   const requestEndpoint = buildVendorRequestEndpoint(selectedVendor)
   const clientKeys = normalizeKeys(vendorDraft?.client_auth?.keys || [])
+  const [clientKeyInputText, setClientKeyInputText] = useState('')
+
+  useEffect(() => {
+    setClientKeyInputText('')
+  }, [selectedVendor])
 
   const updateClientKeys = (keys) => {
     const nextKeys = normalizeKeys(keys)
@@ -77,6 +70,45 @@ export function VendorsPage({
     } catch (_) {
       // ignore clipboard failures in unsupported contexts
     }
+  }
+
+  const copyClientKey = async (key) => {
+    if (!key || typeof navigator?.clipboard?.writeText !== 'function') return
+    try {
+      await navigator.clipboard.writeText(key)
+    } catch (_) {
+      // ignore clipboard failures in unsupported contexts
+    }
+  }
+
+  const removeClientKey = (targetKey) => {
+    updateClientKeys(clientKeys.filter((key) => key !== targetKey))
+  }
+
+  const importClientKeys = () => {
+    const incoming = normalizeKeys(String(clientKeyInputText || '').split('\n').map((line) => line.trim()))
+    if (!incoming.length) return
+    updateClientKeys([...(clientKeys || []), ...incoming])
+    setClientKeyInputText('')
+  }
+
+  const updateResponseRuleRow = (index, patch) => {
+    setResponseRuleRows((prev) => {
+      const next = clone(prev || [])
+      next[index] = { ...next[index], ...patch }
+      return next
+    })
+  }
+
+  const addResponseRuleRow = () => {
+    setResponseRuleRows((prev) => [...(prev || []), { statusCodesText: '', keywordsText: '', durationText: '', retryAfter: '' }])
+  }
+
+  const removeResponseRuleRow = (index) => {
+    setResponseRuleRows((prev) => {
+      const next = (prev || []).filter((_, idx) => idx !== index)
+      return next.length ? next : [{ statusCodesText: '', keywordsText: '', durationText: '', retryAfter: '' }]
+    })
   }
 
   return (
@@ -147,6 +179,96 @@ export function VendorsPage({
                 <button className={buttonClass('danger')} disabled={busy} onClick={onDeleteVendor}>删除</button>
               </div>
             </div>
+
+            <section className="space-y-4 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="section-title text-sm">客户端密钥</h3>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">密钥管理前置到这里，支持直接复制、删除、批量导入和自动生成。</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button className={buttonClass('ghost')} type="button" onClick={handleGenerateClientKey}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.49 8.49l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.49-8.49l2.83-2.83" />
+                    </svg>
+                    自动生成
+                  </button>
+                  <button className={buttonClass('primary')} type="button" disabled={!clientKeyInputText.trim()} onClick={importClientKeys}>
+                    导入密钥
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                <label className="field-wrap">
+                  <span className="field-label">启用客户端鉴权</span>
+                  <select
+                    className="select-base"
+                    value={vendorDraft.client_auth?.enabled ? 'true' : 'false'}
+                    onChange={(e) => onMutateVendorDraft((draft) => { draft.client_auth.enabled = e.target.value === 'true' })}
+                  >
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">客户端请求端点</div>
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">客户端可通过 `Authorization: Bearer sk-jcp-...` 或 `X-API-Key` 调用。</div>
+                    </div>
+                    <button className="text-xs font-medium text-[var(--accent)] hover:text-blue-400 transition-colors" type="button" onClick={copyRequestEndpoint}>
+                      复制
+                    </button>
+                  </div>
+                  <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)] break-all">
+                    {requestEndpoint || '--'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-[var(--text-primary)]">现有密钥</div>
+                    <div className="text-xs text-[var(--text-muted)]">共 {clientKeys.length} 条</div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {!clientKeys.length && (
+                      <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+                        暂无客户端密钥，可以先自动生成一条，或在右侧批量导入。
+                      </div>
+                    )}
+
+                    {clientKeys.map((key, index) => (
+                      <div key={key} className="grid gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 md:grid-cols-[40px_minmax(0,1fr)_auto_auto] md:items-center">
+                        <div className="text-xs text-[var(--text-faint)]">{index + 1}</div>
+                        <div className="font-mono text-xs text-[var(--text-primary)] break-all">{key}</div>
+                        <button className={buttonClass('ghost')} type="button" onClick={() => copyClientKey(key)}>
+                          复制
+                        </button>
+                        <button className={buttonClass('danger')} type="button" onClick={() => removeClientKey(key)}>
+                          删除
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <aside className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">批量导入</div>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">一行一个客户端密钥，导入时会自动去重。</p>
+                  <textarea
+                    className="textarea-base mt-3 h-48"
+                    placeholder={'sk-jcp-xxxxxxxxxxxxxxxxxxxxxxxx\nsk-jcp-yyyyyyyyyyyyyyyyyyyyyyyy'}
+                    value={clientKeyInputText}
+                    onChange={(e) => setClientKeyInputText(e.target.value)}
+                  />
+                </aside>
+              </div>
+            </section>
 
             {/* Basic Config */}
             <section className="grid gap-4 lg:grid-cols-3">
@@ -219,8 +341,8 @@ export function VendorsPage({
               </label>
             </section>
 
-            {/* Backoff & Client Auth */}
-            <section className="grid gap-4 xl:grid-cols-3">
+            {/* Backoff */}
+            <section className="grid gap-4 xl:grid-cols-2">
               <label className="field-wrap">
                 <span className="field-label">退避阈值</span>
                 <input
@@ -234,17 +356,6 @@ export function VendorsPage({
               <label className="field-wrap">
                 <span className="field-label">退避时长</span>
                 <input className="input-base" value={vendorBackoffDuration} onChange={(e) => onVendorBackoffDurationChange(e.target.value)} />
-              </label>
-              <label className="field-wrap">
-                <span className="field-label">启用客户端鉴权</span>
-                <select
-                  className="select-base"
-                  value={vendorDraft.client_auth?.enabled ? 'true' : 'false'}
-                  onChange={(e) => onMutateVendorDraft((draft) => { draft.client_auth.enabled = e.target.value === 'true' })}
-                >
-                  <option value="false">false</option>
-                  <option value="true">true</option>
-                </select>
               </label>
             </section>
 
@@ -265,72 +376,117 @@ export function VendorsPage({
                     <option value="false">false</option>
                   </select>
                 </label>
-                <label className="field-wrap">
-                  <span className="field-label">402 自动禁用</span>
-                  <select
-                    className="select-base"
-                    value={vendorDraft.error_policy?.auto_disable?.payment_required ? 'true' : 'false'}
-                    onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.auto_disable.payment_required = e.target.value === 'true' })}
-                  >
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                  </select>
+                <label className="field-wrap xl:col-span-2">
+                  <span className="field-label">无效密钥触发响应码</span>
+                  <textarea
+                    className="textarea-base h-24"
+                    placeholder={'一行一个，或用逗号分隔\n例如：401\n403'}
+                    value={invalidKeyStatusCodesText}
+                    onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
+                  />
                 </label>
-                <label className="field-wrap">
-                  <span className="field-label">额度耗尽自动禁用</span>
-                  <select
-                    className="select-base"
-                    value={vendorDraft.error_policy?.auto_disable?.quota_exhausted ? 'true' : 'false'}
-                    onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.auto_disable.quota_exhausted = e.target.value === 'true' })}
-                  >
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                  </select>
+                <label className="field-wrap xl:col-span-3">
+                  <span className="field-label">无效密钥关键字</span>
+                  <textarea
+                    className="textarea-base h-24"
+                    placeholder={'一行一个关键字\n例如：incorrect_api_key\nkey revoked'}
+                    value={invalidKeyKeywordsText}
+                    onChange={(e) => onInvalidKeyKeywordsTextChange(e.target.value)}
+                  />
                 </label>
               </section>
 
-              {/* Cooldown Fields */}
-              <section className="grid gap-3 xl:grid-cols-2">
-                {cooldownFields.map((field) => (
-                  <div key={field.key} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3 md:grid-cols-[160px_1fr]">
-                    <label className="field-wrap">
-                      <span className="field-label">{field.label}</span>
-                      <select
-                        className="select-base"
-                        value={vendorDraft.error_policy?.cooldown?.[field.configKey]?.enabled ? 'true' : 'false'}
-                        onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.cooldown[field.configKey].enabled = e.target.value === 'true' })}
-                      >
-                        <option value="true">true</option>
-                        <option value="false">false</option>
-                      </select>
-                    </label>
-                    <label className="field-wrap">
-                      <span className="field-label">{field.label}退避时长</span>
-                      <input
-                        className="input-base"
-                        value={errorPolicyDurations?.[field.key] || '0s'}
-                        onChange={(e) => onErrorPolicyDurationsChange((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                      />
-                    </label>
+              <section className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="section-title text-sm">退避规则</h4>
+                    <p className="text-xs text-[var(--text-muted)]">按顺序匹配响应码 / 关键字，并设置退避时长与 Retry-After 策略。</p>
                   </div>
-                ))}
+                  <button className={buttonClass('ghost')} onClick={addResponseRuleRow}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    新增规则
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {responseRuleRows.map((row, index) => (
+                    <div key={index} className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
+                      <div className="mb-3 text-xs text-[var(--text-muted)]">规则 {index + 1}</div>
+                      <div className="grid gap-3 xl:grid-cols-2">
+                        <label className="field-wrap">
+                          <span className="field-label">响应码</span>
+                          <textarea
+                            className="textarea-base h-20"
+                            placeholder={'一行一个，或用逗号分隔\n例如：429\n500,502,503'}
+                            value={row.statusCodesText}
+                            onChange={(e) => updateResponseRuleRow(index, { statusCodesText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">关键字</span>
+                          <textarea
+                            className="textarea-base h-20"
+                            placeholder={'可留空，一行一个\n例如：slow down'}
+                            value={row.keywordsText}
+                            onChange={(e) => updateResponseRuleRow(index, { keywordsText: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-3 grid gap-3 xl:grid-cols-[1fr_180px_auto] xl:items-end">
+                        <label className="field-wrap">
+                          <span className="field-label">退避时长</span>
+                          <input
+                            className="input-base"
+                            placeholder="例如 5s / 30m / 3h"
+                            value={row.durationText}
+                            onChange={(e) => updateResponseRuleRow(index, { durationText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">Retry-After</span>
+                          <select
+                            className="select-base"
+                            value={row.retryAfter || ''}
+                            onChange={(e) => updateResponseRuleRow(index, { retryAfter: e.target.value })}
+                          >
+                            <option value="">默认</option>
+                            <option value="ignore">ignore</option>
+                            <option value="override">override</option>
+                            <option value="max">max</option>
+                          </select>
+                        </label>
+                        <button className={buttonClass('danger')} onClick={() => removeResponseRuleRow(index)}>
+                          删除规则
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </section>
 
-              {/* Failover Fields */}
               <section className="grid gap-4 xl:grid-cols-3">
-                {failoverFields.map((field) => (
-                  <label key={field.key} className="field-wrap">
-                    <span className="field-label">{field.label}</span>
-                    <select
-                      className="select-base"
-                      value={vendorDraft.error_policy?.failover?.[field.key] ? 'true' : 'false'}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.failover[field.key] = e.target.value === 'true' })}
-                    >
-                      <option value="true">true</option>
-                      <option value="false">false</option>
-                    </select>
-                  </label>
-                ))}
+                <label className="field-wrap">
+                  <span className="field-label">请求错误切换</span>
+                  <select
+                    className="select-base"
+                    value={vendorDraft.error_policy?.failover?.request_error ? 'true' : 'false'}
+                    onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.failover.request_error = e.target.value === 'true' })}
+                  >
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                </label>
+                <label className="field-wrap xl:col-span-2">
+                  <span className="field-label">响应码切换</span>
+                  <textarea
+                    className="textarea-base h-24"
+                    placeholder={'一行一个，或用逗号分隔\n例如：401\n429\n500,502,503'}
+                    value={failoverResponseStatusCodesText}
+                    onChange={(e) => onFailoverResponseStatusCodesTextChange(e.target.value)}
+                  />
+                </label>
               </section>
             </div>
 
@@ -387,55 +543,6 @@ export function VendorsPage({
               keyPlaceholder="/from/path 或 /from/*"
               valuePlaceholder="/to/path 或 /to/*"
             />
-
-            {/* Client Keys Section */}
-            <hr className="section-divider" />
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="section-title text-sm">客户端密钥</h3>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">支持手动导入或自动生成 sk-jcp-... 格式密钥。</p>
-                </div>
-                <button className={buttonClass('ghost')} type="button" onClick={handleGenerateClientKey}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.49 8.49l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.49-8.49l2.83-2.83" />
-                  </svg>
-                  自动生成
-                </button>
-              </div>
-
-              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-                <KeyTableEditor
-                  title="客户端密钥"
-                  keys={clientKeys}
-                  onChange={updateClientKeys}
-                  showSecrets
-                  scopeKey={selectedVendor}
-                  toneClass="text-[var(--text-primary)]"
-                />
-
-                <aside className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <h4 className="text-sm font-medium text-[var(--text-primary)]">客户端请求端点</h4>
-                    <button className="text-xs font-medium text-[var(--accent)] hover:text-blue-400 transition-colors" type="button" onClick={copyRequestEndpoint}>
-                      复制
-                    </button>
-                  </div>
-
-                  <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)] break-all">
-                    {requestEndpoint || '--'}
-                  </div>
-
-                  <div className="mt-3 space-y-2 text-xs text-[var(--text-muted)]">
-                    <p>示例请求:</p>
-                    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-2 font-mono text-[11px] text-[var(--text-secondary)] break-all">
-                      {requestEndpoint ? `${requestEndpoint}/v1/chat/completions` : '--'}
-                    </div>
-                    <p>客户端可通过 Authorization: Bearer sk-jcp-... 或 X-API-Key 进行鉴权。</p>
-                  </div>
-                </aside>
-              </div>
-            </div>
           </div>
         )}
       </article>

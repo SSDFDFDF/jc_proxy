@@ -130,19 +130,22 @@ type ErrorPolicyConfig struct {
 }
 
 type ErrorAutoDisableConfig struct {
-	InvalidKey      *bool `yaml:"invalid_key" json:"invalid_key"`
-	PaymentRequired *bool `yaml:"payment_required" json:"payment_required"`
-	QuotaExhausted  *bool `yaml:"quota_exhausted" json:"quota_exhausted"`
+	InvalidKey            *bool    `yaml:"invalid_key" json:"invalid_key"`
+	InvalidKeyStatusCodes []int    `yaml:"invalid_key_status_codes,omitempty" json:"invalid_key_status_codes,omitempty"`
+	InvalidKeyKeywords    []string `yaml:"invalid_key_keywords,omitempty" json:"invalid_key_keywords,omitempty"`
+	PaymentRequired       *bool    `yaml:"payment_required" json:"payment_required"`
+	QuotaExhausted        *bool    `yaml:"quota_exhausted" json:"quota_exhausted"`
 }
 
 type ErrorCooldownConfig struct {
-	RequestError    ErrorCooldownRule `yaml:"request_error" json:"request_error"`
-	Unauthorized    ErrorCooldownRule `yaml:"unauthorized" json:"unauthorized"`
-	PaymentRequired ErrorCooldownRule `yaml:"payment_required" json:"payment_required"`
-	Forbidden       ErrorCooldownRule `yaml:"forbidden" json:"forbidden"`
-	RateLimit       ErrorCooldownRule `yaml:"rate_limit" json:"rate_limit"`
-	ServerError     ErrorCooldownRule `yaml:"server_error" json:"server_error"`
-	OpenAISlowDown  ErrorCooldownRule `yaml:"openai_slow_down" json:"openai_slow_down"`
+	RequestError    ErrorCooldownRule           `yaml:"request_error" json:"request_error"`
+	Unauthorized    ErrorCooldownRule           `yaml:"unauthorized" json:"unauthorized"`
+	PaymentRequired ErrorCooldownRule           `yaml:"payment_required" json:"payment_required"`
+	Forbidden       ErrorCooldownRule           `yaml:"forbidden" json:"forbidden"`
+	RateLimit       ErrorCooldownRule           `yaml:"rate_limit" json:"rate_limit"`
+	ServerError     ErrorCooldownRule           `yaml:"server_error" json:"server_error"`
+	OpenAISlowDown  ErrorCooldownRule           `yaml:"openai_slow_down" json:"openai_slow_down"`
+	ResponseRules   []ErrorResponseCooldownRule `yaml:"response_rules,omitempty" json:"response_rules,omitempty"`
 }
 
 type ErrorCooldownRule struct {
@@ -150,13 +153,21 @@ type ErrorCooldownRule struct {
 	Duration time.Duration `yaml:"duration" json:"duration"`
 }
 
+type ErrorResponseCooldownRule struct {
+	StatusCodes []int         `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
+	Keywords    []string      `yaml:"keywords,omitempty" json:"keywords,omitempty"`
+	Duration    time.Duration `yaml:"duration" json:"duration"`
+	RetryAfter  string        `yaml:"retry_after,omitempty" json:"retry_after,omitempty"` // ignore | override | max
+}
+
 type ErrorFailoverConfig struct {
-	RequestError    *bool `yaml:"request_error" json:"request_error"`
-	Unauthorized    *bool `yaml:"unauthorized" json:"unauthorized"`
-	PaymentRequired *bool `yaml:"payment_required" json:"payment_required"`
-	Forbidden       *bool `yaml:"forbidden" json:"forbidden"`
-	RateLimit       *bool `yaml:"rate_limit" json:"rate_limit"`
-	ServerError     *bool `yaml:"server_error" json:"server_error"`
+	RequestError        *bool `yaml:"request_error" json:"request_error"`
+	Unauthorized        *bool `yaml:"unauthorized" json:"unauthorized"`
+	PaymentRequired     *bool `yaml:"payment_required" json:"payment_required"`
+	Forbidden           *bool `yaml:"forbidden" json:"forbidden"`
+	RateLimit           *bool `yaml:"rate_limit" json:"rate_limit"`
+	ServerError         *bool `yaml:"server_error" json:"server_error"`
+	ResponseStatusCodes []int `yaml:"response_status_codes,omitempty" json:"response_status_codes,omitempty"`
 }
 
 type ResinConfig struct {
@@ -788,6 +799,9 @@ func applyCooldownRuleDefaults(rule *ErrorCooldownRule, duration time.Duration) 
 }
 
 func validateErrorPolicy(policy ErrorPolicyConfig) error {
+	if err := validateStatusCodes("auto_disable.invalid_key_status_codes", policy.AutoDisable.InvalidKeyStatusCodes); err != nil {
+		return err
+	}
 	if err := validateCooldownRule("request_error", policy.Cooldown.RequestError); err != nil {
 		return err
 	}
@@ -809,6 +823,12 @@ func validateErrorPolicy(policy ErrorPolicyConfig) error {
 	if err := validateCooldownRule("openai_slow_down", policy.Cooldown.OpenAISlowDown); err != nil {
 		return err
 	}
+	if err := validateResponseCooldownRules(policy.Cooldown.ResponseRules); err != nil {
+		return err
+	}
+	if err := validateStatusCodes("failover.response_status_codes", policy.Failover.ResponseStatusCodes); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -820,6 +840,45 @@ func validateCooldownRule(name string, rule ErrorCooldownRule) error {
 		return fmt.Errorf("cooldown.%s.duration must be >= 0", name)
 	}
 	return nil
+}
+
+func validateResponseCooldownRules(rules []ErrorResponseCooldownRule) error {
+	for i, rule := range rules {
+		name := fmt.Sprintf("cooldown.response_rules[%d]", i)
+		if len(rule.StatusCodes) == 0 && !hasNonEmptyString(rule.Keywords) {
+			return fmt.Errorf("%s must define status_codes or keywords", name)
+		}
+		if err := validateStatusCodes(name+".status_codes", rule.StatusCodes); err != nil {
+			return err
+		}
+		if rule.Duration <= 0 {
+			return fmt.Errorf("%s.duration must be > 0", name)
+		}
+		switch strings.ToLower(strings.TrimSpace(rule.RetryAfter)) {
+		case "", "ignore", "override", "max":
+		default:
+			return fmt.Errorf("%s.retry_after must be one of ignore, override, max", name)
+		}
+	}
+	return nil
+}
+
+func validateStatusCodes(name string, codes []int) error {
+	for _, code := range codes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("%s contains invalid status code %d", name, code)
+		}
+	}
+	return nil
+}
+
+func hasNonEmptyString(items []string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Config) StripExternalizedData() {

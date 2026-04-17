@@ -67,37 +67,50 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 	body := strings.ToLower(string(preview))
 	retryAfter := parseRetryAfter(headers.Get("Retry-After"))
 	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), string(preview))
+	responseFailover := shouldFailoverResponse(statusCode, policy)
+
+	if shouldAutoDisableInvalidKey(provider, policy.AutoDisable, statusCode, body) {
+		return disableDecision(statusCode, compactReason("auto disabled: invalid key", string(preview)), responseFailover)
+	}
+
+	switch statusCode {
+	case http.StatusPaymentRequired:
+		if boolOrDefault(policy.AutoDisable.PaymentRequired, true) {
+			return disableDecision(statusCode, compactReason("auto disabled: billing or quota exhausted", string(preview)), responseFailover)
+		}
+	case http.StatusTooManyRequests:
+		if isQuotaExhausted(provider, body) && boolOrDefault(policy.AutoDisable.QuotaExhausted, true) {
+			return disableDecision(statusCode, compactReason("auto disabled: quota exhausted", string(preview)), responseFailover)
+		}
+	}
+
+	if rule, ok := matchResponseCooldownRule(statusCode, body, policy.Cooldown.ResponseRules); ok {
+		return responseCooldownDecision(statusCode, reason, rule, responseFailover, retryAfter)
+	}
 
 	switch statusCode {
 	case http.StatusUnauthorized:
-		if isInvalidKey(provider, body) {
-			if boolOrDefault(policy.AutoDisable.InvalidKey, true) {
-				return disableDecision(statusCode, compactReason("auto disabled: invalid key", string(preview)), boolOrDefault(policy.Failover.Unauthorized, true))
-			}
-		}
-		return cooldownDecision(statusCode, reason, policy.Cooldown.Unauthorized, boolOrDefault(policy.Failover.Unauthorized, true), 0, false)
+		return cooldownDecision(statusCode, reason, policy.Cooldown.Unauthorized, responseFailover, 0, false)
 	case http.StatusPaymentRequired:
-		if boolOrDefault(policy.AutoDisable.PaymentRequired, true) {
-			return disableDecision(statusCode, compactReason("auto disabled: billing or quota exhausted", string(preview)), boolOrDefault(policy.Failover.PaymentRequired, true))
-		}
-		return cooldownDecision(statusCode, reason, policy.Cooldown.PaymentRequired, boolOrDefault(policy.Failover.PaymentRequired, true), 0, false)
+		return cooldownDecision(statusCode, reason, policy.Cooldown.PaymentRequired, responseFailover, 0, false)
 	case http.StatusForbidden:
-		return cooldownDecision(statusCode, reason, policy.Cooldown.Forbidden, boolOrDefault(policy.Failover.Forbidden, true), 0, false)
+		return cooldownDecision(statusCode, reason, policy.Cooldown.Forbidden, responseFailover, 0, false)
 	case http.StatusTooManyRequests:
-		if isQuotaExhausted(provider, body) {
-			if boolOrDefault(policy.AutoDisable.QuotaExhausted, true) {
-				return disableDecision(statusCode, compactReason("auto disabled: quota exhausted", string(preview)), boolOrDefault(policy.Failover.RateLimit, true))
-			}
-		}
-		return cooldownDecision(statusCode, reason, policy.Cooldown.RateLimit, boolOrDefault(policy.Failover.RateLimit, true), retryAfter, false)
+		return cooldownDecision(statusCode, reason, policy.Cooldown.RateLimit, responseFailover, retryAfter, false)
 	case 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		if provider == "openai" && strings.Contains(body, "slow down") {
-			return cooldownDecision(statusCode, reason, policy.Cooldown.OpenAISlowDown, boolOrDefault(policy.Failover.ServerError, true), retryAfter, true)
+			return cooldownDecision(statusCode, reason, policy.Cooldown.OpenAISlowDown, responseFailover, retryAfter, true)
 		}
-		return cooldownDecision(statusCode, reason, policy.Cooldown.ServerError, boolOrDefault(policy.Failover.ServerError, true), retryAfter, false)
+		return cooldownDecision(statusCode, reason, policy.Cooldown.ServerError, responseFailover, retryAfter, false)
 	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+		if responseFailover {
+			return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason, failover: true}
+		}
 		return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason}
 	default:
+		if responseFailover {
+			return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason, failover: true}
+		}
 		return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason}
 	}
 }
@@ -138,11 +151,89 @@ func cooldownDecision(statusCode int, reason string, rule config.ErrorCooldownRu
 	}
 }
 
+func responseCooldownDecision(statusCode int, reason string, rule config.ErrorResponseCooldownRule, failover bool, retryAfter time.Duration) keyDecision {
+	duration := rule.Duration
+	switch retryAfterMode(rule.RetryAfter, statusCode) {
+	case "override":
+		if retryAfter > 0 {
+			duration = retryAfter
+		}
+	case "max":
+		if retryAfter > 0 {
+			duration = maxDuration(retryAfter, duration)
+		}
+	}
+	return keyDecision{
+		action:     keyActionCooldown,
+		statusCode: statusCode,
+		cooldown:   duration,
+		reason:     reason,
+		failover:   failover,
+	}
+}
+
 func boolOrDefault(v *bool, fallback bool) bool {
 	if v == nil {
 		return fallback
 	}
 	return *v
+}
+
+func shouldAutoDisableInvalidKey(provider string, auto config.ErrorAutoDisableConfig, statusCode int, body string) bool {
+	if !boolOrDefault(auto.InvalidKey, true) {
+		return false
+	}
+	if len(auto.InvalidKeyStatusCodes) > 0 || hasNonEmptyPattern(auto.InvalidKeyKeywords) {
+		return containsStatusCode(auto.InvalidKeyStatusCodes, statusCode) || containsAnyKeyword(body, auto.InvalidKeyKeywords)
+	}
+	return statusCode == http.StatusUnauthorized && isInvalidKey(provider, body)
+}
+
+func shouldFailoverResponse(statusCode int, policy config.ErrorPolicyConfig) bool {
+	if len(policy.Failover.ResponseStatusCodes) > 0 {
+		return containsStatusCode(policy.Failover.ResponseStatusCodes, statusCode)
+	}
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return boolOrDefault(policy.Failover.Unauthorized, true)
+	case http.StatusPaymentRequired:
+		return boolOrDefault(policy.Failover.PaymentRequired, true)
+	case http.StatusForbidden:
+		return boolOrDefault(policy.Failover.Forbidden, true)
+	case http.StatusTooManyRequests:
+		return boolOrDefault(policy.Failover.RateLimit, true)
+	case 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return boolOrDefault(policy.Failover.ServerError, true)
+	default:
+		return false
+	}
+}
+
+func matchResponseCooldownRule(statusCode int, body string, rules []config.ErrorResponseCooldownRule) (config.ErrorResponseCooldownRule, bool) {
+	for _, rule := range rules {
+		if len(rule.StatusCodes) > 0 && !containsStatusCode(rule.StatusCodes, statusCode) {
+			continue
+		}
+		if hasNonEmptyPattern(rule.Keywords) && !containsAnyKeyword(body, rule.Keywords) {
+			continue
+		}
+		if len(rule.StatusCodes) == 0 && !hasNonEmptyPattern(rule.Keywords) {
+			continue
+		}
+		return rule, true
+	}
+	return config.ErrorResponseCooldownRule{}, false
+}
+
+func retryAfterMode(raw string, statusCode int) string {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode != "" {
+		return mode
+	}
+	if statusCode == http.StatusTooManyRequests {
+		return "override"
+	}
+	return "ignore"
 }
 
 func isInvalidKey(provider, body string) bool {
@@ -264,6 +355,40 @@ func compactReason(prefix, body string) string {
 func containsAny(body string, patterns ...string) bool {
 	for _, pattern := range patterns {
 		if strings.Contains(body, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyKeyword(body string, patterns []string) bool {
+	if body == "" {
+		return false
+	}
+	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
+		if strings.Contains(body, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStatusCode(statusCodes []int, statusCode int) bool {
+	for _, candidate := range statusCodes {
+		if candidate == statusCode {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonEmptyPattern(patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.TrimSpace(pattern) != "" {
 			return true
 		}
 	}

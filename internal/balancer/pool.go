@@ -105,12 +105,19 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int,
 }
 
 func (p *Pool) Acquire() (idx int, key string, ok bool) {
+	return p.AcquireExcept(nil)
+}
+
+func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	now := p.nowf()
 	available := make([]int, 0, len(p.keys))
 	for i := range p.keys {
+		if _, skip := excluded[i]; skip {
+			continue
+		}
 		if !keystore.IsActiveStatus(p.keys[i].Status) {
 			continue
 		}
@@ -138,6 +145,9 @@ func (p *Pool) Acquire() (idx int, key string, ok bool) {
 		for try := 0; try < len(p.keys); try++ {
 			candidate := p.rrIdx % len(p.keys)
 			p.rrIdx++
+			if _, skip := excluded[candidate]; skip {
+				continue
+			}
 			if !keystore.IsActiveStatus(p.keys[candidate].Status) {
 				continue
 			}

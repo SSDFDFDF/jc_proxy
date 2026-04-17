@@ -78,37 +78,29 @@ vendors:
     error_policy:
       auto_disable:
         invalid_key: true
-        payment_required: true
-        quota_exhausted: true
+        # 可选：命中以下响应码或响应体关键字任一条件时，按“无效密钥”自动禁用
+        invalid_key_status_codes: []
+        invalid_key_keywords: []
       cooldown:
-        request_error:
-          enabled: true
-          duration: 2s
-        unauthorized:
-          enabled: true
-          duration: 30m
-        payment_required:
-          enabled: true
-          duration: 3h
-        forbidden:
-          enabled: true
-          duration: 30m
-        rate_limit:
-          enabled: true
-          duration: 5s
-        server_error:
-          enabled: true
-          duration: 2s
-        openai_slow_down:
-          enabled: true
-          duration: 15m
+        # 按顺序匹配自定义退避规则；可只配 status_codes，
+        # 也可叠加 keywords 做更细粒度匹配。
+        response_rules:
+          - status_codes: [401, 403]
+            duration: 30m
+          - status_codes: [402]
+            duration: 3h
+          - status_codes: [429]
+            duration: 5s
+            retry_after: "override" # ignore | override | max
+          - status_codes: [500, 502, 503, 504, 529]
+            duration: 2s
+          - status_codes: [500, 502, 503, 504, 529]
+            keywords: ["slow down"]
+            duration: 15m
+            retry_after: "max"
       failover:
         request_error: true
-        unauthorized: true
-        payment_required: true
-        forbidden: true
-        rate_limit: true
-        server_error: true
+        response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
     resin:
       enabled: true
       url: "http://127.0.0.1:2260/my-token"
@@ -143,37 +135,22 @@ vendors:
     error_policy:
       auto_disable:
         invalid_key: true
-        payment_required: true
-        quota_exhausted: true
+        invalid_key_status_codes: []
+        invalid_key_keywords: []
       cooldown:
-        request_error:
-          enabled: true
-          duration: 2s
-        unauthorized:
-          enabled: true
-          duration: 30m
-        payment_required:
-          enabled: true
-          duration: 3h
-        forbidden:
-          enabled: true
-          duration: 30m
-        rate_limit:
-          enabled: true
-          duration: 5s
-        server_error:
-          enabled: true
-          duration: 2s
-        openai_slow_down:
-          enabled: true
-          duration: 15m
+        response_rules:
+          - status_codes: [401, 403]
+            duration: 30m
+          - status_codes: [402]
+            duration: 3h
+          - status_codes: [429]
+            duration: 5s
+            retry_after: "override"
+          - status_codes: [500, 502, 503, 504, 529]
+            duration: 2s
       failover:
         request_error: true
-        unauthorized: true
-        payment_required: true
-        forbidden: true
-        rate_limit: true
-        server_error: true
+        response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
     resin:
       enabled: false
       url: ""

@@ -306,12 +306,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	useManagedKey := vg.usesManagedUpstreamKeys()
+	triedManagedKeyIdx := make(map[int]struct{})
 	for {
 		idx := -1
 		selectedKey := vg.passthroughUpstreamKey(req)
 		if useManagedKey {
 			var keyOK bool
-			idx, selectedKey, keyOK = vg.pool.Acquire()
+			idx, selectedKey, keyOK = vg.pool.AcquireExcept(triedManagedKeyIdx)
 			if !keyOK {
 				http.Error(w, "all vendor keys in cooldown or disabled", http.StatusServiceUnavailable)
 				return
@@ -349,7 +350,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream request failed: %v", err))
 			vg.applyDecision(idx, selectedKey, decision)
-			if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey() {
+			if bodySource.canRetryRequestError(decision) && useManagedKey {
+				triedManagedKeyIdx[idx] = struct{}{}
+			}
+			if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx) {
 				continue
 			}
 			http.Error(w, "upstream request failed", http.StatusBadGateway)
@@ -368,7 +372,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				}
 				decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("read upstream response failed: %v", err))
 				vg.applyDecision(idx, selectedKey, decision)
-				if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey() {
+				if bodySource.canRetryRequestError(decision) && useManagedKey {
+					triedManagedKeyIdx[idx] = struct{}{}
+				}
+				if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx) {
 					continue
 				}
 				http.Error(w, "upstream request failed", http.StatusBadGateway)
@@ -378,7 +385,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview)
 			if bodySource.canRetryResponse(resp.StatusCode, decision) {
 				vg.applyDecision(idx, selectedKey, decision)
-				if vg.hasAvailableKey() {
+				if useManagedKey {
+					triedManagedKeyIdx[idx] = struct{}{}
+				}
+				if vg.hasAvailableKey(triedManagedKeyIdx) {
 					_ = resp.Body.Close()
 					continue
 				}
@@ -569,12 +579,15 @@ func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetUR
 	return upReq, nil
 }
 
-func (v *vendorGateway) hasAvailableKey() bool {
+func (v *vendorGateway) hasAvailableKey(excluded map[int]struct{}) bool {
 	if !v.usesManagedUpstreamKeys() || v.pool == nil {
 		return false
 	}
 	now := time.Now()
-	for _, state := range v.pool.Snapshot() {
+	for idx, state := range v.pool.Snapshot() {
+		if _, skip := excluded[idx]; skip {
+			continue
+		}
 		if !keystore.IsActiveStatus(state.Status) {
 			continue
 		}
@@ -858,7 +871,12 @@ func shouldRetryDecision(decision keyDecision) bool {
 	if !decision.failover {
 		return false
 	}
-	return decision.action == keyActionCooldown || decision.action == keyActionDisable
+	switch decision.action {
+	case keyActionCooldown, keyActionDisable, keyActionObserve:
+		return true
+	default:
+		return false
+	}
 }
 
 func captureResponsePreview(body io.ReadCloser, limit int, header http.Header) ([]byte, io.Reader, error) {

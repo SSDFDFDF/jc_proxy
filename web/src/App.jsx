@@ -40,7 +40,7 @@ function App() {
       upstreamStorage={upstream.upstreamKeysData.storage}
       busy={auth.busy}
       onRefreshAll={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
-      onRefreshStats={() => statsView.loadFilteredStats({}, false, true)}
+      onRefreshStats={() => statsView.loadStats(false, true)}
       onLogout={auth.logout}
     >
       {shell.nav === 'overview' && (
@@ -65,14 +65,12 @@ function App() {
           onDisableKey={upstream.disableUpstreamKey}
           onDeleteKey={upstream.deleteUpstreamKey}
           vendorRows={overview.vendorRows}
-          statsResult={statsView.statsResult}
-          statsFilters={statsView.statsFilters}
+          runtimeStats={statsView.stats}
           autoRefreshStats={statsView.autoRefreshStats}
           refreshEverySec={statsView.refreshEverySec}
-          onStatsFiltersChange={statsView.setStatsFilters}
           onToggleAutoRefresh={() => statsView.setAutoRefreshStats((prev) => !prev)}
           onRefreshEverySecChange={statsView.setRefreshEverySec}
-          onRefreshStats={() => statsView.loadFilteredStats({}, false, true)}
+          onRefreshStats={() => statsView.loadStats(false, true)}
         />
       )}
 
@@ -83,7 +81,10 @@ function App() {
           selectedVendor={config.selectedVendor}
           vendorDraft={config.vendorDraft}
           vendorBackoffDuration={config.vendorBackoffDuration}
-          errorPolicyDurations={config.errorPolicyDurations}
+          invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
+          invalidKeyKeywordsText={config.invalidKeyKeywordsText}
+          responseRuleRows={config.responseRuleRows}
+          failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
           allowlistText={config.allowlistText}
           injectRows={config.injectRows}
           rewriteRows={config.rewriteRows}
@@ -97,7 +98,10 @@ function App() {
           onDeleteVendor={config.deleteVendor}
           onMutateVendorDraft={config.mutateVendorDraft}
           onVendorBackoffDurationChange={config.setVendorBackoffDuration}
-          onErrorPolicyDurationsChange={config.setErrorPolicyDurations}
+          onInvalidKeyStatusCodesTextChange={config.setInvalidKeyStatusCodesText}
+          onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
+          setResponseRuleRows={config.setResponseRuleRows}
+          onFailoverResponseStatusCodesTextChange={config.setFailoverResponseStatusCodesText}
           onAllowlistTextChange={config.setAllowlistText}
           setInjectRows={config.setInjectRows}
           setRewriteRows={config.setRewriteRows}

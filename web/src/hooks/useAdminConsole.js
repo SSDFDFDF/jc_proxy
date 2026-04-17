@@ -22,17 +22,82 @@ import {
   withVendorDefaults
 } from '../app/utils'
 
-function buildErrorPolicyDurationTexts(policy) {
-  const cooldown = policy?.cooldown || {}
-  return {
-    requestError: nsToText(cooldown.request_error?.duration || 0),
-    unauthorized: nsToText(cooldown.unauthorized?.duration || 0),
-    paymentRequired: nsToText(cooldown.payment_required?.duration || 0),
-    forbidden: nsToText(cooldown.forbidden?.duration || 0),
-    rateLimit: nsToText(cooldown.rate_limit?.duration || 0),
-    serverError: nsToText(cooldown.server_error?.duration || 0),
-    openAISlowDown: nsToText(cooldown.openai_slow_down?.duration || 0)
+function statusCodesToText(codes) {
+  return (codes || []).map((code) => String(code)).join('\n')
+}
+
+function parseStatusCodesText(text) {
+  const out = []
+  const seen = new Set()
+  for (const part of String(text || '').split(/[\n,;]+/)) {
+    const raw = part.trim()
+    if (!raw) continue
+    if (!/^\d+$/.test(raw)) {
+      throw new Error(`非法响应码: ${raw}`)
+    }
+    const code = Number(raw)
+    if (!seen.has(code)) {
+      seen.add(code)
+      out.push(code)
+    }
   }
+  return out
+}
+
+function emptyResponseRuleRow() {
+  return {
+    statusCodesText: '',
+    keywordsText: '',
+    durationText: '',
+    retryAfter: ''
+  }
+}
+
+function buildResponseRuleRows(policy) {
+  const rows = (policy?.cooldown?.response_rules || []).map((rule) => ({
+    statusCodesText: statusCodesToText(rule?.status_codes || []),
+    keywordsText: listToText(rule?.keywords || []),
+    durationText: nsToText(rule?.duration || 0),
+    retryAfter: String(rule?.retry_after || '').trim()
+  }))
+  return rows.length ? rows : [emptyResponseRuleRow()]
+}
+
+function parseResponseRuleRows(rows) {
+  const out = []
+  for (const [index, row] of (rows || []).entries()) {
+    const statusCodesText = String(row?.statusCodesText || '').trim()
+    const keywordsText = String(row?.keywordsText || '').trim()
+    const durationText = String(row?.durationText || '').trim()
+    const retryAfter = String(row?.retryAfter || '').trim()
+    if (!statusCodesText && !keywordsText && !durationText && !retryAfter) {
+      continue
+    }
+
+    const statusCodes = parseStatusCodesText(statusCodesText)
+    const keywords = textToList(keywordsText)
+    if (!statusCodes.length && !keywords.length) {
+      throw new Error(`退避规则第 ${index + 1} 行至少填写响应码或关键字`)
+    }
+
+    const duration = parseDurationToNs(durationText, 0)
+    if (!duration || duration <= 0) {
+      throw new Error(`退避规则第 ${index + 1} 行缺少有效时长`)
+    }
+
+    if (retryAfter && !['ignore', 'override', 'max'].includes(retryAfter)) {
+      throw new Error(`退避规则第 ${index + 1} 行 Retry-After 仅支持 ignore / override / max`)
+    }
+
+    const next = {
+      status_codes: statusCodes,
+      keywords,
+      duration
+    }
+    if (retryAfter) next.retry_after = retryAfter
+    out.push(next)
+  }
+  return out
 }
 
 function emptyStatsResult() {
@@ -92,7 +157,10 @@ export function useAdminConsole() {
   const [selectedVendor, setSelectedVendor] = useState('')
   const [vendorDraft, setVendorDraft] = useState(null)
   const [vendorBackoffDuration, setVendorBackoffDuration] = useState('3h')
-  const [errorPolicyDurations, setErrorPolicyDurations] = useState(buildErrorPolicyDurationTexts(buildNewVendorConfig('').error_policy))
+  const [invalidKeyStatusCodesText, setInvalidKeyStatusCodesText] = useState('')
+  const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
+  const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
+  const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
   const [allowlistText, setAllowlistText] = useState('')
   const [injectRows, setInjectRows] = useState([{ key: '', value: '' }])
   const [rewriteRows, setRewriteRows] = useState([{ key: '', value: '' }])
@@ -169,7 +237,10 @@ export function useAdminConsole() {
     if (!vendor) {
       setVendorDraft(null)
       setVendorBackoffDuration('3h')
-      setErrorPolicyDurations(buildErrorPolicyDurationTexts(buildNewVendorConfig('').error_policy))
+      setInvalidKeyStatusCodesText('')
+      setInvalidKeyKeywordsText('')
+      setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
+      setFailoverResponseStatusCodesText('')
       setAllowlistText('')
       setInjectRows([{ key: '', value: '' }])
       setRewriteRows([{ key: '', value: '' }])
@@ -178,7 +249,10 @@ export function useAdminConsole() {
     const draft = withVendorDefaults(vendor)
     setVendorDraft(draft)
     setVendorBackoffDuration(nsToText(draft.backoff?.duration || 0))
-    setErrorPolicyDurations(buildErrorPolicyDurationTexts(draft.error_policy))
+    setInvalidKeyStatusCodesText(statusCodesToText(draft.error_policy?.auto_disable?.invalid_key_status_codes || []))
+    setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
+    setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
+    setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
     setAllowlistText(listToText(draft.client_headers?.allowlist || []))
     setInjectRows(mapToRows(draft.inject_headers || {}))
     setRewriteRows(mapToRows(draft.path_rewrites || {}))
@@ -325,13 +399,10 @@ export function useAdminConsole() {
     try {
       const next = clone(vendorDraft)
       next.backoff.duration = parseDurationToNs(vendorBackoffDuration, next.backoff.duration)
-      next.error_policy.cooldown.request_error.duration = parseDurationToNs(errorPolicyDurations.requestError, next.error_policy.cooldown.request_error.duration)
-      next.error_policy.cooldown.unauthorized.duration = parseDurationToNs(errorPolicyDurations.unauthorized, next.error_policy.cooldown.unauthorized.duration)
-      next.error_policy.cooldown.payment_required.duration = parseDurationToNs(errorPolicyDurations.paymentRequired, next.error_policy.cooldown.payment_required.duration)
-      next.error_policy.cooldown.forbidden.duration = parseDurationToNs(errorPolicyDurations.forbidden, next.error_policy.cooldown.forbidden.duration)
-      next.error_policy.cooldown.rate_limit.duration = parseDurationToNs(errorPolicyDurations.rateLimit, next.error_policy.cooldown.rate_limit.duration)
-      next.error_policy.cooldown.server_error.duration = parseDurationToNs(errorPolicyDurations.serverError, next.error_policy.cooldown.server_error.duration)
-      next.error_policy.cooldown.openai_slow_down.duration = parseDurationToNs(errorPolicyDurations.openAISlowDown, next.error_policy.cooldown.openai_slow_down.duration)
+      next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
+      next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
+      next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
+      next.error_policy.failover.response_status_codes = parseStatusCodesText(failoverResponseStatusCodesText)
       next.client_headers.allowlist = textToList(allowlistText)
       next.inject_headers = rowsToMap(injectRows)
       next.path_rewrites = rowsToMap(rewriteRows)
@@ -568,18 +639,18 @@ export function useAdminConsole() {
   }, [token])
 
   useEffect(() => {
-    if (!isAuthed || nav !== 'keyHub' || !statsFilters.vendor) return undefined
-    loadFilteredStats({}, true, false).catch(() => {})
+    if (!isAuthed || nav !== 'keyHub') return undefined
+    loadStats(true, false).catch(() => {})
     return undefined
-  }, [isAuthed, nav, statsFilters.vendor, statsFilters.filter, statsFilters.q, statsFilters.page, statsFilters.pageSize])
+  }, [isAuthed, nav])
 
   useEffect(() => {
-    if (!isAuthed || nav !== 'keyHub' || !autoRefreshStats || !statsFilters.vendor) return undefined
+    if (!isAuthed || nav !== 'keyHub' || !autoRefreshStats) return undefined
     const interval = window.setInterval(() => {
-      loadFilteredStats({}, true, false).catch(() => {})
+      loadStats(true, false).catch(() => {})
     }, Number(refreshEverySec) * 1000)
     return () => window.clearInterval(interval)
-  }, [isAuthed, nav, autoRefreshStats, refreshEverySec, statsFilters.vendor, statsFilters.filter, statsFilters.q, statsFilters.page, statsFilters.pageSize])
+  }, [isAuthed, nav, autoRefreshStats, refreshEverySec])
 
   const vendorRows = useMemo(() => {
     const keyCountMap = Object.fromEntries((upstreamKeysData.vendors || []).map((item) => [item.vendor, item.count]))
@@ -669,14 +740,20 @@ export function useAdminConsole() {
       selectedVendor,
       vendorDraft,
       vendorBackoffDuration,
-      errorPolicyDurations,
+      invalidKeyStatusCodesText,
+      invalidKeyKeywordsText,
+      responseRuleRows,
+      failoverResponseStatusCodesText,
       allowlistText,
       injectRows,
       rewriteRows,
       newVendorForm,
       systemForm,
       setVendorBackoffDuration,
-      setErrorPolicyDurations,
+      setInvalidKeyStatusCodesText,
+      setInvalidKeyKeywordsText,
+      setResponseRuleRows,
+      setFailoverResponseStatusCodesText,
       setAllowlistText,
       setInjectRows,
       setRewriteRows,

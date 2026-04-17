@@ -273,6 +273,97 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 	if !boolValue(policy.Failover.RateLimit, false) {
 		t.Fatal("ErrorPolicy.Failover.RateLimit = false, want true")
 	}
+	if len(policy.Cooldown.ResponseRules) != 0 {
+		t.Fatalf("len(ErrorPolicy.Cooldown.ResponseRules) = %d, want 0", len(policy.Cooldown.ResponseRules))
+	}
+	if len(policy.Failover.ResponseStatusCodes) != 0 {
+		t.Fatalf("len(ErrorPolicy.Failover.ResponseStatusCodes) = %d, want 0", len(policy.Failover.ResponseStatusCodes))
+	}
+}
+
+func TestLoadBytesSupportsCustomErrorPolicyRules(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+server:
+  listen: ":8092"
+
+storage:
+  config:
+    driver: "file"
+  upstream_keys:
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+
+vendors:
+  openai:
+    upstream:
+      base_url: "https://api.openai.com"
+    error_policy:
+      auto_disable:
+        invalid_key_status_codes: [400, 401]
+        invalid_key_keywords: ["bad credential", "key revoked"]
+      cooldown:
+        response_rules:
+          - status_codes: [418, 429]
+            duration: 45s
+            retry_after: "override"
+          - keywords: ["slow down"]
+            duration: 10m
+            retry_after: "max"
+      failover:
+        response_status_codes: [418, 430]
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	policy := cfg.Vendors["openai"].ErrorPolicy
+	if len(policy.AutoDisable.InvalidKeyStatusCodes) != 2 || policy.AutoDisable.InvalidKeyStatusCodes[0] != 400 || policy.AutoDisable.InvalidKeyStatusCodes[1] != 401 {
+		t.Fatalf("invalid_key_status_codes = %#v", policy.AutoDisable.InvalidKeyStatusCodes)
+	}
+	if len(policy.AutoDisable.InvalidKeyKeywords) != 2 || policy.AutoDisable.InvalidKeyKeywords[0] != "bad credential" || policy.AutoDisable.InvalidKeyKeywords[1] != "key revoked" {
+		t.Fatalf("invalid_key_keywords = %#v", policy.AutoDisable.InvalidKeyKeywords)
+	}
+	if len(policy.Cooldown.ResponseRules) != 2 {
+		t.Fatalf("len(response_rules) = %d, want 2", len(policy.Cooldown.ResponseRules))
+	}
+	if policy.Cooldown.ResponseRules[0].Duration != 45*time.Second || policy.Cooldown.ResponseRules[0].RetryAfter != "override" {
+		t.Fatalf("first response rule = %#v", policy.Cooldown.ResponseRules[0])
+	}
+	if len(policy.Failover.ResponseStatusCodes) != 2 || policy.Failover.ResponseStatusCodes[0] != 418 || policy.Failover.ResponseStatusCodes[1] != 430 {
+		t.Fatalf("response_status_codes = %#v", policy.Failover.ResponseStatusCodes)
+	}
+}
+
+func TestLoadBytesRejectsInvalidCustomErrorPolicyRules(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+server:
+  listen: ":8092"
+
+storage:
+  config:
+    driver: "file"
+  upstream_keys:
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+
+vendors:
+  openai:
+    upstream:
+      base_url: "https://api.openai.com"
+    error_policy:
+      cooldown:
+        response_rules:
+          - status_codes: [700]
+            duration: 5s
+      failover:
+        response_status_codes: [99]
+`))
+	if err == nil {
+		t.Fatal("LoadBytes() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "invalid status code") {
+		t.Fatalf("LoadBytes() error = %v, want invalid status code", err)
+	}
 }
 
 func TestLoadAllowsBootstrapAdminWithoutCredentials(t *testing.T) {

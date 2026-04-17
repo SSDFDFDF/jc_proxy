@@ -117,25 +117,15 @@ export function emptyVendorConfig() {
     error_policy: {
       auto_disable: {
         invalid_key: true,
-        payment_required: true,
-        quota_exhausted: true
+        invalid_key_status_codes: [],
+        invalid_key_keywords: []
       },
       cooldown: {
-        request_error: { enabled: true, duration: 2_000_000_000 },
-        unauthorized: { enabled: true, duration: 1_800_000_000_000 },
-        payment_required: { enabled: true, duration: 10_800_000_000_000 },
-        forbidden: { enabled: true, duration: 1_800_000_000_000 },
-        rate_limit: { enabled: true, duration: 5_000_000_000 },
-        server_error: { enabled: true, duration: 2_000_000_000 },
-        openai_slow_down: { enabled: true, duration: 900_000_000_000 }
+        response_rules: []
       },
       failover: {
         request_error: true,
-        unauthorized: true,
-        payment_required: true,
-        forbidden: true,
-        rate_limit: true,
-        server_error: true
+        response_status_codes: []
       }
     },
     resin: { enabled: false, url: '', platform: 'Default', mode: 'reverse' }
@@ -168,42 +158,28 @@ export function withVendorDefaults(vendor) {
     backoff: { ...base.backoff, ...(next.backoff || {}) },
     error_policy: {
       auto_disable: {
-        ...base.error_policy.auto_disable,
-        ...(next.error_policy?.auto_disable || {})
+        invalid_key: next.error_policy?.auto_disable?.invalid_key ?? base.error_policy.auto_disable.invalid_key,
+        invalid_key_status_codes: Array.isArray(next.error_policy?.auto_disable?.invalid_key_status_codes)
+          ? [...next.error_policy.auto_disable.invalid_key_status_codes]
+          : [...base.error_policy.auto_disable.invalid_key_status_codes],
+        invalid_key_keywords: Array.isArray(next.error_policy?.auto_disable?.invalid_key_keywords)
+          ? [...next.error_policy.auto_disable.invalid_key_keywords]
+          : [...base.error_policy.auto_disable.invalid_key_keywords]
       },
       cooldown: {
-        request_error: {
-          ...base.error_policy.cooldown.request_error,
-          ...(next.error_policy?.cooldown?.request_error || {})
-        },
-        unauthorized: {
-          ...base.error_policy.cooldown.unauthorized,
-          ...(next.error_policy?.cooldown?.unauthorized || {})
-        },
-        payment_required: {
-          ...base.error_policy.cooldown.payment_required,
-          ...(next.error_policy?.cooldown?.payment_required || {})
-        },
-        forbidden: {
-          ...base.error_policy.cooldown.forbidden,
-          ...(next.error_policy?.cooldown?.forbidden || {})
-        },
-        rate_limit: {
-          ...base.error_policy.cooldown.rate_limit,
-          ...(next.error_policy?.cooldown?.rate_limit || {})
-        },
-        server_error: {
-          ...base.error_policy.cooldown.server_error,
-          ...(next.error_policy?.cooldown?.server_error || {})
-        },
-        openai_slow_down: {
-          ...base.error_policy.cooldown.openai_slow_down,
-          ...(next.error_policy?.cooldown?.openai_slow_down || {})
-        }
+        response_rules: Array.isArray(next.error_policy?.cooldown?.response_rules)
+          ? next.error_policy.cooldown.response_rules.map((rule) => ({
+              ...rule,
+              status_codes: Array.isArray(rule?.status_codes) ? [...rule.status_codes] : [],
+              keywords: Array.isArray(rule?.keywords) ? [...rule.keywords] : []
+            }))
+          : [...base.error_policy.cooldown.response_rules]
       },
       failover: {
-        ...base.error_policy.failover,
-        ...(next.error_policy?.failover || {})
+        request_error: next.error_policy?.failover?.request_error ?? base.error_policy.failover.request_error,
+        response_status_codes: Array.isArray(next.error_policy?.failover?.response_status_codes)
+          ? [...next.error_policy.failover.response_status_codes]
+          : [...base.error_policy.failover.response_status_codes]
       }
     },
     resin: { ...base.resin, ...(next.resin || {}) }
