@@ -541,7 +541,7 @@ func (v *vendorGateway) forwardHeaders(src http.Header, selectedKey string) http
 	}
 
 	if v.resinRuntime != nil && selectedKey != "" {
-		headers.Set(resin.AccountHeader, resin.BuildAccount(selectedKey))
+		headers.Set(resin.AccountHeader, resin.BuildAccount(v.provider, selectedKey))
 	}
 
 	headers.Del("Host")

@@ -1,10 +1,10 @@
 function statPill(label, value, tone = 'default') {
   const toneClass = {
-    ok: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    err: 'border-rose-200 bg-rose-50 text-rose-700',
-    warn: 'border-amber-200 bg-amber-50 text-amber-700',
-    info: 'border-slate-200 bg-slate-50 text-slate-700',
-    default: 'border-slate-200 bg-white text-slate-700'
+    ok: 'border-[rgba(34,197,94,0.3)] bg-[var(--success-soft)] text-[var(--success)]',
+    err: 'border-[rgba(239,68,68,0.3)] bg-[var(--danger-soft)] text-[var(--danger)]',
+    warn: 'border-[rgba(245,158,11,0.3)] bg-[var(--warning-soft)] text-[var(--warning)]',
+    info: 'border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]',
+    default: 'border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)]'
   }[tone]
 
   return (
@@ -29,13 +29,13 @@ export function RuntimeKeyStatCard({ item }) {
   const statusLabel = status === 'disabled_auto' ? 'auto-off' : status === 'disabled_manual' ? 'manual-off' : 'active'
 
   return (
-    <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-4 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--border-strong)]">
       <div className="flex items-start justify-between gap-3">
-        <p className="font-mono text-slate-800">{item.key_masked}</p>
+        <p className="font-mono text-[var(--text-primary)]">{item.key_masked}</p>
         <div className="flex flex-wrap justify-end gap-2">
           {statPill('state', statusLabel, statusTone)}
           {backoff > 0 && (
-            <span className="rounded-md bg-rose-100 px-2 py-1 text-[11px] font-medium text-rose-700">
+            <span className="rounded-md bg-[var(--danger-soft)] border border-[rgba(239,68,68,0.3)] px-2 py-1 text-[11px] font-medium text-[var(--danger)]">
               cooldown {backoff}s
             </span>
           )}
@@ -58,7 +58,7 @@ export function RuntimeKeyStatCard({ item }) {
       </div>
 
       {(disableReason || lastError) && (
-        <p className="mt-3 truncate text-[12px] text-slate-500" title={lastError}>
+        <p className="mt-3 truncate text-[12px] text-[var(--text-muted)]" title={lastError}>
           err: {disableReason || lastError}
         </p>
       )}

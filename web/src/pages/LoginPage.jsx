@@ -1,18 +1,19 @@
-import { buttonClass, panelClass } from '../app/utils'
+import { buttonClass } from '../app/utils'
 import logoImg from '../../logo/logo.png'
 
 export function LoginPage({ username, password, onUsernameChange, onPasswordChange, onLogin, busy, notice }) {
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-[#f8fafc] text-slate-900 px-4">
+    <div className="login-bg">
       <div className="w-full max-w-sm">
-        <section className="login-panel rounded-lg border border-slate-200 bg-white p-8">
-          <div className="mb-6 text-center">
-            <img src={logoImg} alt="JCProxy" className="mx-auto mb-3 h-12 w-auto" />
-            <h1 className="text-xl font-semibold text-slate-900">JCProxy 管理后台</h1>
-            <p className="mt-1 text-xs text-slate-500">用于维护供应商配置、上游密钥和运行状态。</p>
+        <section className="login-panel p-8">
+          <div className="mb-8 text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--bg-elevated)] border border-[var(--border)]">
+              <img src={logoImg} alt="JCProxy" className="h-10 w-auto" />
+            </div>
+            <h1 className="text-xl font-bold text-[var(--text-primary)]">JCProxy Console</h1>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-5">
             <label className="field-wrap">
               <span className="field-label">用户名</span>
               <input className="input-base" placeholder="admin" value={username} onChange={(e) => onUsernameChange(e.target.value)} />
@@ -28,13 +29,24 @@ export function LoginPage({ username, password, onUsernameChange, onPasswordChan
                 onKeyDown={(e) => e.key === 'Enter' && onLogin()}
               />
             </label>
-            <button className={`${buttonClass('primary')} w-full`} disabled={busy} onClick={onLogin}>
-              {busy ? '登录中...' : '登录'}
+            <button className={`${buttonClass('primary')} w-full h-10`} disabled={busy} onClick={onLogin}>
+              {busy ? (
+                <span className="flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" strokeLinecap="round" />
+                  </svg>
+                  登录中...
+                </span>
+              ) : '登录'}
             </button>
           </div>
 
-          {notice.text && <p className={`mt-4 notice notice-${notice.tone}`}>{notice.text}</p>}
+          {notice.text && <p className={`mt-5 notice notice-${notice.tone} animate-fade-in`}>{notice.text}</p>}
         </section>
+
+        <p className="mt-4 text-center text-[11px] text-[var(--text-faint)]">
+          JCProxy · API Gateway Console
+        </p>
       </div>
     </div>
   )

@@ -16,6 +16,7 @@ import (
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
+	"jc_proxy/internal/resin"
 	"jc_proxy/internal/ui"
 )
 
@@ -401,6 +402,28 @@ func TestForwardHeadersDropConnectionScopedHeaders(t *testing.T) {
 	}
 	if got := out.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("content-type should remain, got %q", got)
+	}
+}
+
+func TestForwardHeadersSetResinAccountHeader(t *testing.T) {
+	v := &vendorGateway{
+		provider:  "openai",
+		allowlist: map[string]struct{}{},
+		upstreamAuth: config.UpstreamAuthConfig{
+			Mode:   "bearer",
+			Header: "Authorization",
+			Prefix: "Bearer ",
+		},
+		resinRuntime: &resin.RuntimeConfig{
+			ResinURL: "http://127.0.0.1:2260/my-token",
+			Platform: "Default",
+		},
+	}
+
+	out := v.forwardHeaders(http.Header{}, "upstream-key")
+
+	if got := out.Get(resin.AccountHeader); got != resin.BuildAccount("openai", "upstream-key") {
+		t.Fatalf("unexpected resin account header: %q", got)
 	}
 }
 
@@ -1186,6 +1209,128 @@ func TestRouterPassthroughModeDoesNotRequireManagedKeys(t *testing.T) {
 	stats := router.VendorStats()["generic"]
 	if len(stats) != 0 {
 		t.Fatalf("passthrough mode should not create managed key stats, got %d entries", len(stats))
+	}
+}
+
+func TestRouterResinReverseProxySetsAccountHeaderForManagedKey(t *testing.T) {
+	gotPath := ""
+	gotAccount := ""
+	gotAuth := ""
+	resinServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		gotAccount = r.Header.Get(resin.AccountHeader)
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer resinServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Provider: "openai",
+				Upstream: config.UpstreamConfig{
+					BaseURL: "https://api.openai.com",
+					Keys:    []string{"k1"},
+				},
+				LoadBalance: "round_robin",
+				Resin: config.ResinConfig{
+					Enabled:  true,
+					URL:      resinServer.URL + "/my-token",
+					Platform: "Default",
+					Mode:     "reverse",
+				},
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models?limit=20", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected reverse-proxied request to succeed, got %d", w.Code)
+	}
+	if gotPath != "/my-token/Default/https/api.openai.com/v1/models?limit=20" {
+		t.Fatalf("unexpected resin reverse path: %q", gotPath)
+	}
+	if gotAccount != resin.BuildAccount("openai", "k1") {
+		t.Fatalf("unexpected resin account header: %q", gotAccount)
+	}
+	if gotAuth != "Bearer k1" {
+		t.Fatalf("unexpected upstream auth header: %q", gotAuth)
+	}
+}
+
+func TestRouterResinReverseProxySetsAccountHeaderForPassthroughKey(t *testing.T) {
+	gotPath := ""
+	gotAccount := ""
+	gotAuth := ""
+	resinServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		gotAccount = r.Header.Get(resin.AccountHeader)
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer resinServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Provider: "openai",
+				Upstream: config.UpstreamConfig{
+					BaseURL: "https://api.openai.com",
+				},
+				LoadBalance: "round_robin",
+				UpstreamAuth: config.UpstreamAuthConfig{
+					Mode: "passthrough",
+				},
+				ClientHeaders: config.ClientHeadersConfig{
+					Allowlist: []string{"Content-Type"},
+				},
+				Resin: config.ResinConfig{
+					Enabled:  true,
+					URL:      resinServer.URL + "/my-token",
+					Platform: "Default",
+					Mode:     "reverse",
+				},
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer client-token")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected reverse-proxied passthrough request to succeed, got %d", w.Code)
+	}
+	if gotPath != "/my-token/Default/https/api.openai.com/v1/models" {
+		t.Fatalf("unexpected resin reverse path: %q", gotPath)
+	}
+	if gotAccount != resin.BuildAccount("openai", "client-token") {
+		t.Fatalf("unexpected resin account header: %q", gotAccount)
+	}
+	if gotAuth != "Bearer client-token" {
+		t.Fatalf("authorization header not forwarded in passthrough mode: %q", gotAuth)
 	}
 }
 

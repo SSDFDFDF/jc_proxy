@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { buttonClass, maskSecret, normalizeKeys, panelClass, parseKeysText } from '../app/utils'
+import { buttonClass, maskSecret, normalizeKeys, parseKeysText } from '../app/utils'
 
 export function KeyTableEditor({
   title,
@@ -9,7 +9,7 @@ export function KeyTableEditor({
   showSecrets,
   minKeys = 0,
   scopeKey,
-  toneClass = 'text-slate-700'
+  toneClass = 'text-[var(--text-primary)]'
 }) {
   const [query, setQuery] = useState('')
   const [page, setPage] = useState(1)
@@ -125,16 +125,10 @@ export function KeyTableEditor({
     })
   }
 
-  const selectAllFiltered = () => {
-    const next = {}
-    for (const key of filtered) next[key] = true
-    setSelected(next)
-  }
-
   return (
     <div className="space-y-4">
       {/* Control Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-2">
+      <div className="control-bar !p-2 sm:flex-nowrap">
         <div className="flex flex-wrap items-center gap-3 flex-1">
           <input
             className="input-base text-xs h-8 w-full sm:w-56"
@@ -142,52 +136,65 @@ export function KeyTableEditor({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          <div className="text-xs text-slate-500 flex flex-wrap gap-4 mt-1 sm:mt-0">
-            <span>总量: <strong className="text-slate-700">{keysList.length}</strong></span>
-            <span>筛选: <strong className="text-slate-700">{filtered.length}</strong></span>
-            <span>选取: <strong className="text-slate-700">{selectedCount}</strong></span>
+          <div className="text-xs text-[var(--text-muted)] flex flex-wrap gap-4 mt-1 sm:mt-0">
+            <span>总量: <strong className="text-[var(--text-primary)]">{keysList.length}</strong></span>
+            <span>筛选: <strong className="text-[var(--text-primary)]">{filtered.length}</strong></span>
+            <span>选取: <strong className="text-[var(--text-primary)]">{selectedCount}</strong></span>
           </div>
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto flex-shrink-0">
-          <button className="rounded border border-blue-200 bg-blue-50 px-2 py-1 align-middle text-xs text-blue-700 hover:bg-blue-100" onClick={() => { setInputText(''); setImportHint(''); setShowImportModal(true); }}>新增导入</button>
-          <button className="rounded border border-slate-300 bg-white px-2 py-1 align-middle text-xs text-slate-700 hover:bg-slate-100" onClick={cleanupKeys}>去重</button>
-          <button className="rounded border border-red-200 bg-red-50 px-2 py-1 align-middle text-xs text-red-600 hover:bg-red-100 disabled:opacity-50" disabled={selectedCount === 0} onClick={deleteSelected}>删除选取</button>
+          <button className="rounded-md border border-[rgba(59,130,246,0.3)] bg-[rgba(59,130,246,0.08)] px-2 py-1 align-middle text-xs text-[#60a5fa] hover:bg-[rgba(59,130,246,0.15)] transition-colors" onClick={() => { setInputText(''); setImportHint(''); setShowImportModal(true); }}>
+            新增导入
+          </button>
+          <button className="rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 align-middle text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors" onClick={cleanupKeys}>
+            去重
+          </button>
+          <button className="rounded-md border border-[rgba(239,68,68,0.3)] bg-[var(--danger-soft)] px-2 py-1 align-middle text-xs text-[var(--danger)] hover:bg-[rgba(239,68,68,0.2)] disabled:opacity-50 transition-colors" disabled={selectedCount === 0} onClick={deleteSelected}>
+            删除选取
+          </button>
         </div>
       </div>
 
       {tableHint && (
-        <div className="text-xs text-blue-600 px-1 py-0.5">
+        <div className="text-xs text-[#60a5fa] px-1 py-0.5">
           {tableHint}
         </div>
       )}
 
+      {/* Table */}
       <div className="table-shell text-xs">
         <table className="w-full min-w-[680px]">
           <thead>
             <tr>
-              <th className="w-12 px-3 py-2 text-left">
-                <input type="checkbox" checked={allPageSelected} onChange={togglePageSelect} />
+              <th className="w-12 px-4">
+                <input 
+                  type="checkbox" 
+                  className="rounded border-[var(--border)] bg-transparent text-[var(--accent)] focus:ring-[var(--accent-ring)]" 
+                  checked={allPageSelected} 
+                  onChange={togglePageSelect} 
+                />
               </th>
-              <th className="w-20 px-3 py-2 text-left text-slate-500">序号</th>
-              <th className="px-3 py-2 text-left">密钥内容</th>
-              <th className="w-24 px-3 py-2 text-right">操作</th>
+              <th className="w-16">序号</th>
+              <th>密钥内容</th>
+              <th className="w-24 text-right">操作</th>
             </tr>
           </thead>
           <tbody>
             {pageItems.map((key, idx) => (
-              <tr key={key} className="hover:bg-slate-50/50">
-                <td className="px-3 py-2">
+              <tr key={key}>
+                <td className="px-4">
                   <input
                     type="checkbox"
+                    className="rounded border-[var(--border)] bg-transparent text-[var(--accent)] focus:ring-[var(--accent-ring)]"
                     checked={!!selected[key]}
                     onChange={(e) => setSelected((prev) => ({ ...prev, [key]: e.target.checked }))}
                   />
                 </td>
-                <td className="px-3 py-2 text-slate-400 font-mono">{start + idx + 1}</td>
-                <td className={`px-3 py-2 font-mono ${toneClass}`}>{showSecrets ? key : maskSecret(key)}</td>
-                <td className="px-3 py-2 text-right">
-                  <button className="text-rose-600 hover:text-rose-700 font-medium" onClick={() => removeOne(key)}>
+                <td className="font-mono text-[var(--text-faint)]">{start + idx + 1}</td>
+                <td className={`font-mono ${toneClass}`}>{showSecrets ? key : maskSecret(key)}</td>
+                <td className="text-right">
+                  <button className="text-[var(--danger)] hover:text-red-400 font-medium transition-colors" onClick={() => removeOne(key)}>
                     移除
                   </button>
                 </td>
@@ -195,7 +202,7 @@ export function KeyTableEditor({
             ))}
             {!pageItems.length && (
               <tr>
-                <td colSpan={4} className="px-3 py-12 text-center text-slate-400">
+                <td colSpan={4} className="px-3 py-10 text-center text-[var(--text-faint)]">
                   暂无匹配数据
                 </td>
               </tr>
@@ -204,7 +211,8 @@ export function KeyTableEditor({
         </table>
       </div>
 
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-slate-500 border-t border-slate-100 pt-4">
+      {/* Pagination */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-[var(--text-muted)] border-t border-[var(--border)] pt-4">
         <div className="flex items-center gap-2 order-2 sm:order-1 whitespace-nowrap">
           <span className="shrink-0">行数/页</span>
           <select className="select-base text-xs h-7 py-0 px-2 w-20 shrink-0" value={String(pageSize)} onChange={(e) => setPageSize(Number(e.target.value))}>
@@ -215,22 +223,27 @@ export function KeyTableEditor({
           </select>
         </div>
         <div className="flex flex-wrap items-center gap-2 relative z-0 order-1 sm:order-2 w-full sm:w-auto justify-between sm:justify-end">
-          <span className="mr-1 sm:mr-3 whitespace-nowrap">第 {currentPage} 页 / {totalPages} 页</span>
+          <span className="mr-1 sm:mr-3 whitespace-nowrap font-mono">第 {currentPage} 页 / {totalPages} 页</span>
           <div className="flex items-center gap-2">
-            <button className="rounded border border-slate-200 px-3 py-1 hover:bg-slate-50 disabled:opacity-50" disabled={currentPage <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>上一页</button>
-            <button className="rounded border border-slate-200 px-3 py-1 hover:bg-slate-50 disabled:opacity-50" disabled={currentPage >= totalPages} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>下一页</button>
+            <button className="pagination-btn" disabled={currentPage <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>上一页</button>
+            <button className="pagination-btn" disabled={currentPage >= totalPages} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>下一页</button>
           </div>
         </div>
       </div>
 
+      {/* Import Modal */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-sm pb-20">
-          <div className="w-full max-w-lg rounded-md border border-slate-200 bg-white shadow-2xl flex flex-col max-h-[90vh]">
-            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-              <h3 className="font-medium text-slate-800">输入或粘贴新密钥</h3>
-              <button className="text-slate-400 hover:text-slate-600" onClick={() => setShowImportModal(false)}>✕</button>
+        <div className="modal-overlay animate-fade-in">
+          <div className="modal-panel animate-slide-in max-w-lg">
+            <div className="modal-header">
+              <div>
+                <h3>输入或粘贴新密钥</h3>
+                <p>支持多行粘贴，一行一个。</p>
+              </div>
+              <button className="modal-close" onClick={() => setShowImportModal(false)}>✕</button>
             </div>
-            <div className="flex-1 overflow-auto p-4 flex flex-col gap-3">
+            
+            <div className="modal-body">
               <textarea
                 className="textarea-base w-full flex-1 min-h-[300px]"
                 placeholder={"在此粘贴一行或多行密钥长文本，例如:\nsk-1234\nsk-5678"}
@@ -242,13 +255,14 @@ export function KeyTableEditor({
                 }}
               />
               {importHint && (
-                <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                <div className="rounded border border-[rgba(239,68,68,0.3)] bg-[var(--danger-soft)] px-3 py-2 text-xs text-[var(--danger)]">
                   {importHint}
                 </div>
               )}
             </div>
-            <div className="flex items-center justify-end gap-3 border-t border-slate-100 bg-slate-50 px-4 py-3 rounded-b-md">
-              <button className="rounded px-4 py-2 text-sm text-slate-600 hover:bg-slate-200" onClick={() => setShowImportModal(false)}>取消</button>
+            
+            <div className="modal-footer">
+              <button className={buttonClass()} onClick={() => setShowImportModal(false)}>取消</button>
               <button className={`${buttonClass('primary')} px-6`} onClick={handleImport}>导入 (共 {parseKeysText(inputText).length} 行)</button>
             </div>
           </div>

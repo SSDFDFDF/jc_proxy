@@ -10,6 +10,7 @@ import (
 )
 
 const AccountHeader = "X-Resin-Account"
+const shortHashHexChars = 12
 
 type Config struct {
 	URL      string
@@ -57,8 +58,13 @@ func ParseRuntime(cfg Config) (*RuntimeConfig, error) {
 	}, nil
 }
 
-func BuildAccount(apiKey string) string {
-	sum := xxhash.Sum64String(apiKey)
+func BuildAccount(provider, identity string) string {
+	name := strings.ToLower(strings.TrimSpace(provider))
+	if name == "" {
+		name = "generic"
+	}
+
+	sum := xxhash.Sum64String(identity)
 	buf := make([]byte, 8)
 	buf[0] = byte(sum >> 56)
 	buf[1] = byte(sum >> 48)
@@ -68,7 +74,11 @@ func BuildAccount(apiKey string) string {
 	buf[5] = byte(sum >> 16)
 	buf[6] = byte(sum >> 8)
 	buf[7] = byte(sum)
-	return "kilo:" + hex.EncodeToString(buf)
+	hash := hex.EncodeToString(buf)
+	if len(hash) > shortHashHexChars {
+		hash = hash[:shortHashHexChars]
+	}
+	return "jcp:" + name + "-" + hash
 }
 
 func BuildReverseURL(target string, cfg RuntimeConfig) (string, error) {
