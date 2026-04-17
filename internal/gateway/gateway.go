@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -355,7 +357,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if resp.StatusCode >= http.StatusBadRequest {
-			preview, bodyReader, err := captureResponsePreview(resp.Body, 2048)
+			preview, bodyReader, err := captureResponsePreview(resp.Body, 2048, resp.Header)
 			if err != nil {
 				_ = resp.Body.Close()
 				if isCanceledUpstreamError(req.Context(), err) {
@@ -859,7 +861,7 @@ func shouldRetryDecision(decision keyDecision) bool {
 	return decision.action == keyActionCooldown || decision.action == keyActionDisable
 }
 
-func captureResponsePreview(body io.ReadCloser, limit int) ([]byte, io.Reader, error) {
+func captureResponsePreview(body io.ReadCloser, limit int, header http.Header) ([]byte, io.Reader, error) {
 	if body == nil || body == http.NoBody || limit <= 0 {
 		return nil, http.NoBody, nil
 	}
@@ -867,7 +869,39 @@ func captureResponsePreview(body io.ReadCloser, limit int) ([]byte, io.Reader, e
 	if err != nil {
 		return nil, nil, err
 	}
+	// If the upstream returned compressed content, decompress the preview
+	// so that we get readable text for error classification.
+	preview = maybeDecompressPreview(preview, header)
 	return preview, io.MultiReader(bytes.NewReader(preview), body), nil
+}
+
+// maybeDecompressPreview checks Content-Encoding and decompresses the preview
+// bytes if the response is gzip or deflate encoded. The original compressed bytes
+// are preserved in the returned reader so they can still be proxied to the client.
+func maybeDecompressPreview(data []byte, header http.Header) []byte {
+	enc := strings.ToLower(header.Get("Content-Encoding"))
+	if enc == "" {
+		return data
+	}
+	var reader io.Reader
+	switch {
+	case strings.Contains(enc, "gzip"):
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return data
+		}
+		defer gz.Close()
+		reader = gz
+	case strings.Contains(enc, "deflate"):
+		reader = flate.NewReader(bytes.NewReader(data))
+	default:
+		return data
+	}
+	decompressed, err := io.ReadAll(reader)
+	if err != nil || len(decompressed) == 0 {
+		return data
+	}
+	return decompressed
 }
 
 func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {

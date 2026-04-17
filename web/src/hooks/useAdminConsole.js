@@ -568,13 +568,13 @@ export function useAdminConsole() {
   }, [token])
 
   useEffect(() => {
-    if (!isAuthed || nav !== 'stats' || !statsFilters.vendor) return undefined
+    if (!isAuthed || nav !== 'keyHub' || !statsFilters.vendor) return undefined
     loadFilteredStats({}, true, false).catch(() => {})
     return undefined
   }, [isAuthed, nav, statsFilters.vendor, statsFilters.filter, statsFilters.q, statsFilters.page, statsFilters.pageSize])
 
   useEffect(() => {
-    if (!isAuthed || nav !== 'stats' || !autoRefreshStats || !statsFilters.vendor) return undefined
+    if (!isAuthed || nav !== 'keyHub' || !autoRefreshStats || !statsFilters.vendor) return undefined
     const interval = window.setInterval(() => {
       loadFilteredStats({}, true, false).catch(() => {})
     }, Number(refreshEverySec) * 1000)

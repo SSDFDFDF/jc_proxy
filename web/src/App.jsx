@@ -4,9 +4,8 @@ import { LoginPage } from './pages/LoginPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { RawPage } from './pages/RawPage'
 import { SecurityPage } from './pages/SecurityPage'
-import { StatsPage } from './pages/StatsPage'
+import { KeyHubPage } from './pages/KeyHubPage'
 import { SystemPage } from './pages/SystemPage'
-import { UpstreamKeysPage } from './pages/UpstreamKeysPage'
 import { VendorsPage } from './pages/VendorsPage'
 
 function App() {
@@ -49,12 +48,12 @@ function App() {
           metrics={overview.overviewMetrics}
           vendorRows={overview.vendorRows}
           upstreamStorage={upstream.upstreamKeysData.storage}
-          onOpenUpstreamKeys={() => shell.setNav('upstreamKeys')}
+          onOpenUpstreamKeys={() => shell.setNav('keyHub')}
         />
       )}
 
-      {shell.nav === 'upstreamKeys' && (
-        <UpstreamKeysPage
+      {shell.nav === 'keyHub' && (
+        <KeyHubPage
           upstreamKeysData={upstream.upstreamKeysData}
           selectedKeyVendor={upstream.selectedKeyVendor}
           showSecrets={upstream.showSecrets}
@@ -65,6 +64,15 @@ function App() {
           onEnableKey={upstream.enableUpstreamKey}
           onDisableKey={upstream.disableUpstreamKey}
           onDeleteKey={upstream.deleteUpstreamKey}
+          vendorRows={overview.vendorRows}
+          statsResult={statsView.statsResult}
+          statsFilters={statsView.statsFilters}
+          autoRefreshStats={statsView.autoRefreshStats}
+          refreshEverySec={statsView.refreshEverySec}
+          onStatsFiltersChange={statsView.setStatsFilters}
+          onToggleAutoRefresh={() => statsView.setAutoRefreshStats((prev) => !prev)}
+          onRefreshEverySecChange={statsView.setRefreshEverySec}
+          onRefreshStats={() => statsView.loadFilteredStats({}, false, true)}
         />
       )}
 
@@ -84,7 +92,7 @@ function App() {
           onRefresh={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
           onNewVendorFormChange={config.setNewVendorForm}
           onCreateVendor={config.createVendor}
-          onOpenUpstreamKeys={() => shell.setNav('upstreamKeys')}
+          onOpenUpstreamKeys={() => shell.setNav('keyHub')}
           onSaveVendor={config.saveVendor}
           onDeleteVendor={config.deleteVendor}
           onMutateVendorDraft={config.mutateVendorDraft}
@@ -96,20 +104,7 @@ function App() {
         />
       )}
 
-      {shell.nav === 'stats' && (
-        <StatsPage
-          busy={auth.busy}
-          vendorRows={overview.vendorRows}
-          statsResult={statsView.statsResult}
-          statsFilters={statsView.statsFilters}
-          autoRefreshStats={statsView.autoRefreshStats}
-          refreshEverySec={statsView.refreshEverySec}
-          onStatsFiltersChange={statsView.setStatsFilters}
-          onToggleAutoRefresh={() => statsView.setAutoRefreshStats((prev) => !prev)}
-          onRefreshEverySecChange={statsView.setRefreshEverySec}
-          onRefresh={() => statsView.loadFilteredStats({}, false, true)}
-        />
-      )}
+
 
       {shell.nav === 'system' && (
         <SystemPage
