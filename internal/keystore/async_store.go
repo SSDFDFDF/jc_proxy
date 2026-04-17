@@ -391,6 +391,10 @@ func applyPendingVendorRecord(records []Record, update pendingStatusUpdate) []Re
 		if next[i].Key != update.key {
 			continue
 		}
+		if next[i].Version > update.expectedVersion {
+			sortRecords(next)
+			return next
+		}
 		next[i].Status = update.status
 		next[i].Version = max(next[i].Version, update.expectedVersion+1)
 		next[i].UpdatedAt = update.at
@@ -409,21 +413,6 @@ func applyPendingVendorRecord(records []Record, update pendingStatusUpdate) []Re
 		return next
 	}
 
-	if update.status == KeyStatusActive {
-		sortRecords(next)
-		return next
-	}
-	disabledAt := update.at
-	next = append(next, NormalizeRecord(Record{
-		Key:           update.key,
-		Status:        update.status,
-		DisableReason: update.reason,
-		DisabledAt:    &disabledAt,
-		DisabledBy:    update.actor,
-		Version:       max(int64(1), update.expectedVersion+1),
-		CreatedAt:     update.at,
-		UpdatedAt:     update.at,
-	}))
 	sortRecords(next)
 	return next
 }

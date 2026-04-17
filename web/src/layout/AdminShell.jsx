@@ -88,7 +88,7 @@ export function AdminShell({
         </nav>
 
         <div className="sidebar-user-footer">
-          <div className="flex justify-between items-center">
+          <div className="sidebar-user-summary">
             <strong>{me.username || username}</strong>
             <span className="sidebar-sync">{formatClock(lastSyncAt)}</span>
           </div>

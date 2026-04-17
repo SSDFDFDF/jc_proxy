@@ -217,3 +217,82 @@ func TestAsyncStatusStoreSyncStatusClearsPendingAndPreservesNewerVersion(t *test
 	}
 	t.Fatal("stale async update overwrote newer sync state")
 }
+
+func TestAsyncStatusStoreListSkipsStalePendingWhenBaseVersionIsNewer(t *testing.T) {
+	base := newControlledConditionalStore()
+	store, err := NewAsyncStatusStore(base, AsyncStatusStoreOptions{
+		SetStatusTimeout: time.Second,
+		ErrorHandler:     func(error) {},
+	})
+	if err != nil {
+		t.Fatalf("init async status store failed: %v", err)
+	}
+	defer func() {
+		close(base.release)
+		_ = store.Close()
+	}()
+
+	if err := store.SetStatusIfVersion("openai", "k1", 1, KeyStatusDisabledAuto, "quota", "system:auto"); err != nil {
+		t.Fatalf("enqueue async disable failed: %v", err)
+	}
+
+	select {
+	case <-base.started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected async worker to start")
+	}
+
+	base.mu.Lock()
+	base.records["openai"][0].Status = KeyStatusActive
+	base.records["openai"][0].Version = 3
+	base.mu.Unlock()
+
+	all, err := store.ListAll()
+	if err != nil {
+		t.Fatalf("list all failed: %v", err)
+	}
+	record := all["openai"][0]
+	if record.Status != KeyStatusActive {
+		t.Fatalf("stale pending should not override newer base status, got %q", record.Status)
+	}
+	if record.Version != 3 {
+		t.Fatalf("stale pending should not lower base version, got %d", record.Version)
+	}
+}
+
+func TestAsyncStatusStoreListDoesNotRecreateMissingKeyFromPending(t *testing.T) {
+	base := newControlledConditionalStore()
+	store, err := NewAsyncStatusStore(base, AsyncStatusStoreOptions{
+		SetStatusTimeout: time.Second,
+		ErrorHandler:     func(error) {},
+	})
+	if err != nil {
+		t.Fatalf("init async status store failed: %v", err)
+	}
+	defer func() {
+		close(base.release)
+		_ = store.Close()
+	}()
+
+	if err := store.SetStatusIfVersion("openai", "k1", 1, KeyStatusDisabledAuto, "quota", "system:auto"); err != nil {
+		t.Fatalf("enqueue async disable failed: %v", err)
+	}
+
+	select {
+	case <-base.started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected async worker to start")
+	}
+
+	base.mu.Lock()
+	delete(base.records, "openai")
+	base.mu.Unlock()
+
+	all, err := store.ListAll()
+	if err != nil {
+		t.Fatalf("list all failed: %v", err)
+	}
+	if _, ok := all["openai"]; ok {
+		t.Fatal("stale pending should not recreate deleted key")
+	}
+}
