@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -27,6 +28,13 @@ type testKeyController struct {
 	lastStatus string
 	lastReason string
 	lastActor  string
+}
+
+type blockingConditionalStore struct {
+	mu      sync.Mutex
+	records map[string][]keystore.Record
+	started chan struct{}
+	release chan struct{}
 }
 
 type flushCountWriter struct {
@@ -115,6 +123,144 @@ func (t *testKeyController) SetStatus(vendor, key, status, reason, actor string)
 	t.lastReason = reason
 	t.lastActor = actor
 	return nil
+}
+
+func (s *blockingConditionalStore) Info() keystore.Info {
+	return keystore.Info{Driver: "test"}
+}
+
+func (s *blockingConditionalStore) ListAll() (map[string][]keystore.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneTestRecordMap(s.records), nil
+}
+
+func (s *blockingConditionalStore) List(vendor string) ([]keystore.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]keystore.Record(nil), s.records[vendor]...), nil
+}
+
+func (s *blockingConditionalStore) KeyMap() (map[string][]string, error) {
+	all, err := s.ListAll()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]string, len(all))
+	for vendor, records := range all {
+		for _, record := range records {
+			out[vendor] = append(out[vendor], record.Key)
+		}
+	}
+	return out, nil
+}
+
+func (s *blockingConditionalStore) Replace(vendor string, keys []string) error {
+	return errors.New("not implemented")
+}
+
+func (s *blockingConditionalStore) Append(vendor string, keys []string) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (s *blockingConditionalStore) Delete(vendor string, keys []string) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
+func (s *blockingConditionalStore) SetStatus(vendor, key, status, reason, actor string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return updateTestRecordStatus(s.records, vendor, key, -1, false, status, reason, actor)
+}
+
+func (s *blockingConditionalStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error {
+	select {
+	case <-s.started:
+	default:
+		close(s.started)
+	}
+	<-s.release
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return updateTestRecordStatus(s.records, vendor, key, expectedVersion, true, status, reason, actor)
+}
+
+func (s *blockingConditionalStore) Close() error {
+	return nil
+}
+
+func (s *blockingConditionalStore) DeleteVendor(vendor string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.records, vendor)
+	return nil
+}
+
+func cloneTestRecordMap(src map[string][]keystore.Record) map[string][]keystore.Record {
+	dst := make(map[string][]keystore.Record, len(src))
+	for vendor, records := range src {
+		dst[vendor] = append([]keystore.Record(nil), records...)
+	}
+	return dst
+}
+
+func updateTestRecordStatus(records map[string][]keystore.Record, vendor, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
+	current := records[vendor]
+	for i := range current {
+		if current[i].Key != key {
+			continue
+		}
+		if checkVersion && current[i].Version != expectedVersion {
+			return keystore.ErrVersionMismatch
+		}
+		now := time.Now().UTC()
+		current[i].Status = keystore.NormalizeStatus(status)
+		current[i].Version++
+		current[i].UpdatedAt = now
+		if current[i].Status == keystore.KeyStatusActive {
+			current[i].DisableReason = ""
+			current[i].DisabledAt = nil
+			current[i].DisabledBy = ""
+		} else {
+			current[i].DisableReason = strings.TrimSpace(reason)
+			current[i].DisabledBy = strings.TrimSpace(actor)
+			current[i].DisabledAt = &now
+		}
+		records[vendor] = current
+		return nil
+	}
+	return keystore.ErrKeyNotFound
+}
+
+func TestCaptureResponsePreviewKeepsOriginalCompressedBody(t *testing.T) {
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write([]byte(`{"error":"invalid_api_key"}`)); err != nil {
+		t.Fatalf("gzip write failed: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close failed: %v", err)
+	}
+
+	headers := http.Header{}
+	headers.Set("Content-Encoding", "gzip")
+
+	preview, bodyReader, err := captureResponsePreview(io.NopCloser(bytes.NewReader(compressed.Bytes())), compressed.Len(), headers)
+	if err != nil {
+		t.Fatalf("captureResponsePreview failed: %v", err)
+	}
+	if got := string(preview); !strings.Contains(got, "invalid_api_key") {
+		t.Fatalf("preview = %q, want decompressed JSON preview", got)
+	}
+
+	body, err := io.ReadAll(bodyReader)
+	if err != nil {
+		t.Fatalf("read bodyReader failed: %v", err)
+	}
+	if !bytes.Equal(body, compressed.Bytes()) {
+		t.Fatalf("bodyReader should preserve original compressed bytes")
+	}
 }
 
 func TestSplitVendorPath(t *testing.T) {
@@ -658,6 +804,90 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 	if got := stats[0]["status"]; got != keystore.KeyStatusDisabledAuto {
 		t.Fatalf("unexpected runtime key status: %#v", got)
 	}
+}
+
+func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"incorrect_api_key"}}`))
+	}))
+	defer upstream.Close()
+
+	baseStore := &blockingConditionalStore{
+		records: map[string][]keystore.Record{
+			"openai": {
+				{Key: "k1", Status: keystore.KeyStatusActive, Version: 1},
+			},
+		},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	keyStore, err := keystore.NewAsyncStatusStore(baseStore, keystore.AsyncStatusStoreOptions{
+		SetStatusTimeout: 500 * time.Millisecond,
+		ErrorHandler:     func(error) {},
+	})
+	if err != nil {
+		t.Fatalf("init async key store failed: %v", err)
+	}
+	defer keyStore.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Provider: "openai",
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	router, err := NewWithUpstreamKeyRecords(cfg, baseStore.records, keyStore)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("proxy response waited for async status persistence")
+	}
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected upstream 401 response, got %d", w.Code)
+	}
+
+	select {
+	case <-baseStore.started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected async persistence worker to start")
+	}
+
+	close(baseStore.release)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		records, err := baseStore.ListAll()
+		if err != nil {
+			t.Fatalf("list base store failed: %v", err)
+		}
+		if records["openai"][0].Status == keystore.KeyStatusDisabledAuto {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("async persistence did not update underlying store")
 }
 
 func TestRouterFlushesStreamingResponses(t *testing.T) {

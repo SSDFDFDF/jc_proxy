@@ -108,6 +108,7 @@ func (s *FileStore) Replace(vendor string, keys []string) error {
 			record.DisableReason = ""
 			record.DisabledAt = nil
 			record.DisabledBy = ""
+			record.Version = nextRecordVersion(record.Version)
 			record.UpdatedAt = now
 			next = append(next, record)
 			continue
@@ -115,6 +116,7 @@ func (s *FileStore) Replace(vendor string, keys []string) error {
 		next = append(next, Record{
 			Key:       key,
 			Status:    KeyStatusActive,
+			Version:   1,
 			CreatedAt: now,
 			UpdatedAt: now,
 		})
@@ -161,6 +163,7 @@ func (s *FileStore) Append(vendor string, keys []string) (int, error) {
 		next = append(next, Record{
 			Key:       key,
 			Status:    KeyStatusActive,
+			Version:   1,
 			CreatedAt: now,
 			UpdatedAt: now,
 		})
@@ -217,6 +220,14 @@ func (s *FileStore) Delete(vendor string, keys []string) (int, error) {
 }
 
 func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
+	return s.setStatus(vendor, key, -1, false, status, reason, actor)
+}
+
+func (s *FileStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error {
+	return s.setStatus(vendor, key, expectedVersion, true, status, reason, actor)
+}
+
+func (s *FileStore) setStatus(vendor, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
 	vendor = normalizeVendor(vendor)
 	key = strings.TrimSpace(key)
 	if vendor == "" {
@@ -234,7 +245,7 @@ func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
 
 	current := s.data[vendor]
 	if len(current) == 0 {
-		return errors.New("key not found")
+		return ErrKeyNotFound
 	}
 	found := false
 	for i := range current {
@@ -242,7 +253,11 @@ func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
 			continue
 		}
 		found = true
+		if checkVersion && current[i].Version != expectedVersion {
+			return ErrVersionMismatch
+		}
 		current[i].Status = status
+		current[i].Version = nextRecordVersion(current[i].Version)
 		current[i].UpdatedAt = now
 		if status == KeyStatusActive {
 			current[i].DisableReason = ""
@@ -257,7 +272,7 @@ func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
 		break
 	}
 	if !found {
-		return errors.New("key not found")
+		return ErrKeyNotFound
 	}
 	s.data[vendor] = current
 	return s.saveLocked()

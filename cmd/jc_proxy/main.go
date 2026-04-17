@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"jc_proxy/internal/admin"
 	"jc_proxy/internal/config"
@@ -55,14 +56,14 @@ func main() {
 		log.Printf("generated initial admin password for %s: %s", cfg.Admin.Username, generated)
 	}
 
-	keyStore, err := keystore.New(bootstrapCfg.Storage.UpstreamKeys)
+	rawKeyStore, err := keystore.New(bootstrapCfg.Storage.UpstreamKeys)
 	if err != nil {
 		log.Fatalf("init upstream key store failed: %v", err)
 	}
-	defer keyStore.Close()
 
-	migrated, err := keystore.BootstrapLegacyKeys(keyStore, bootstrapCfg, cfg)
+	migrated, err := keystore.BootstrapLegacyKeys(rawKeyStore, bootstrapCfg, cfg)
 	if err != nil {
+		_ = rawKeyStore.Close()
 		log.Fatalf("bootstrap upstream keys failed: %v", err)
 	}
 	if migrated > 0 || bootstrapCfg.HasLegacyUpstreamKeys() || cfg.HasLegacyUpstreamKeys() {
@@ -72,6 +73,15 @@ func main() {
 			log.Printf("migrated %d legacy upstream key(s) to external store", migrated)
 		}
 	}
+
+	keyStore, err := keystore.NewAsyncStatusStore(rawKeyStore, keystore.AsyncStatusStoreOptions{
+		SetStatusTimeout: time.Second,
+	})
+	if err != nil {
+		_ = rawKeyStore.Close()
+		log.Fatalf("init async upstream key store failed: %v", err)
+	}
+	defer keyStore.Close()
 
 	runtime, err := gateway.NewRuntime(cfg, keyStore)
 	if err != nil {

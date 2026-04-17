@@ -2,11 +2,15 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"jc_proxy/internal/config"
 )
@@ -64,23 +68,23 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 		return keyDecision{action: keyActionSuccess, statusCode: statusCode}
 	}
 
-	body := strings.ToLower(string(preview))
+	body, reasonBody := summarizeResponsePreview(headers, preview)
 	retryAfter := parseRetryAfter(headers.Get("Retry-After"))
-	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), string(preview))
+	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), reasonBody)
 	responseFailover := shouldFailoverResponse(statusCode, policy)
 
 	if shouldAutoDisableInvalidKey(provider, policy.AutoDisable, statusCode, body) {
-		return disableDecision(statusCode, compactReason("auto disabled: invalid key", string(preview)), responseFailover)
+		return disableDecision(statusCode, compactReason("auto disabled: invalid key", reasonBody), responseFailover)
 	}
 
 	switch statusCode {
 	case http.StatusPaymentRequired:
 		if boolOrDefault(policy.AutoDisable.PaymentRequired, true) {
-			return disableDecision(statusCode, compactReason("auto disabled: billing or quota exhausted", string(preview)), responseFailover)
+			return disableDecision(statusCode, compactReason("auto disabled: billing or quota exhausted", reasonBody), responseFailover)
 		}
 	case http.StatusTooManyRequests:
 		if isQuotaExhausted(provider, body) && boolOrDefault(policy.AutoDisable.QuotaExhausted, true) {
-			return disableDecision(statusCode, compactReason("auto disabled: quota exhausted", string(preview)), responseFailover)
+			return disableDecision(statusCode, compactReason("auto disabled: quota exhausted", reasonBody), responseFailover)
 		}
 	}
 
@@ -350,6 +354,174 @@ func compactReason(prefix, body string) string {
 		return body
 	}
 	return prefix + ": " + body
+}
+
+func summarizeResponsePreview(headers http.Header, preview []byte) (string, string) {
+	preview = bytes.TrimSpace(preview)
+	if len(preview) == 0 {
+		return "", ""
+	}
+
+	if matchText, reasonText, ok := summarizeJSONPreview(preview); ok {
+		return strings.ToLower(matchText), reasonText
+	}
+
+	if isLikelyTextPreview(headers, preview) {
+		text := strings.TrimSpace(string(preview))
+		return strings.ToLower(text), text
+	}
+
+	return "", describeNonTextPreview(headers, len(preview))
+}
+
+func summarizeJSONPreview(preview []byte) (string, string, bool) {
+	if !looksLikeJSON(preview) {
+		return "", "", false
+	}
+
+	var payload any
+	if err := json.Unmarshal(preview, &payload); err != nil {
+		return "", "", false
+	}
+
+	parts := collectJSONPreviewStrings(payload)
+	if len(parts) > 0 {
+		reasonText := strings.Join(parts, " | ")
+		return strings.Join(parts, " "), reasonText, true
+	}
+
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, preview); err != nil {
+		return "", "", false
+	}
+	text := compact.String()
+	return text, text, true
+}
+
+func collectJSONPreviewStrings(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil
+		}
+		return []string{text}
+	case []any:
+		var out []string
+		for _, item := range typed {
+			out = append(out, collectJSONPreviewStrings(item)...)
+		}
+		return dedupeStrings(out)
+	case map[string]any:
+		var out []string
+		for _, key := range []string{"message", "error_description", "description", "detail", "error", "type", "code", "param"} {
+			if child, ok := typed[key]; ok {
+				out = append(out, collectJSONPreviewStrings(child)...)
+			}
+		}
+		return dedupeStrings(out)
+	default:
+		return nil
+	}
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func looksLikeJSON(preview []byte) bool {
+	if len(preview) == 0 {
+		return false
+	}
+	switch preview[0] {
+	case '{', '[':
+		return true
+	default:
+		return false
+	}
+}
+
+func isLikelyTextPreview(headers http.Header, preview []byte) bool {
+	if len(preview) == 0 || !utf8.Valid(preview) {
+		return false
+	}
+
+	badRunes := 0
+	totalRunes := 0
+	for _, r := range string(preview) {
+		totalRunes++
+		if unicode.IsPrint(r) || unicode.IsSpace(r) {
+			continue
+		}
+		badRunes++
+	}
+
+	if totalRunes == 0 {
+		return false
+	}
+	if badRunes == 0 {
+		return true
+	}
+
+	contentType := normalizedContentType(headers)
+	if contentType == "" {
+		return badRunes*10 <= totalRunes
+	}
+	if isTextualContentType(contentType) {
+		return badRunes*5 <= totalRunes
+	}
+	return badRunes*10 <= totalRunes
+}
+
+func describeNonTextPreview(headers http.Header, length int) string {
+	contentType := normalizedContentType(headers)
+	if contentType == "" {
+		return fmt.Sprintf("<non-text response body: %d bytes>", length)
+	}
+	return fmt.Sprintf("<non-text response body: %d bytes; content-type=%s>", length, contentType)
+}
+
+func normalizedContentType(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	contentType := strings.TrimSpace(headers.Get("Content-Type"))
+	if contentType == "" {
+		return ""
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return strings.ToLower(contentType)
+	}
+	return strings.ToLower(mediaType)
+}
+
+func isTextualContentType(contentType string) bool {
+	if strings.HasPrefix(contentType, "text/") {
+		return true
+	}
+	switch contentType {
+	case "application/json", "application/problem+json", "application/ld+json", "application/xml", "application/javascript", "application/x-www-form-urlencoded":
+		return true
+	default:
+		return strings.HasSuffix(contentType, "+json") || strings.HasSuffix(contentType, "+xml")
+	}
 }
 
 func containsAny(body string, patterns ...string) bool {

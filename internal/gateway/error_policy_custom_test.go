@@ -26,6 +26,57 @@ func TestClassifyResponseUsesCustomInvalidKeyStatusCode(t *testing.T) {
 	}
 }
 
+func TestClassifyResponseExtractsReadableJSONReason(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json; charset=utf-8")
+
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{}, http.StatusUnauthorized, headers, []byte(`{"error":{"message":"Incorrect API key provided","type":"authentication_error","code":"invalid_api_key"}}`))
+
+	if decision.action != keyActionDisable {
+		t.Fatalf("decision.action = %q, want %q", decision.action, keyActionDisable)
+	}
+	if strings.Contains(decision.reason, "{") {
+		t.Fatalf("decision.reason = %q, want parsed summary instead of raw JSON", decision.reason)
+	}
+	for _, want := range []string{"Incorrect API key provided", "authentication_error", "invalid_api_key"} {
+		if !strings.Contains(decision.reason, want) {
+			t.Fatalf("decision.reason = %q, want substring %q", decision.reason, want)
+		}
+	}
+}
+
+func TestClassifyResponseUsesBinaryPlaceholderReason(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/octet-stream")
+
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			InvalidKeyStatusCodes: []int{498},
+		},
+	}, 498, headers, []byte{0x1b, 0x8f, 0x00, 0xff, 0x42, 0x10})
+
+	if decision.action != keyActionDisable {
+		t.Fatalf("decision.action = %q, want %q", decision.action, keyActionDisable)
+	}
+	if !strings.Contains(decision.reason, "<non-text response body: 6 bytes; content-type=application/octet-stream>") {
+		t.Fatalf("decision.reason = %q, want non-text placeholder", decision.reason)
+	}
+}
+
+func TestClassifyResponseDoesNotMisclassifyBinaryUnauthorizedAsInvalidKey(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/octet-stream")
+
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{}, http.StatusUnauthorized, headers, []byte{0x00, 0xff, 0x81, 0x10})
+
+	if decision.action != keyActionCooldown {
+		t.Fatalf("decision.action = %q, want %q", decision.action, keyActionCooldown)
+	}
+	if strings.Contains(decision.reason, "\x00") {
+		t.Fatalf("decision.reason = %q, should not contain raw binary bytes", decision.reason)
+	}
+}
+
 func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

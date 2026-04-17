@@ -186,7 +186,18 @@ export function VendorsPage({
                   <h3 className="section-title text-sm">客户端密钥</h3>
                   <p className="mt-1 text-xs text-[var(--text-muted)]">密钥管理前置到这里，支持直接复制、删除、批量导入和自动生成。</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="field-inline">
+                    <span className="field-label">启用鉴权</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft.client_auth?.enabled ? 'true' : 'false'}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.client_auth.enabled = e.target.value === 'true' })}
+                    >
+                      <option value="false">关闭</option>
+                      <option value="true">开启</option>
+                    </select>
+                  </div>
                   <button className={buttonClass('ghost')} type="button" onClick={handleGenerateClientKey}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.49 8.49l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.49-8.49l2.83-2.83" />
@@ -199,32 +210,18 @@ export function VendorsPage({
                 </div>
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
-                <label className="field-wrap">
-                  <span className="field-label">启用客户端鉴权</span>
-                  <select
-                    className="select-base"
-                    value={vendorDraft.client_auth?.enabled ? 'true' : 'false'}
-                    onChange={(e) => onMutateVendorDraft((draft) => { draft.client_auth.enabled = e.target.value === 'true' })}
-                  >
-                    <option value="false">false</option>
-                    <option value="true">true</option>
-                  </select>
-                </label>
-
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium text-[var(--text-primary)]">客户端请求端点</div>
-                      <div className="mt-1 text-xs text-[var(--text-muted)]">客户端可通过 `Authorization: Bearer sk-jcp-...` 或 `X-API-Key` 调用。</div>
-                    </div>
-                    <button className="text-xs font-medium text-[var(--accent)] hover:text-blue-400 transition-colors" type="button" onClick={copyRequestEndpoint}>
-                      复制
-                    </button>
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-[var(--text-primary)]">客户端请求端点</div>
+                    <div className="mt-1 text-xs text-[var(--text-muted)]">客户端可通过 `Authorization: Bearer sk-jcp-...` 或 `X-API-Key` 调用。</div>
                   </div>
-                  <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)] break-all">
-                    {requestEndpoint || '--'}
-                  </div>
+                  <button className="text-xs font-medium text-[var(--accent)] hover:text-blue-400 transition-colors" type="button" onClick={copyRequestEndpoint}>
+                    复制
+                  </button>
+                </div>
+                <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)] break-all">
+                  {requestEndpoint || '--'}
                 </div>
               </div>
 
@@ -364,43 +361,51 @@ export function VendorsPage({
             <div className="space-y-4">
               <h3 className="section-title text-sm">错误适配</h3>
 
-              <section className="grid gap-4 xl:grid-cols-3">
-                <label className="field-wrap">
-                  <span className="field-label">无效密钥自动禁用</span>
-                  <select
-                    className="select-base"
-                    value={vendorDraft.error_policy?.auto_disable?.invalid_key ? 'true' : 'false'}
-                    onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.auto_disable.invalid_key = e.target.value === 'true' })}
-                  >
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                  </select>
-                </label>
-                <label className="field-wrap xl:col-span-2">
-                  <span className="field-label">无效密钥触发响应码</span>
-                  <textarea
-                    className="textarea-base h-24"
-                    placeholder={'一行一个，或用逗号分隔\n例如：401\n403'}
-                    value={invalidKeyStatusCodesText}
-                    onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
-                  />
-                </label>
-                <label className="field-wrap xl:col-span-3">
-                  <span className="field-label">无效密钥关键字</span>
-                  <textarea
-                    className="textarea-base h-24"
-                    placeholder={'一行一个关键字\n例如：incorrect_api_key\nkey revoked'}
-                    value={invalidKeyKeywordsText}
-                    onChange={(e) => onInvalidKeyKeywordsTextChange(e.target.value)}
-                  />
-                </label>
-              </section>
-
-              <section className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
+              <div className="section-card">
+                <div className="section-card-header">
                   <div>
-                    <h4 className="section-title text-sm">退避规则</h4>
-                    <p className="text-xs text-[var(--text-muted)]">按顺序匹配响应码 / 关键字，并设置退避时长与 Retry-After 策略。</p>
+                    <h4>无效密钥检测</h4>
+                    <p>匹配到指定响应码或关键字时，自动禁用上游密钥。</p>
+                  </div>
+                  <div className="field-inline">
+                    <span className="field-label">自动禁用</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft.error_policy?.auto_disable?.invalid_key ? 'true' : 'false'}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.auto_disable.invalid_key = e.target.value === 'true' })}
+                    >
+                      <option value="true">开启</option>
+                      <option value="false">关闭</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="section-card-body xl:grid-cols-2 xl:grid">
+                  <label className="field-wrap">
+                    <span className="field-label">触发响应码</span>
+                    <textarea
+                      className="textarea-base h-20"
+                      placeholder={'一行一个，或用逗号分隔\n例如：401\n403'}
+                      value={invalidKeyStatusCodesText}
+                      onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
+                    />
+                  </label>
+                  <label className="field-wrap">
+                    <span className="field-label">关键字</span>
+                    <textarea
+                      className="textarea-base h-20"
+                      placeholder={'一行一个关键字\n例如：incorrect_api_key\nkey revoked'}
+                      value={invalidKeyKeywordsText}
+                      onChange={(e) => onInvalidKeyKeywordsTextChange(e.target.value)}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="section-card">
+                <div className="section-card-header">
+                  <div>
+                    <h4>退避规则</h4>
+                    <p>按顺序匹配响应码 / 关键字，并设置退避时长与 Retry-After 策略。</p>
                   </div>
                   <button className={buttonClass('ghost')} onClick={addResponseRuleRow}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -412,8 +417,11 @@ export function VendorsPage({
 
                 <div className="space-y-3">
                   {responseRuleRows.map((row, index) => (
-                    <div key={index} className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
-                      <div className="mb-3 text-xs text-[var(--text-muted)]">规则 {index + 1}</div>
+                    <div key={index} className="section-card" style={{ background: 'var(--bg-surface)' }}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-[var(--text-muted)]">规则 {index + 1}</span>
+                        <button className={buttonClass('danger')} onClick={() => removeResponseRuleRow(index)}>删除</button>
+                      </div>
                       <div className="grid gap-3 xl:grid-cols-2">
                         <label className="field-wrap">
                           <span className="field-label">响应码</span>
@@ -434,7 +442,7 @@ export function VendorsPage({
                           />
                         </label>
                       </div>
-                      <div className="mt-3 grid gap-3 xl:grid-cols-[1fr_180px_auto] xl:items-end">
+                      <div className="grid gap-3 xl:grid-cols-2">
                         <label className="field-wrap">
                           <span className="field-label">退避时长</span>
                           <input
@@ -457,37 +465,40 @@ export function VendorsPage({
                             <option value="max">max</option>
                           </select>
                         </label>
-                        <button className={buttonClass('danger')} onClick={() => removeResponseRuleRow(index)}>
-                          删除规则
-                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
-              </section>
+              </div>
 
-              <section className="grid gap-4 xl:grid-cols-3">
+              <div className="section-card">
+                <div className="section-card-header">
+                  <div>
+                    <h4>请求切换</h4>
+                    <p>上游返回指定响应码时，自动切换到下一个上游。</p>
+                  </div>
+                  <div className="field-inline">
+                    <span className="field-label">请求错误切换</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft.error_policy?.failover?.request_error ? 'true' : 'false'}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.failover.request_error = e.target.value === 'true' })}
+                    >
+                      <option value="true">开启</option>
+                      <option value="false">关闭</option>
+                    </select>
+                  </div>
+                </div>
                 <label className="field-wrap">
-                  <span className="field-label">请求错误切换</span>
-                  <select
-                    className="select-base"
-                    value={vendorDraft.error_policy?.failover?.request_error ? 'true' : 'false'}
-                    onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.failover.request_error = e.target.value === 'true' })}
-                  >
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                  </select>
-                </label>
-                <label className="field-wrap xl:col-span-2">
                   <span className="field-label">响应码切换</span>
                   <textarea
-                    className="textarea-base h-24"
+                    className="textarea-base h-20"
                     placeholder={'一行一个，或用逗号分隔\n例如：401\n429\n500,502,503'}
                     value={failoverResponseStatusCodesText}
                     onChange={(e) => onFailoverResponseStatusCodesTextChange(e.target.value)}
                   />
                 </label>
-              </section>
+              </div>
             </div>
 
             {/* Resin */}

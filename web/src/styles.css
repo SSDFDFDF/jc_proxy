@@ -419,6 +419,78 @@ code, .font-mono {
   font-weight: 500;
 }
 
+/* Inline field: label + control on same row */
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.field-inline > .field-label {
+  margin: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.field-inline .select-base,
+.field-inline .input-base {
+  flex-shrink: 0;
+}
+
+/* Compact card for sub-sections */
+.section-card {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.section-card-header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.section-card-header p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.section-card-body {
+  display: grid;
+  gap: 12px;
+}
+
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.field-inline > .field-label {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.field-inline > .select-base {
+  min-width: 120px;
+}
+
 /* ═══════════════════════════════════════════════════
    Buttons
    ═══════════════════════════════════════════════════ */

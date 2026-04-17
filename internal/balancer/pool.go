@@ -18,6 +18,7 @@ type KeyConfig struct {
 	DisableReason string
 	DisabledAt    *time.Time
 	DisabledBy    string
+	Version       int64
 }
 
 type KeyState struct {
@@ -26,6 +27,7 @@ type KeyState struct {
 	DisableReason     string
 	DisabledAt        *time.Time
 	DisabledBy        string
+	Version           int64
 	TotalRequests     int
 	SuccessCount      int
 	Inflight          int
@@ -91,6 +93,7 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int,
 			DisableReason: strings.TrimSpace(cfg.DisableReason),
 			DisabledAt:    cfg.DisabledAt,
 			DisabledBy:    strings.TrimSpace(cfg.DisabledBy),
+			Version:       cfg.Version,
 		})
 	}
 
@@ -161,6 +164,15 @@ func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok
 
 	p.keys[pick].Inflight++
 	return pick, p.keys[pick].Key, true
+}
+
+func (p *Pool) Version(idx int) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if idx < 0 || idx >= len(p.keys) {
+		return 0
+	}
+	return p.keys[idx].Version
 }
 
 func (p *Pool) ReleaseSuccess(idx int) {

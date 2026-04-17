@@ -22,12 +22,22 @@ const (
 	KeyStatusDisabledAuto   = "disabled_auto"
 )
 
+var (
+	ErrKeyNotFound     = errors.New("key not found")
+	ErrVersionMismatch = errors.New("key version mismatch")
+)
+
+type ConditionalStatusStore interface {
+	SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error
+}
+
 type Record struct {
 	Key           string     `json:"key"`
 	Status        string     `json:"status"`
 	DisableReason string     `json:"disable_reason,omitempty"`
 	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
 	DisabledBy    string     `json:"disabled_by,omitempty"`
+	Version       int64      `json:"version"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
@@ -132,6 +142,9 @@ func IsActiveStatus(status string) bool {
 func NormalizeRecord(record Record) Record {
 	record.Key = strings.TrimSpace(record.Key)
 	record.Status = NormalizeStatus(record.Status)
+	if record.Version < 0 {
+		record.Version = 0
+	}
 	if record.Status == KeyStatusActive {
 		record.DisableReason = ""
 		record.DisabledAt = nil
@@ -173,4 +186,11 @@ func sortRecords(records []Record) {
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].Key < records[j].Key
 	})
+}
+
+func nextRecordVersion(current int64) int64 {
+	if current < 0 {
+		current = 0
+	}
+	return current + 1
 }

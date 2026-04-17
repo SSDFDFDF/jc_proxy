@@ -169,6 +169,7 @@ func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]key
 					DisableReason: record.DisableReason,
 					DisabledAt:    record.DisabledAt,
 					DisabledBy:    record.DisabledBy,
+					Version:       record.Version,
 				})
 			}
 		}
@@ -309,6 +310,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	triedManagedKeyIdx := make(map[int]struct{})
 	for {
 		idx := -1
+		selectedVersion := int64(0)
 		selectedKey := vg.passthroughUpstreamKey(req)
 		if useManagedKey {
 			var keyOK bool
@@ -317,6 +319,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				http.Error(w, "all vendor keys in cooldown or disabled", http.StatusServiceUnavailable)
 				return
 			}
+			selectedVersion = vg.pool.Version(idx)
 		}
 
 		targetURL, err := vg.buildTargetURL(path, req.URL.RawQuery, selectedKey)
@@ -349,7 +352,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream request failed: %v", err))
-			vg.applyDecision(idx, selectedKey, decision)
+			vg.applyDecision(idx, selectedKey, selectedVersion, decision)
 			if bodySource.canRetryRequestError(decision) && useManagedKey {
 				triedManagedKeyIdx[idx] = struct{}{}
 			}
@@ -371,7 +374,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					return
 				}
 				decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("read upstream response failed: %v", err))
-				vg.applyDecision(idx, selectedKey, decision)
+				vg.applyDecision(idx, selectedKey, selectedVersion, decision)
 				if bodySource.canRetryRequestError(decision) && useManagedKey {
 					triedManagedKeyIdx[idx] = struct{}{}
 				}
@@ -384,7 +387,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 			decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview)
 			if bodySource.canRetryResponse(resp.StatusCode, decision) {
-				vg.applyDecision(idx, selectedKey, decision)
+				vg.applyDecision(idx, selectedKey, selectedVersion, decision)
 				if useManagedKey {
 					triedManagedKeyIdx[idx] = struct{}{}
 				}
@@ -392,16 +395,16 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					_ = resp.Body.Close()
 					continue
 				}
-				r.writeUpstreamResponse(w, req, resp, bodyReader, vg, idx, selectedKey, decision, true)
+				r.writeUpstreamResponse(w, req, resp, bodyReader, vg, idx, selectedKey, selectedVersion, decision, true)
 				return
 			}
 
-			r.writeUpstreamResponse(w, req, resp, bodyReader, vg, idx, selectedKey, decision, false)
+			r.writeUpstreamResponse(w, req, resp, bodyReader, vg, idx, selectedKey, selectedVersion, decision, false)
 			return
 		}
 
 		decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
-		r.writeUpstreamResponse(w, req, resp, resp.Body, vg, idx, selectedKey, decision, false)
+		r.writeUpstreamResponse(w, req, resp, resp.Body, vg, idx, selectedKey, selectedVersion, decision, false)
 		return
 	}
 }
@@ -599,7 +602,7 @@ func (v *vendorGateway) hasAvailableKey(excluded map[int]struct{}) bool {
 	return false
 }
 
-func (v *vendorGateway) applyDecision(idx int, key string, decision keyDecision) {
+func (v *vendorGateway) applyDecision(idx int, key string, version int64, decision keyDecision) {
 	if !v.usesManagedUpstreamKeys() || v.pool == nil || idx < 0 {
 		return
 	}
@@ -613,7 +616,11 @@ func (v *vendorGateway) applyDecision(idx int, key string, decision keyDecision)
 	case keyActionDisable:
 		v.pool.Disable(idx, decision.statusCode, decision.reason, "system:auto")
 		if v.keyCtrl != nil {
-			_ = v.keyCtrl.SetStatus(v.name, key, keystore.KeyStatusDisabledAuto, decision.reason, "system:auto")
+			if versioned, ok := v.keyCtrl.(keystore.ConditionalStatusStore); ok {
+				_ = versioned.SetStatusIfVersion(v.name, key, version, keystore.KeyStatusDisabledAuto, decision.reason, "system:auto")
+			} else {
+				_ = v.keyCtrl.SetStatus(v.name, key, keystore.KeyStatusDisabledAuto, decision.reason, "system:auto")
+			}
 		}
 	default:
 		v.pool.Release(idx)
@@ -883,14 +890,14 @@ func captureResponsePreview(body io.ReadCloser, limit int, header http.Header) (
 	if body == nil || body == http.NoBody || limit <= 0 {
 		return nil, http.NoBody, nil
 	}
-	preview, err := io.ReadAll(io.LimitReader(body, int64(limit)))
+	rawPreview, err := io.ReadAll(io.LimitReader(body, int64(limit)))
 	if err != nil {
 		return nil, nil, err
 	}
 	// If the upstream returned compressed content, decompress the preview
 	// so that we get readable text for error classification.
-	preview = maybeDecompressPreview(preview, header)
-	return preview, io.MultiReader(bytes.NewReader(preview), body), nil
+	preview := maybeDecompressPreview(rawPreview, header)
+	return preview, io.MultiReader(bytes.NewReader(rawPreview), body), nil
 }
 
 // maybeDecompressPreview checks Content-Encoding and decompresses the preview
@@ -933,7 +940,7 @@ func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
 	}
 }
 
-func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, decision keyDecision, decisionApplied bool) {
+func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, selectedVersion int64, decision keyDecision, decisionApplied bool) {
 	defer resp.Body.Close()
 
 	if body == nil {
@@ -959,16 +966,16 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 	if copyErr != nil {
 		if !decisionApplied {
 			if resp.StatusCode >= http.StatusBadRequest {
-				vg.applyDecision(idx, selectedKey, decision)
+				vg.applyDecision(idx, selectedKey, selectedVersion, decision)
 			} else {
-				vg.applyDecision(idx, selectedKey, keyDecision{action: keyActionNone})
+				vg.applyDecision(idx, selectedKey, selectedVersion, keyDecision{action: keyActionNone})
 			}
 		}
 		return
 	}
 
 	if !decisionApplied {
-		vg.applyDecision(idx, selectedKey, decision)
+		vg.applyDecision(idx, selectedKey, selectedVersion, decision)
 	}
 }
 
