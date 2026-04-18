@@ -26,6 +26,28 @@ function statusLabel(status) {
   }
 }
 
+function normalizeStatus(status) {
+  switch (String(status || '').trim()) {
+    case 'disabled_manual':
+      return 'disabled_manual'
+    case 'disabled_auto':
+      return 'disabled_auto'
+    default:
+      return 'active'
+  }
+}
+
+function resolveDisplayState(item, rt = {}) {
+  const displayStatus = normalizeStatus(rt.status || item.status)
+  const displayDisableReason = String(rt.disable_reason || item.disable_reason || rt.last_error || '').trim()
+  const displayDisabledBy = String(rt.disabled_by || item.disabled_by || '').trim()
+  return {
+    displayStatus,
+    displayDisableReason,
+    displayDisabledBy
+  }
+}
+
 function ErrorPill({ label, count, tone = 'default' }) {
   if (!count) return null
   const toneClasses = {
@@ -86,7 +108,11 @@ export function KeyHubPage({
   const mergedItems = useMemo(() => {
     return allItems.map((item) => {
       const rt = runtimeMap.get(item.masked) || {}
-      return { ...item, rt }
+      return {
+        ...item,
+        rt,
+        ...resolveDisplayState(item, rt)
+      }
     })
   }, [allItems, runtimeMap])
 
@@ -95,13 +121,22 @@ export function KeyHubPage({
     const q = query.trim().toLowerCase()
     return mergedItems.filter((item) => {
       const rt = item.rt
-      if (statusFilter === 'active' && item.status !== 'active') return false
-      if (statusFilter === 'disabled' && item.status === 'active') return false
+      if (statusFilter === 'active' && item.displayStatus !== 'active') return false
+      if (statusFilter === 'disabled' && item.displayStatus === 'active') return false
       if (statusFilter === 'backoff' && !(Number(rt.backoff_remaining_seconds || 0) > 0)) return false
-      if (statusFilter === 'issues' && !(Number(rt.unauthorized_count || 0) > 0 || Number(rt.forbidden_count || 0) > 0 || Number(rt.rate_limit_count || 0) > 0 || Number(rt.other_error_count || 0) > 0)) return false
+      if (statusFilter === 'issues' && !(
+        item.displayStatus !== 'active' ||
+        Number(rt.backoff_remaining_seconds || 0) > 0 ||
+        Number(rt.failures || 0) > 0 ||
+        Number(rt.unauthorized_count || 0) > 0 ||
+        Number(rt.forbidden_count || 0) > 0 ||
+        Number(rt.rate_limit_count || 0) > 0 ||
+        Number(rt.other_error_count || 0) > 0 ||
+        item.displayDisableReason
+      )) return false
       if (statusFilter === 'inflight' && !(Number(rt.inflight || 0) > 0)) return false
       if (!q) return true
-      const haystack = [item.key, item.masked, item.status, item.disable_reason, item.disabled_by, rt.last_error]
+      const haystack = [item.key, item.masked, item.displayStatus, item.displayDisableReason, item.displayDisabledBy, rt.last_error]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -132,27 +167,52 @@ export function KeyHubPage({
   /* ── Build unified vendor tabs ── */
   const vendorTabs = useMemo(() => {
     const upstreamVendors = upstreamKeysData.vendors || []
+    const upstreamItems = upstreamKeysData.items || {}
+    const runtimeVendors = runtimeStats?.vendors || {}
     const runtimeLookup = new Map(vendorRows.map((r) => [r.name, r]))
     const seen = new Set()
     const tabs = []
+
+    const buildCounts = (vendor, fallbackActive = 0, fallbackDisabled = 0) => {
+      const vendorItems = upstreamItems[vendor] || []
+      if (!vendorItems.length) {
+        return { activeCount: fallbackActive, disabledCount: fallbackDisabled }
+      }
+      const vendorRuntimeMap = new Map()
+      for (const item of runtimeVendors[vendor] || []) {
+        if (item.key_masked) vendorRuntimeMap.set(item.key_masked, item)
+      }
+      let activeCount = 0
+      let disabledCount = 0
+      for (const item of vendorItems) {
+        const rt = vendorRuntimeMap.get(item.masked) || {}
+        const { displayStatus } = resolveDisplayState(item, rt)
+        if (displayStatus === 'active') activeCount += 1
+        else disabledCount += 1
+      }
+      return { activeCount, disabledCount }
+    }
+
     for (const item of upstreamVendors) {
       seen.add(item.vendor)
       const runtime = runtimeLookup.get(item.vendor)
+      const counts = buildCounts(item.vendor, item.active_count || 0, item.disabled_count || 0)
       tabs.push({
         vendor: item.vendor,
-        activeCount: item.active_count || 0,
-        disabledCount: item.disabled_count || 0,
+        activeCount: counts.activeCount,
+        disabledCount: counts.disabledCount,
         backoff: runtime?.backoff || 0,
         inflight: runtime?.inflight || 0
       })
     }
     for (const row of vendorRows) {
       if (!seen.has(row.name)) {
-        tabs.push({ vendor: row.name, activeCount: 0, disabledCount: 0, backoff: row.backoff || 0, inflight: row.inflight || 0 })
+        const counts = buildCounts(row.name, 0, 0)
+        tabs.push({ vendor: row.name, activeCount: counts.activeCount, disabledCount: counts.disabledCount, backoff: row.backoff || 0, inflight: row.inflight || 0 })
       }
     }
     return tabs
-  }, [upstreamKeysData.vendors, vendorRows])
+  }, [upstreamKeysData.vendors, upstreamKeysData.items, vendorRows, runtimeStats?.vendors])
 
   /* ── Add keys handler ── */
   const submitAddKeys = async () => {
@@ -299,7 +359,7 @@ export function KeyHubPage({
                   const failedCount = Math.max(0, totalRequests - successCount)
                   const failures = Number(rt.failures || 0)
                   const lastStatus = Number(rt.last_status || 0)
-                  const reason = String(item.disable_reason || rt.last_error || '').trim()
+                  const reason = item.displayDisableReason
                   const err401 = Number(rt.unauthorized_count || 0)
                   const err403 = Number(rt.forbidden_count || 0)
                   const err429 = Number(rt.rate_limit_count || 0)
@@ -308,7 +368,7 @@ export function KeyHubPage({
                   const successRate = totalRequests === 0 ? 0 : Math.round((successCount / totalRequests) * 100)
                   const errRate = totalRequests === 0 ? 0 : 100 - successRate
                   const secondaryParts = []
-                  if (item.disabled_by) secondaryParts.push(`by ${item.disabled_by}`)
+                  if (item.displayDisabledBy) secondaryParts.push(`by ${item.displayDisabledBy}`)
                   if (lastStatus >= 400) secondaryParts.push(`HTTP ${lastStatus}`)
                   if (failures > 0) secondaryParts.push(`连败 ${failures}`)
 
@@ -317,8 +377,8 @@ export function KeyHubPage({
                       <td className="text-center font-mono text-[10px] text-[var(--text-faint)]">{start + idx + 1}</td>
                       <td><div className="font-mono text-[var(--text-primary)] truncate">{showSecrets ? item.key : item.masked}</div></td>
                       <td>
-                        <span className={`inline-flex rounded border px-1.5 py-[1px] text-[10px] font-semibold tracking-wide ${statusTone(item.status)}`}>
-                          {statusLabel(item.status)}
+                        <span className={`inline-flex rounded border px-1.5 py-[1px] text-[10px] font-semibold tracking-wide ${statusTone(item.displayStatus)}`}>
+                          {statusLabel(item.displayStatus)}
                         </span>
                       </td>
                       <td>
@@ -360,7 +420,7 @@ export function KeyHubPage({
                       </td>
                       <td>
                         <div className="flex justify-end gap-3">
-                          {item.status === 'active' ? (
+                          {item.displayStatus === 'active' ? (
                             <button className="font-medium text-[var(--warning)] hover:text-amber-400 transition-colors" onClick={() => onDisableKey(item.key)}>禁用</button>
                           ) : (
                             <button className="font-medium text-[var(--success)] hover:text-emerald-400 transition-colors" onClick={() => onEnableKey(item.key)}>启用</button>

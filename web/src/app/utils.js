@@ -31,12 +31,12 @@ export function parseDurationToNs(text, fallbackNs = 0) {
 }
 
 export function listToText(arr) {
-  return (arr || []).join('\n')
+  return (arr || []).join(', ')
 }
 
 export function textToList(text) {
   return String(text || '')
-    .split('\n')
+    .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
 }
@@ -69,7 +69,7 @@ export function normalizeKeys(keys) {
 }
 
 export function parseKeysText(text) {
-  return normalizeKeys(String(text || '').split('\n').map((line) => line.trim()))
+  return normalizeKeys(String(text || '').split(',').map((item) => item.trim()))
 }
 
 function randomAlphaNum(length = 24) {

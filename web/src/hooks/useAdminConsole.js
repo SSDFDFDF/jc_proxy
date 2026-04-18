@@ -23,13 +23,13 @@ import {
 } from '../app/utils'
 
 function statusCodesToText(codes) {
-  return (codes || []).map((code) => String(code)).join('\n')
+  return (codes || []).map((code) => String(code)).join(', ')
 }
 
 function parseStatusCodesText(text) {
   const out = []
   const seen = new Set()
-  for (const part of String(text || '').split(/[\n,;]+/)) {
+  for (const part of String(text || '').split(',')) {
     const raw = part.trim()
     if (!raw) continue
     if (!/^\d+$/.test(raw)) {

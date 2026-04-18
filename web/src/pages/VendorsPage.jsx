@@ -86,7 +86,7 @@ export function VendorsPage({
   }
 
   const importClientKeys = () => {
-    const incoming = normalizeKeys(String(clientKeyInputText || '').split('\n').map((line) => line.trim()))
+    const incoming = normalizeKeys(String(clientKeyInputText || '').split(',').map((item) => item.trim()))
     if (!incoming.length) return
     updateClientKeys([...(clientKeys || []), ...incoming])
     setClientKeyInputText('')
@@ -256,10 +256,10 @@ export function VendorsPage({
 
                 <aside className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">批量导入</div>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">一行一个客户端密钥，导入时会自动去重。</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">逗号分隔客户端密钥，导入时会自动去重。</p>
                   <textarea
                     className="textarea-base mt-3 h-48"
-                    placeholder={'sk-jcp-xxxxxxxxxxxxxxxxxxxxxxxx\nsk-jcp-yyyyyyyyyyyyyyyyyyyyyyyy'}
+                    placeholder={'sk-jcp-xxxxxxxxxxxxxxxxxxxxxxxx, sk-jcp-yyyyyyyyyyyyyyyyyyyyyyyy'}
                     value={clientKeyInputText}
                     onChange={(e) => setClientKeyInputText(e.target.value)}
                   />
@@ -382,18 +382,18 @@ export function VendorsPage({
                 <div className="section-card-body xl:grid-cols-2 xl:grid">
                   <label className="field-wrap">
                     <span className="field-label">触发响应码</span>
-                    <textarea
-                      className="textarea-base h-20"
-                      placeholder={'一行一个，或用逗号分隔\n例如：401\n403'}
+                    <input
+                      className="input-base"
+                      placeholder="逗号分隔，例如：401, 403"
                       value={invalidKeyStatusCodesText}
                       onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
                     />
                   </label>
                   <label className="field-wrap">
                     <span className="field-label">关键字</span>
-                    <textarea
-                      className="textarea-base h-20"
-                      placeholder={'一行一个关键字\n例如：incorrect_api_key\nkey revoked'}
+                    <input
+                      className="input-base"
+                      placeholder="逗号分隔，例如：incorrect_api_key, key revoked"
                       value={invalidKeyKeywordsText}
                       onChange={(e) => onInvalidKeyKeywordsTextChange(e.target.value)}
                     />
@@ -425,18 +425,18 @@ export function VendorsPage({
                       <div className="grid gap-3 xl:grid-cols-2">
                         <label className="field-wrap">
                           <span className="field-label">响应码</span>
-                          <textarea
-                            className="textarea-base h-20"
-                            placeholder={'一行一个，或用逗号分隔\n例如：429\n500,502,503'}
+                          <input
+                            className="input-base"
+                            placeholder="逗号分隔，例如：429, 500, 502, 503"
                             value={row.statusCodesText}
                             onChange={(e) => updateResponseRuleRow(index, { statusCodesText: e.target.value })}
                           />
                         </label>
                         <label className="field-wrap">
                           <span className="field-label">关键字</span>
-                          <textarea
-                            className="textarea-base h-20"
-                            placeholder={'可留空，一行一个\n例如：slow down'}
+                          <input
+                            className="input-base"
+                            placeholder="逗号分隔，可留空，例如：slow down"
                             value={row.keywordsText}
                             onChange={(e) => updateResponseRuleRow(index, { keywordsText: e.target.value })}
                           />
@@ -491,9 +491,9 @@ export function VendorsPage({
                 </div>
                 <label className="field-wrap">
                   <span className="field-label">响应码切换</span>
-                  <textarea
-                    className="textarea-base h-20"
-                    placeholder={'一行一个，或用逗号分隔\n例如：401\n429\n500,502,503'}
+                  <input
+                    className="input-base"
+                    placeholder="逗号分隔，例如：401, 429, 500, 502, 503"
                     value={failoverResponseStatusCodesText}
                     onChange={(e) => onFailoverResponseStatusCodesTextChange(e.target.value)}
                   />
