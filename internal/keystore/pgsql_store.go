@@ -54,7 +54,7 @@ func (s *PGStore) Info() Info {
 }
 
 func (s *PGStore) ListAll() (map[string][]Record, error) {
-	query := fmt.Sprintf("SELECT vendor, api_key, status, disable_reason, disabled_at, disabled_by, version, created_at, updated_at FROM %s ORDER BY vendor, api_key", s.tableSQL)
+	query := fmt.Sprintf("SELECT vendor, api_key, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at FROM %s ORDER BY vendor, api_key", s.tableSQL)
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("query upstream keys: %w", err)
@@ -65,7 +65,7 @@ func (s *PGStore) ListAll() (map[string][]Record, error) {
 	for rows.Next() {
 		var vendor string
 		var record Record
-		if err := rows.Scan(&vendor, &record.Key, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&vendor, &record.Key, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan upstream keys: %w", err)
 		}
 		out[vendor] = append(out[vendor], NormalizeRecord(record))
@@ -82,7 +82,7 @@ func (s *PGStore) List(vendor string) ([]Record, error) {
 		return nil, errors.New("vendor is required")
 	}
 
-	query := fmt.Sprintf("SELECT api_key, status, disable_reason, disabled_at, disabled_by, version, created_at, updated_at FROM %s WHERE vendor = $1 ORDER BY api_key", s.tableSQL)
+	query := fmt.Sprintf("SELECT api_key, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at FROM %s WHERE vendor = $1 ORDER BY api_key", s.tableSQL)
 	rows, err := s.db.Query(query, vendor)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor upstream keys: %w", err)
@@ -92,7 +92,7 @@ func (s *PGStore) List(vendor string) ([]Record, error) {
 	var out []Record
 	for rows.Next() {
 		var record Record
-		if err := rows.Scan(&record.Key, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.Key, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan vendor upstream keys: %w", err)
 		}
 		out = append(out, NormalizeRecord(record))
@@ -128,7 +128,7 @@ func (s *PGStore) Replace(vendor string, keys []string) error {
 	}
 	defer tx.Rollback()
 
-	selectQuery := fmt.Sprintf("SELECT api_key, status, disable_reason, disabled_at, disabled_by, version, created_at, updated_at FROM %s WHERE vendor = $1 ORDER BY api_key", s.tableSQL)
+	selectQuery := fmt.Sprintf("SELECT api_key, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at FROM %s WHERE vendor = $1 ORDER BY api_key", s.tableSQL)
 	rows, err := tx.Query(selectQuery, vendor)
 	if err != nil {
 		return fmt.Errorf("query existing upstream keys: %w", err)
@@ -136,7 +136,7 @@ func (s *PGStore) Replace(vendor string, keys []string) error {
 	existing := make([]Record, 0)
 	for rows.Next() {
 		var record Record
-		if err := rows.Scan(&record.Key, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.Key, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan existing upstream keys: %w", err)
 		}
@@ -154,13 +154,13 @@ func (s *PGStore) Replace(vendor string, keys []string) error {
 	if _, err := tx.Exec(deleteQuery, vendor); err != nil {
 		return fmt.Errorf("clear vendor upstream keys: %w", err)
 	}
-	insertQuery := fmt.Sprintf("INSERT INTO %s (vendor, api_key, status, disable_reason, disabled_at, disabled_by, version, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", s.tableSQL)
+	insertQuery := fmt.Sprintf("INSERT INTO %s (vendor, api_key, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)", s.tableSQL)
 	if len(keys) == 0 {
 		for _, record := range existing {
 			if IsActiveStatus(record.Status) {
 				continue
 			}
-			if _, err := tx.Exec(insertQuery, vendor, record.Key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
+			if _, err := tx.Exec(insertQuery, vendor, record.Key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
 				return fmt.Errorf("preserve disabled upstream key: %w", err)
 			}
 		}
@@ -183,7 +183,7 @@ func (s *PGStore) Replace(vendor string, keys []string) error {
 			record.DisabledAt = nil
 			record.DisabledBy = ""
 			record = NormalizeRecord(record)
-			if _, err := tx.Exec(insertQuery, vendor, key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
+			if _, err := tx.Exec(insertQuery, vendor, key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
 				return fmt.Errorf("insert upstream key: %w", err)
 			}
 		}
@@ -194,7 +194,7 @@ func (s *PGStore) Replace(vendor string, keys []string) error {
 			if _, ok := selected[record.Key]; ok {
 				continue
 			}
-			if _, err := tx.Exec(insertQuery, vendor, record.Key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
+			if _, err := tx.Exec(insertQuery, vendor, record.Key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
 				return fmt.Errorf("insert disabled upstream key: %w", err)
 			}
 		}
@@ -222,7 +222,7 @@ func (s *PGStore) Append(vendor string, keys []string) (int, error) {
 	defer tx.Rollback()
 
 	insertQuery := fmt.Sprintf(
-		"INSERT INTO %s (vendor, api_key, status, disable_reason, disabled_at, disabled_by, version, created_at, updated_at) VALUES ($1, $2, $3, '', NULL, '', 1, NOW(), NOW()) ON CONFLICT (vendor, api_key) DO NOTHING",
+		"INSERT INTO %s (vendor, api_key, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at) VALUES ($1, $2, $3, '', NULL, '', 0, 0, 0, 0, 0, 0, 0, '', 1, NOW(), NOW()) ON CONFLICT (vendor, api_key) DO NOTHING",
 		s.tableSQL,
 	)
 	added := 0
@@ -282,6 +282,67 @@ func (s *PGStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, 
 
 func (s *PGStore) SetStatusIfVersionContext(ctx context.Context, vendor, key string, expectedVersion int64, status, reason, actor string) error {
 	return s.updateStatus(ctx, vendor, key, expectedVersion, true, status, reason, actor)
+}
+
+func (s *PGStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin apply runtime stats deltas: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := fmt.Sprintf(
+		`UPDATE %s
+SET total_requests = total_requests + $3,
+    success_count = success_count + $4,
+    last_status = $5,
+    unauthorized_count = unauthorized_count + $6,
+    forbidden_count = forbidden_count + $7,
+    rate_limit_count = rate_limit_count + $8,
+    other_error_count = other_error_count + $9,
+    last_error = $10
+WHERE vendor = $1 AND api_key = $2`,
+		s.tableSQL,
+	)
+	for vendor, records := range deltas {
+		vendor = normalizeVendor(vendor)
+		if vendor == "" {
+			continue
+		}
+		for _, delta := range records {
+			key := strings.TrimSpace(delta.Key)
+			if key == "" {
+				continue
+			}
+			if delta.RuntimeStats.IsZero() {
+				continue
+			}
+			if _, err := tx.Exec(
+				query,
+				vendor,
+				key,
+				delta.TotalRequests,
+				delta.SuccessCount,
+				delta.LastStatus,
+				delta.UnauthorizedCount,
+				delta.ForbiddenCount,
+				delta.RateLimitCount,
+				delta.OtherErrorCount,
+				normalizeRuntimeLastError(delta.LastError),
+			); err != nil {
+				return fmt.Errorf("apply runtime stats delta: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit runtime stats deltas: %w", err)
+	}
+	return nil
 }
 
 func (s *PGStore) updateStatus(ctx context.Context, vendor, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
@@ -367,6 +428,14 @@ CREATE TABLE IF NOT EXISTS %s (
   disable_reason TEXT NOT NULL DEFAULT '',
   disabled_at TIMESTAMPTZ NULL,
   disabled_by TEXT NOT NULL DEFAULT '',
+  total_requests BIGINT NOT NULL DEFAULT 0,
+  success_count BIGINT NOT NULL DEFAULT 0,
+  last_status INTEGER NOT NULL DEFAULT 0,
+  unauthorized_count BIGINT NOT NULL DEFAULT 0,
+  forbidden_count BIGINT NOT NULL DEFAULT 0,
+  rate_limit_count BIGINT NOT NULL DEFAULT 0,
+  other_error_count BIGINT NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
   version BIGINT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -378,6 +447,21 @@ CREATE TABLE IF NOT EXISTS %s (
 	migration := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0`, s.tableSQL)
 	if _, err := s.db.Exec(migration); err != nil {
 		return fmt.Errorf("migrate upstream key pgsql table version: %w", err)
+	}
+	runtimeMigrations := []string{
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS total_requests BIGINT NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS success_count BIGINT NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS last_status INTEGER NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unauthorized_count BIGINT NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS forbidden_count BIGINT NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS rate_limit_count BIGINT NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS other_error_count BIGINT NOT NULL DEFAULT 0`, s.tableSQL),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT ''`, s.tableSQL),
+	}
+	for _, ddl := range runtimeMigrations {
+		if _, err := s.db.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate upstream key pgsql runtime stats: %w", err)
+		}
 	}
 	return nil
 }

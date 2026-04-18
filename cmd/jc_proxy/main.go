@@ -87,6 +87,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("init gateway runtime failed: %v", err)
 	}
+	statsStore, ok := any(keyStore).(keystore.RuntimeStatsStore)
+	if !ok {
+		log.Fatalf("upstream key store does not support runtime stats persistence")
+	}
+	statsPersister, err := gateway.NewRuntimeStatsPersister(runtime, statsStore, gateway.RuntimeStatsPersisterOptions{})
+	if err != nil {
+		log.Fatalf("init runtime stats persister failed: %v", err)
+	}
+	defer statsPersister.Close()
 
 	sessions := admin.NewSessionManager(cfg.Admin.SessionTTL)
 	audit := admin.NewAuditLogger(cfg.Admin.AuditLogPath)

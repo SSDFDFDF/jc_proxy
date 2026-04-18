@@ -37,6 +37,7 @@ type AsyncStatusStore struct {
 	base        Store
 	conditional ConditionalStatusStore
 	ctxAware    conditionalStatusStoreWithContext
+	statsStore  RuntimeStatsStore
 	timeout     time.Duration
 	onError     func(error)
 
@@ -82,6 +83,9 @@ func NewAsyncStatusStore(base Store, opts AsyncStatusStoreOptions) (*AsyncStatus
 	}
 	if ctxAware, ok := conditional.(conditionalStatusStoreWithContext); ok {
 		store.ctxAware = ctxAware
+	}
+	if statsStore, ok := base.(RuntimeStatsStore); ok {
+		store.statsStore = statsStore
 	}
 	go store.run()
 	return store, nil
@@ -188,6 +192,13 @@ func (s *AsyncStatusStore) DeleteVendor(vendor string) error {
 	}
 	s.clearVendorPending(vendor)
 	return nil
+}
+
+func (s *AsyncStatusStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelta) error {
+	if s.statsStore == nil {
+		return errors.New("base store does not support runtime stats persistence")
+	}
+	return s.statsStore.ApplyRuntimeStatsDeltas(deltas)
 }
 
 func (s *AsyncStatusStore) Close() error {

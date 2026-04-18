@@ -223,6 +223,59 @@ func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
 	return s.setStatus(vendor, key, -1, false, status, reason, actor)
 }
 
+func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := cloneRecordMap(s.data)
+	changed := false
+	for vendor, records := range deltas {
+		vendor = normalizeVendor(vendor)
+		current := next[vendor]
+		if len(current) == 0 {
+			continue
+		}
+		index := make(map[string]int, len(current))
+		for i := range current {
+			index[current[i].Key] = i
+		}
+		for _, delta := range records {
+			key := strings.TrimSpace(delta.Key)
+			if key == "" || delta.RuntimeStats.IsZero() {
+				continue
+			}
+			idx, ok := index[key]
+			if !ok {
+				continue
+			}
+			current[idx].RuntimeStats.TotalRequests += delta.TotalRequests
+			current[idx].RuntimeStats.SuccessCount += delta.SuccessCount
+			current[idx].RuntimeStats.UnauthorizedCount += delta.UnauthorizedCount
+			current[idx].RuntimeStats.ForbiddenCount += delta.ForbiddenCount
+			current[idx].RuntimeStats.RateLimitCount += delta.RateLimitCount
+			current[idx].RuntimeStats.OtherErrorCount += delta.OtherErrorCount
+			current[idx].RuntimeStats.LastStatus = delta.LastStatus
+			current[idx].RuntimeStats.LastError = normalizeRuntimeLastError(delta.LastError)
+			current[idx].UpdatedAt = time.Now().UTC()
+			current[idx] = NormalizeRecord(current[idx])
+			changed = true
+		}
+		next[vendor] = current
+	}
+	if !changed {
+		return nil
+	}
+	if err := s.saveDataLocked(next); err != nil {
+		return err
+	}
+	s.data = next
+	return nil
+}
+
 func (s *FileStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error {
 	return s.setStatus(vendor, key, expectedVersion, true, status, reason, actor)
 }
@@ -323,12 +376,16 @@ func (s *FileStore) load() error {
 }
 
 func (s *FileStore) saveLocked() error {
+	return s.saveDataLocked(s.data)
+}
+
+func (s *FileStore) saveDataLocked(records map[string][]Record) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir upstream key dir: %w", err)
 	}
 
-	snap := fileSnapshot{Vendors: cloneRecordMap(s.data)}
+	snap := fileSnapshot{Vendors: cloneRecordMap(records)}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal upstream key file: %w", err)

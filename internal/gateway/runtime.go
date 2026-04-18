@@ -25,6 +25,7 @@ type Runtime struct {
 	cfg       *config.Config
 	keySource UpstreamKeySource
 	keyCtrl   UpstreamKeyController
+	stats     *runtimeStatsRegistry
 }
 
 func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, error) {
@@ -32,7 +33,7 @@ func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, erro
 	if err != nil {
 		return nil, err
 	}
-	rt := &Runtime{cfg: cloned, keySource: keySource}
+	rt := &Runtime{cfg: cloned, keySource: keySource, stats: newRuntimeStatsRegistry()}
 	if ctrl, ok := keySource.(UpstreamKeyController); ok {
 		rt.keyCtrl = ctrl
 	}
@@ -85,11 +86,11 @@ func (rt *Runtime) Snapshot() *Router {
 
 func (rt *Runtime) buildRouter(cfg *config.Config) (*Router, error) {
 	if rt.keySource == nil {
-		return New(cfg)
+		return newRouterWithUpstreamKeyRecords(cfg, nil, rt.keyCtrl, rt.stats)
 	}
 	keys, err := rt.keySource.ListAll()
 	if err != nil {
 		return nil, fmt.Errorf("load upstream keys: %w", err)
 	}
-	return NewWithUpstreamKeyRecords(cfg, keys, rt.keyCtrl)
+	return newRouterWithUpstreamKeyRecords(cfg, keys, rt.keyCtrl, rt.stats)
 }

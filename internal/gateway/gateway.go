@@ -138,6 +138,10 @@ func New(cfg *config.Config) (*Router, error) {
 }
 
 func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController) (*Router, error) {
+	return newRouterWithUpstreamKeyRecords(cfg, upstreamKeys, keyCtrl, nil)
+}
+
+func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry) (*Router, error) {
 	if cfg == nil {
 		return nil, errors.New("config is nil")
 	}
@@ -163,21 +167,32 @@ func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]key
 		keyConfigs := make([]balancer.KeyConfig, 0)
 		if upstreamKeys != nil {
 			for _, record := range upstreamKeys[name] {
+				statsHandle := (*balancer.RuntimeStatsHandle)(nil)
+				if statsRegistry != nil {
+					statsHandle = statsRegistry.Handle(name, record.Key, record.RuntimeStats)
+				}
 				keyConfigs = append(keyConfigs, balancer.KeyConfig{
 					Key:           record.Key,
 					Status:        record.Status,
 					DisableReason: record.DisableReason,
 					DisabledAt:    record.DisabledAt,
 					DisabledBy:    record.DisabledBy,
+					RuntimeStats:  record.RuntimeStats,
 					Version:       record.Version,
+					Stats:         statsHandle,
 				})
 			}
 		}
 		if len(keyConfigs) == 0 {
 			for _, key := range vendor.Upstream.Keys {
+				statsHandle := (*balancer.RuntimeStatsHandle)(nil)
+				if statsRegistry != nil {
+					statsHandle = statsRegistry.Handle(name, key, keystore.RuntimeStats{})
+				}
 				keyConfigs = append(keyConfigs, balancer.KeyConfig{
 					Key:    key,
 					Status: keystore.KeyStatusActive,
+					Stats:  statsHandle,
 				})
 			}
 		}
@@ -415,6 +430,30 @@ func (r *Router) VendorStats() map[string][]map[string]any {
 		out[name] = v.pool.Stats()
 	}
 	return out
+}
+
+func (r *Router) VendorStateSnapshots() map[string][]balancer.KeyState {
+	out := make(map[string][]balancer.KeyState, len(r.vendors))
+	for name, v := range r.vendors {
+		out[name] = v.pool.Snapshot()
+	}
+	return out
+}
+
+func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
+	if r == nil || prev == nil {
+		return
+	}
+	for name, vendor := range r.vendors {
+		if vendor == nil || vendor.pool == nil {
+			continue
+		}
+		prevVendor := prev.vendors[name]
+		if prevVendor == nil || prevVendor.pool == nil {
+			continue
+		}
+		vendor.pool.MergeRuntimeStats(prevVendor.pool.Snapshot())
+	}
 }
 
 func newUIHandler() http.Handler {

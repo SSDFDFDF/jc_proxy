@@ -31,15 +31,36 @@ type ConditionalStatusStore interface {
 	SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error
 }
 
+type RuntimeStats struct {
+	TotalRequests     int    `json:"total_requests,omitempty"`
+	SuccessCount      int    `json:"success_count,omitempty"`
+	LastStatus        int    `json:"last_status,omitempty"`
+	UnauthorizedCount int    `json:"unauthorized_count,omitempty"`
+	ForbiddenCount    int    `json:"forbidden_count,omitempty"`
+	RateLimitCount    int    `json:"rate_limit_count,omitempty"`
+	OtherErrorCount   int    `json:"other_error_count,omitempty"`
+	LastError         string `json:"last_error,omitempty"`
+}
+
+type RuntimeStatsDelta struct {
+	Key string `json:"key"`
+	RuntimeStats
+}
+
+type RuntimeStatsStore interface {
+	ApplyRuntimeStatsDeltas(map[string][]RuntimeStatsDelta) error
+}
+
 type Record struct {
 	Key           string     `json:"key"`
 	Status        string     `json:"status"`
 	DisableReason string     `json:"disable_reason,omitempty"`
 	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
 	DisabledBy    string     `json:"disabled_by,omitempty"`
-	Version       int64      `json:"version"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	RuntimeStats
+	Version   int64     `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Store interface {
@@ -193,4 +214,59 @@ func nextRecordVersion(current int64) int64 {
 		current = 0
 	}
 	return current + 1
+}
+
+func normalizeRuntimeLastError(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	runes := []rune(message)
+	if len(runes) <= 240 {
+		return message
+	}
+	return string(runes[:237]) + "..."
+}
+
+func (s RuntimeStats) Equal(other RuntimeStats) bool {
+	return s == other
+}
+
+func (s RuntimeStats) DeltaSince(prev RuntimeStats) (RuntimeStats, bool) {
+	delta := RuntimeStats{}
+	if s.TotalRequests < prev.TotalRequests ||
+		s.SuccessCount < prev.SuccessCount ||
+		s.UnauthorizedCount < prev.UnauthorizedCount ||
+		s.ForbiddenCount < prev.ForbiddenCount ||
+		s.RateLimitCount < prev.RateLimitCount ||
+		s.OtherErrorCount < prev.OtherErrorCount {
+		return RuntimeStats{}, false
+	}
+	delta.TotalRequests = s.TotalRequests - prev.TotalRequests
+	delta.SuccessCount = s.SuccessCount - prev.SuccessCount
+	delta.UnauthorizedCount = s.UnauthorizedCount - prev.UnauthorizedCount
+	delta.ForbiddenCount = s.ForbiddenCount - prev.ForbiddenCount
+	delta.RateLimitCount = s.RateLimitCount - prev.RateLimitCount
+	delta.OtherErrorCount = s.OtherErrorCount - prev.OtherErrorCount
+	if delta.TotalRequests > 0 ||
+		delta.SuccessCount > 0 ||
+		delta.UnauthorizedCount > 0 ||
+		delta.ForbiddenCount > 0 ||
+		delta.RateLimitCount > 0 ||
+		delta.OtherErrorCount > 0 {
+		delta.LastStatus = s.LastStatus
+		delta.LastError = s.LastError
+	}
+	return delta, true
+}
+
+func (s RuntimeStats) IsZero() bool {
+	return s.TotalRequests == 0 &&
+		s.SuccessCount == 0 &&
+		s.LastStatus == 0 &&
+		s.UnauthorizedCount == 0 &&
+		s.ForbiddenCount == 0 &&
+		s.RateLimitCount == 0 &&
+		s.OtherErrorCount == 0 &&
+		s.LastError == ""
 }

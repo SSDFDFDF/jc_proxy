@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -888,6 +889,333 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("async persistence did not update underlying store")
+}
+
+func TestRuntimeRefreshKeysPreservesRuntimeStats(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	store, err := keystore.NewFileStore(filepath.Join(t.TempDir(), "upstream_keys.json"))
+	if err != nil {
+		t.Fatalf("init file store failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+		t.Fatalf("append key failed: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	rt, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	if err := rt.RefreshKeys(); err != nil {
+		t.Fatalf("refresh keys failed: %v", err)
+	}
+
+	stats := rt.Snapshot().VendorStats()["openai"]
+	if got := stats[0]["total_requests"]; got != 1 {
+		t.Fatalf("total_requests after refresh = %#v, want 1", got)
+	}
+	if got := stats[0]["success_count"]; got != 1 {
+		t.Fatalf("success_count after refresh = %#v, want 1", got)
+	}
+}
+
+func TestRuntimeRefreshKeysDoesNotBlockInflightRequestsAndPreservesRuntimeStats(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	ctrl := &testKeyController{
+		records: map[string][]keystore.Record{
+			"openai": {
+				{Key: "k1", Status: keystore.KeyStatusActive},
+			},
+		},
+	}
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	rt, err := NewRuntime(cfg, ctrl)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+
+	reqDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+		w := httptest.NewRecorder()
+		rt.ServeHTTP(w, req)
+		reqDone <- w
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach upstream")
+	}
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- rt.RefreshKeys()
+	}()
+
+	select {
+	case err := <-refreshDone:
+		if err != nil {
+			t.Fatalf("refresh keys failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete while request was in flight")
+	}
+
+	stats := rt.Snapshot().VendorStats()["openai"]
+	if got := stats[0]["total_requests"]; got != 0 {
+		t.Fatalf("total_requests before in-flight request finishes = %#v, want 0", got)
+	}
+
+	close(release)
+
+	select {
+	case w := <-reqDone:
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request did not complete")
+	}
+
+	stats = rt.Snapshot().VendorStats()["openai"]
+	if got := stats[0]["total_requests"]; got != 1 {
+		t.Fatalf("total_requests after inflight refresh = %#v, want 1", got)
+	}
+	if got := stats[0]["success_count"]; got != 1 {
+		t.Fatalf("success_count after inflight refresh = %#v, want 1", got)
+	}
+}
+
+func TestBuildRuntimeStatsDeltasSkipsUnchangedSnapshot(t *testing.T) {
+	current := map[string]map[string]keystore.RuntimeStats{
+		"openai": {
+			"k1": {
+				TotalRequests: 1,
+				SuccessCount:  1,
+				LastStatus:    http.StatusOK,
+			},
+		},
+	}
+
+	deltas, nextBaseline := buildRuntimeStatsDeltas(current, cloneRuntimeStatsSnapshot(current))
+	if len(deltas) != 0 {
+		t.Fatalf("deltas = %#v, want empty for unchanged snapshot", deltas)
+	}
+	if got := nextBaseline["openai"]["k1"]; !got.Equal(current["openai"]["k1"]) {
+		t.Fatalf("nextBaseline = %#v, want %#v", got, current["openai"]["k1"])
+	}
+}
+
+func TestRuntimeStatsPersistAcrossRestart(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"bad key"}`))
+	}))
+	defer upstream.Close()
+
+	store, err := keystore.NewFileStore(filepath.Join(t.TempDir(), "upstream_keys.json"))
+	if err != nil {
+		t.Fatalf("init file store failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+		t.Fatalf("append key failed: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Provider: "openai",
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	rt, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+	persister, err := NewRuntimeStatsPersister(rt, store, RuntimeStatsPersisterOptions{
+		FlushInterval: time.Hour,
+		ErrorHandler:  func(error) {},
+	})
+	if err != nil {
+		t.Fatalf("init stats persister failed: %v", err)
+	}
+	defer persister.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+
+	if err := persister.Flush(); err != nil {
+		t.Fatalf("flush runtime stats failed: %v", err)
+	}
+
+	restarted, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("restart runtime failed: %v", err)
+	}
+	stats := restarted.Snapshot().VendorStats()["openai"]
+	if got := stats[0]["total_requests"]; got != 1 {
+		t.Fatalf("restarted total_requests = %#v, want 1", got)
+	}
+	if got := stats[0]["unauthorized_count"]; got != 1 {
+		t.Fatalf("restarted unauthorized_count = %#v, want 1", got)
+	}
+	if got := stats[0]["last_status"]; got != http.StatusUnauthorized {
+		t.Fatalf("restarted last_status = %#v, want %d", got, http.StatusUnauthorized)
+	}
+}
+
+func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"bad key"}`))
+	}))
+	defer upstream.Close()
+
+	store, err := keystore.NewFileStore(filepath.Join(t.TempDir(), "upstream_keys.json"))
+	if err != nil {
+		t.Fatalf("init file store failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+		t.Fatalf("append key failed: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Provider: "openai",
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	rt, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+	persister, err := NewRuntimeStatsPersister(rt, store, RuntimeStatsPersisterOptions{
+		FlushInterval: time.Hour,
+		ErrorHandler:  func(error) {},
+	})
+	if err != nil {
+		t.Fatalf("init stats persister failed: %v", err)
+	}
+	defer persister.Close()
+
+	reqDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+		w := httptest.NewRecorder()
+		rt.ServeHTTP(w, req)
+		reqDone <- w
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach upstream")
+	}
+
+	if err := rt.RefreshKeys(); err != nil {
+		t.Fatalf("refresh keys failed: %v", err)
+	}
+
+	close(release)
+
+	select {
+	case w := <-reqDone:
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request did not complete")
+	}
+
+	if err := persister.Flush(); err != nil {
+		t.Fatalf("flush runtime stats failed: %v", err)
+	}
+
+	restarted, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("restart runtime failed: %v", err)
+	}
+	stats := restarted.Snapshot().VendorStats()["openai"]
+	if got := stats[0]["total_requests"]; got != 1 {
+		t.Fatalf("restarted total_requests = %#v, want 1", got)
+	}
+	if got := stats[0]["unauthorized_count"]; got != 1 {
+		t.Fatalf("restarted unauthorized_count = %#v, want 1", got)
+	}
+	if got := stats[0]["last_status"]; got != http.StatusUnauthorized {
+		t.Fatalf("restarted last_status = %#v, want %d", got, http.StatusUnauthorized)
+	}
 }
 
 func TestRouterFlushesStreamingResponses(t *testing.T) {

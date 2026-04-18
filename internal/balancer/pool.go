@@ -18,28 +18,24 @@ type KeyConfig struct {
 	DisableReason string
 	DisabledAt    *time.Time
 	DisabledBy    string
-	Version       int64
+	keystore.RuntimeStats
+	Version int64
+	Stats   *RuntimeStatsHandle
 }
 
 type KeyState struct {
-	Key               string
-	Status            string
-	DisableReason     string
-	DisabledAt        *time.Time
-	DisabledBy        string
-	Version           int64
-	TotalRequests     int
-	SuccessCount      int
-	Inflight          int
-	Failures          int
-	LastStatus        int
-	CooldownUntil     time.Time
-	CooldownLevel     int
-	UnauthorizedCount int
-	ForbiddenCount    int
-	RateLimitCount    int
-	OtherErrorCount   int
-	LastError         string
+	Key           string
+	Status        string
+	DisableReason string
+	DisabledAt    *time.Time
+	DisabledBy    string
+	keystore.RuntimeStats
+	Version       int64
+	Inflight      int
+	Failures      int
+	CooldownUntil time.Time
+	CooldownLevel int
+	stats         *RuntimeStatsHandle
 }
 
 const maxLastErrorLength = 240
@@ -86,6 +82,12 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int,
 		if key == "" {
 			continue
 		}
+		stats := cfg.Stats
+		if stats == nil {
+			stats = NewRuntimeStatsHandle(cfg.RuntimeStats)
+		} else {
+			stats.MergeBaseline(cfg.RuntimeStats)
+		}
 		status := keystore.NormalizeStatus(cfg.Status)
 		states = append(states, KeyState{
 			Key:           key,
@@ -94,6 +96,7 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int,
 			DisabledAt:    cfg.DisabledAt,
 			DisabledBy:    strings.TrimSpace(cfg.DisabledBy),
 			Version:       cfg.Version,
+			stats:         stats,
 		})
 	}
 
@@ -181,12 +184,9 @@ func (p *Pool) ReleaseSuccess(idx int) {
 	if !p.releaseInflightLocked(idx) {
 		return
 	}
-	p.keys[idx].TotalRequests++
-	p.keys[idx].SuccessCount++
+	p.recordSuccessLocked(idx)
 	p.keys[idx].Failures = 0
-	p.keys[idx].LastStatus = http.StatusOK
 	p.keys[idx].CooldownLevel = 0
-	p.keys[idx].LastError = ""
 }
 
 func (p *Pool) Release(idx int) {
@@ -264,7 +264,11 @@ func (p *Pool) EnableKey(key string) bool {
 	p.keys[idx].CooldownUntil = time.Time{}
 	p.keys[idx].CooldownLevel = 0
 	p.keys[idx].Failures = 0
-	p.keys[idx].LastError = ""
+	if p.keys[idx].stats != nil {
+		p.keys[idx].stats.ClearLastError()
+	} else {
+		p.keys[idx].LastError = ""
+	}
 	return true
 }
 
@@ -273,7 +277,60 @@ func (p *Pool) Snapshot() []KeyState {
 	defer p.mu.Unlock()
 	cp := make([]KeyState, len(p.keys))
 	copy(cp, p.keys)
+	for i := range cp {
+		if cp[i].stats != nil {
+			cp[i].RuntimeStats = cp[i].stats.Snapshot()
+		}
+	}
 	return cp
+}
+
+func (p *Pool) MergeRuntimeStats(states []KeyState) {
+	if len(states) == 0 {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	index := make(map[string]KeyState, len(states))
+	for _, state := range states {
+		index[strings.TrimSpace(state.Key)] = state
+	}
+
+	for i := range p.keys {
+		current := &p.keys[i]
+		prev, ok := index[current.Key]
+		if !ok {
+			continue
+		}
+		if current.stats != nil {
+			current.stats.MergeBaseline(prev.RuntimeStats)
+			continue
+		}
+		if prev.TotalRequests > current.TotalRequests {
+			current.TotalRequests = prev.TotalRequests
+		}
+		if prev.SuccessCount > current.SuccessCount {
+			current.SuccessCount = prev.SuccessCount
+		}
+		if prev.UnauthorizedCount > current.UnauthorizedCount {
+			current.UnauthorizedCount = prev.UnauthorizedCount
+		}
+		if prev.ForbiddenCount > current.ForbiddenCount {
+			current.ForbiddenCount = prev.ForbiddenCount
+		}
+		if prev.RateLimitCount > current.RateLimitCount {
+			current.RateLimitCount = prev.RateLimitCount
+		}
+		if prev.OtherErrorCount > current.OtherErrorCount {
+			current.OtherErrorCount = prev.OtherErrorCount
+		}
+		if prev.TotalRequests >= current.TotalRequests {
+			current.LastStatus = prev.LastStatus
+			current.LastError = prev.LastError
+		}
+	}
 }
 
 func (p *Pool) Stats() []map[string]any {
@@ -333,7 +390,22 @@ func (p *Pool) recordFailureLocked(idx int) {
 	}
 }
 
+func (p *Pool) recordSuccessLocked(idx int) {
+	if p.keys[idx].stats != nil {
+		p.keys[idx].stats.RecordSuccess()
+		return
+	}
+	p.keys[idx].TotalRequests++
+	p.keys[idx].SuccessCount++
+	p.keys[idx].LastStatus = http.StatusOK
+	p.keys[idx].LastError = ""
+}
+
 func (p *Pool) recordErrorLocked(idx int, statusCode int, reason string) {
+	if p.keys[idx].stats != nil {
+		p.keys[idx].stats.RecordError(statusCode, reason)
+		return
+	}
 	p.keys[idx].TotalRequests++
 	p.keys[idx].LastStatus = statusCode
 	p.keys[idx].LastError = normalizeLastError(reason)
