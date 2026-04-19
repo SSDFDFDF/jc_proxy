@@ -302,6 +302,7 @@ export function VendorsPage({
                   <option value="round_robin">round_robin</option>
                   <option value="random">random</option>
                   <option value="least_used">least_used</option>
+                  <option value="least_requests">least_requests</option>
                 </select>
               </label>
             </section>

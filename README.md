@@ -5,7 +5,7 @@
 ## 功能概览
 
 - 按路径转发到不同上游，例如 `/openai/...`、`/anthropic/...`
-- 支持 `round_robin`、`random`、`least_used` 三种 Key 选择策略
+- 支持 `round_robin`、`random`、`least_used`、`least_requests` 四种 Key 选择策略
 - 内置错误分类、自动 cooldown、自动禁用失效 Key、故障切换
 - 支持流式响应转发
 - 支持管理后台、上游 Key 存储和运行时配置更新

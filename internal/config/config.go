@@ -708,7 +708,7 @@ func (c *Config) validate(requireVendors bool) error {
 			}
 		}
 		switch vendor.LoadBalance {
-		case "round_robin", "random", "least_used":
+		case "round_robin", "random", "least_used", "least_requests":
 		default:
 			return fmt.Errorf("vendor %q invalid load_balance: %s", vendorName, vendor.LoadBalance)
 		}

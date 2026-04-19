@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"jc_proxy/internal/keystore"
 )
 
 func TestRoundRobinAcquire(t *testing.T) {
@@ -42,6 +44,83 @@ func TestRoundRobinAcquire(t *testing.T) {
 	}
 	if snap[2].TotalRequests != 1 || snap[2].SuccessCount != 1 {
 		t.Fatalf("unexpected counters for k3: total=%d success=%d", snap[2].TotalRequests, snap[2].SuccessCount)
+	}
+}
+
+func TestLeastUsedPrefersLowerInflightThenLowerUsage(t *testing.T) {
+	p, err := NewPoolWithConfigs("least_used", []KeyConfig{
+		{
+			Key:          "k1",
+			Status:       keystore.KeyStatusActive,
+			RuntimeStats: keystore.RuntimeStats{TotalRequests: 10},
+		},
+		{
+			Key:          "k2",
+			Status:       keystore.KeyStatusActive,
+			RuntimeStats: keystore.RuntimeStats{TotalRequests: 1},
+		},
+	}, 3, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idx, key, ok := p.Acquire()
+	if !ok {
+		t.Fatal("first acquire failed")
+	}
+	if key != "k2" {
+		t.Fatalf("expected lower-usage key first, got %s", key)
+	}
+
+	idx2, key2, ok := p.Acquire()
+	if !ok {
+		t.Fatal("second acquire failed")
+	}
+	if key2 != "k1" {
+		t.Fatalf("expected lower-inflight key second, got %s", key2)
+	}
+
+	p.ReleaseSuccess(idx)
+	p.ReleaseSuccess(idx2)
+}
+
+func TestLeastRequestsBalancesByUsageCount(t *testing.T) {
+	p, err := NewPoolWithConfigs("least_requests", []KeyConfig{
+		{
+			Key:          "k1",
+			Status:       keystore.KeyStatusActive,
+			RuntimeStats: keystore.RuntimeStats{TotalRequests: 5},
+		},
+		{
+			Key:          "k2",
+			Status:       keystore.KeyStatusActive,
+			RuntimeStats: keystore.RuntimeStats{TotalRequests: 5},
+		},
+		{
+			Key:          "k3",
+			Status:       keystore.KeyStatusActive,
+			RuntimeStats: keystore.RuntimeStats{TotalRequests: 6},
+		},
+	}, 3, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for i := 0; i < 3; i++ {
+		idx, key, ok := p.Acquire()
+		if !ok {
+			t.Fatalf("acquire %d failed", i)
+		}
+		got = append(got, key)
+		p.ReleaseSuccess(idx)
+	}
+
+	want := []string{"k1", "k2", "k3"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("least_requests mismatch at %d: got %s want %s", i, got[i], want[i])
+		}
 	}
 }
 

@@ -40,6 +40,18 @@ type KeyState struct {
 
 const maxLastErrorLength = 240
 
+type loadScore struct {
+	primary   int
+	secondary int
+}
+
+func (s loadScore) less(other loadScore) bool {
+	if s.primary != other.primary {
+		return s.primary < other.primary
+	}
+	return s.secondary < other.secondary
+}
+
 type Pool struct {
 	strategy         string
 	keys             []KeyState
@@ -65,7 +77,7 @@ func NewPool(strategy string, keys []string, backoffThreshold int, backoffDurati
 
 func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int, backoffDuration time.Duration) (*Pool, error) {
 	switch strategy {
-	case "round_robin", "random", "least_used":
+	case "round_robin", "random", "least_used", "least_requests":
 	default:
 		return nil, errors.New("invalid strategy")
 	}
@@ -136,33 +148,31 @@ func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok
 		return 0, "", false
 	}
 
-	pick := 0
+	pick := -1
 	switch p.strategy {
 	case "random":
 		pick = available[p.rng.Intn(len(available))]
+		ok = true
 	case "least_used":
-		pick = available[0]
-		for _, i := range available[1:] {
-			if p.keys[i].Inflight < p.keys[pick].Inflight {
-				pick = i
+		pick, ok = p.pickByScoreLocked(now, excluded, func(i int) loadScore {
+			return loadScore{
+				primary:   p.keys[i].Inflight,
+				secondary: p.totalRequestsLocked(i),
 			}
-		}
+		})
+	case "least_requests":
+		pick, ok = p.pickByScoreLocked(now, excluded, func(i int) loadScore {
+			return loadScore{
+				primary:   p.totalRequestsLocked(i) + p.keys[i].Inflight,
+				secondary: p.keys[i].Inflight,
+			}
+		})
 	default:
-		for try := 0; try < len(p.keys); try++ {
-			candidate := p.rrIdx % len(p.keys)
-			p.rrIdx++
-			if _, skip := excluded[candidate]; skip {
-				continue
-			}
-			if !keystore.IsActiveStatus(p.keys[candidate].Status) {
-				continue
-			}
-			if p.keys[candidate].CooldownUntil.After(now) {
-				continue
-			}
-			pick = candidate
-			break
-		}
+		pick, ok = p.pickRoundRobinLocked(now, excluded)
+	}
+
+	if !ok || pick < 0 {
+		return 0, "", false
 	}
 
 	p.keys[pick].Inflight++
@@ -378,6 +388,71 @@ func (p *Pool) releaseInflightLocked(idx int) bool {
 		p.keys[idx].Inflight--
 	}
 	return true
+}
+
+func (p *Pool) pickRoundRobinLocked(now time.Time, excluded map[int]struct{}) (int, bool) {
+	if len(p.keys) == 0 {
+		return 0, false
+	}
+	for try := 0; try < len(p.keys); try++ {
+		candidate := p.rrIdx % len(p.keys)
+		p.rrIdx = (p.rrIdx + 1) % len(p.keys)
+		if !p.isAvailableLocked(candidate, now, excluded) {
+			continue
+		}
+		return candidate, true
+	}
+	return 0, false
+}
+
+func (p *Pool) pickByScoreLocked(now time.Time, excluded map[int]struct{}, scoref func(int) loadScore) (int, bool) {
+	if len(p.keys) == 0 {
+		return 0, false
+	}
+
+	start := p.rrIdx % len(p.keys)
+	best := -1
+	bestScore := loadScore{}
+	for offset := 0; offset < len(p.keys); offset++ {
+		candidate := (start + offset) % len(p.keys)
+		if !p.isAvailableLocked(candidate, now, excluded) {
+			continue
+		}
+		score := scoref(candidate)
+		if best < 0 || score.less(bestScore) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	if best < 0 {
+		return 0, false
+	}
+
+	p.rrIdx = (best + 1) % len(p.keys)
+	return best, true
+}
+
+func (p *Pool) isAvailableLocked(idx int, now time.Time, excluded map[int]struct{}) bool {
+	if idx < 0 || idx >= len(p.keys) {
+		return false
+	}
+	if _, skip := excluded[idx]; skip {
+		return false
+	}
+	if !keystore.IsActiveStatus(p.keys[idx].Status) {
+		return false
+	}
+	return !p.keys[idx].CooldownUntil.After(now)
+}
+
+func (p *Pool) totalRequestsLocked(idx int) int {
+	if idx < 0 || idx >= len(p.keys) {
+		return 0
+	}
+	if p.keys[idx].stats != nil {
+		return p.keys[idx].stats.Snapshot().TotalRequests
+	}
+	return p.keys[idx].TotalRequests
 }
 
 func (p *Pool) recordFailureLocked(idx int) {
