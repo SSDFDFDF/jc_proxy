@@ -59,3 +59,37 @@ export const DURATION_UNITS = {
   m: 60e9,
   h: 3600e9
 }
+
+export const CLIENT_HEADER_PRESET_OPTIONS = [
+  { value: '', label: '无预置', description: '不启用内置白名单，只使用下方手动补充项。' },
+  { value: 'generic_ai', label: 'generic_ai', description: '适合大多数通用 AI / 推理接口，保留常见请求头。' },
+  { value: 'openai', label: 'openai', description: '适合 OpenAI 官方接口，保留项目、组织和幂等键等常见头。' },
+  { value: 'openai_compatible', label: 'openai_compatible', description: '适合兼容 OpenAI 协议的服务，额外保留常见兼容扩展头。' },
+  { value: 'anthropic', label: 'anthropic', description: '适合 Anthropic 接口，保留版本与 beta 相关请求头。' },
+  { value: 'gemini', label: 'gemini', description: '适合 Gemini 接口，保留 Google API client 相关头。' }
+]
+
+export const CLIENT_HEADER_PRESET_PREVIEWS = {
+  generic_ai: ['Accept', 'Accept-Encoding', 'Cache-Control', 'Content-Type', 'Idempotency-Key', 'User-Agent'],
+  openai: ['Accept', 'Accept-Encoding', 'Cache-Control', 'Content-Type', 'Idempotency-Key', 'OpenAI-Beta', 'OpenAI-Organization', 'OpenAI-Project', 'User-Agent'],
+  openai_compatible: ['Accept', 'Accept-Encoding', 'Cache-Control', 'Content-Type', 'Idempotency-Key', 'OpenAI-Beta', 'OpenAI-Organization', 'OpenAI-Project', 'User-Agent', 'X-Title'],
+  anthropic: ['Accept', 'Accept-Encoding', 'Anthropic-Beta', 'Anthropic-Version', 'Content-Type', 'User-Agent'],
+  gemini: ['Accept', 'Accept-Encoding', 'Content-Type', 'User-Agent', 'X-Goog-Api-Client']
+}
+
+export const DEFAULT_CLIENT_HEADER_DROP_PREVIEW = [
+  'Cdn-Loop',
+  'CF-Connecting-IP',
+  'CF-Ray',
+  'Fastly-Client-IP',
+  'Forwarded',
+  'True-Client-IP',
+  'Via',
+  'X-Amzn-Trace-Id',
+  'X-Forwarded-For',
+  'X-Forwarded-Host',
+  'X-Forwarded-Port',
+  'X-Forwarded-Proto',
+  'X-Real-IP',
+  'X-Request-Id'
+]

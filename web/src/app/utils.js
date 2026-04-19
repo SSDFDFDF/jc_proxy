@@ -36,7 +36,7 @@ export function listToText(arr) {
 
 export function textToList(text) {
   return String(text || '')
-    .split(',')
+    .split(/[\r\n,，]+/)
     .map((item) => item.trim())
     .filter(Boolean)
 }
@@ -103,14 +103,31 @@ export function buildVendorRequestEndpoint(vendorName) {
   return `${window.location.origin}/${vendor}`
 }
 
+export function recommendedClientHeaderPreset(provider) {
+  switch (String(provider || '').trim()) {
+    case 'openai':
+      return 'openai'
+    case 'anthropic':
+      return 'anthropic'
+    case 'gemini':
+      return 'gemini'
+    case 'azure_openai':
+    case 'deepseek':
+      return 'openai_compatible'
+    case 'generic':
+    default:
+      return 'generic_ai'
+  }
+}
+
 export function emptyVendorConfig() {
   return {
     provider: 'generic',
-    upstream: { base_url: '' },
+    upstream: { base_url: '', body_timeout: 300_000_000_000 },
     load_balance: 'round_robin',
     upstream_auth: { mode: 'bearer', header: 'Authorization', prefix: 'Bearer ' },
     client_auth: { enabled: false, keys: [] },
-    client_headers: { allowlist: [] },
+    client_headers: { preset: '', allowlist: [], drop: [] },
     inject_headers: {},
     path_rewrites: {},
     backoff: { threshold: 3, duration: 10_800_000_000_000 },
@@ -151,7 +168,8 @@ export function withVendorDefaults(vendor) {
     client_headers: {
       ...base.client_headers,
       ...(next.client_headers || {}),
-      allowlist: Array.isArray(next.client_headers?.allowlist) ? [...next.client_headers.allowlist] : []
+      allowlist: Array.isArray(next.client_headers?.allowlist) ? [...next.client_headers.allowlist] : [],
+      drop: Array.isArray(next.client_headers?.drop) ? [...next.client_headers.drop] : []
     },
     inject_headers: { ...base.inject_headers, ...(next.inject_headers || {}) },
     path_rewrites: { ...base.path_rewrites, ...(next.path_rewrites || {}) },

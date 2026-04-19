@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
-import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass, parseKeysText } from '../app/utils'
+import { CLIENT_HEADER_PRESET_OPTIONS, CLIENT_HEADER_PRESET_PREVIEWS, DEFAULT_CLIENT_HEADER_DROP_PREVIEW } from '../app/constants'
+import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass, parseKeysText, recommendedClientHeaderPreset } from '../app/utils'
 import { MapRowsEditor } from '../components/MapRowsEditor'
 
 export function VendorsPage({
@@ -13,7 +14,10 @@ export function VendorsPage({
   invalidKeyKeywordsText,
   responseRuleRows,
   failoverResponseStatusCodesText,
+  upstreamBodyTimeoutText,
+  clientHeaderPreset,
   allowlistText,
+  dropHeadersText,
   injectRows,
   rewriteRows,
   newVendorForm,
@@ -30,12 +34,17 @@ export function VendorsPage({
   onInvalidKeyKeywordsTextChange,
   setResponseRuleRows,
   onFailoverResponseStatusCodesTextChange,
+  onUpstreamBodyTimeoutTextChange,
+  onClientHeaderPresetChange,
   onAllowlistTextChange,
+  onDropHeadersTextChange,
   setInjectRows,
   setRewriteRows
 }) {
   const requestEndpoint = buildVendorRequestEndpoint(selectedVendor)
   const clientKeys = normalizeKeys(vendorDraft?.client_auth?.keys || [])
+  const selectedPresetOption = CLIENT_HEADER_PRESET_OPTIONS.find((option) => option.value === clientHeaderPreset) || CLIENT_HEADER_PRESET_OPTIONS[0]
+  const presetPreviewHeaders = CLIENT_HEADER_PRESET_PREVIEWS[clientHeaderPreset] || []
   const [clientKeyInputText, setClientKeyInputText] = useState('')
 
   useEffect(() => {
@@ -109,6 +118,18 @@ export function VendorsPage({
       const next = (prev || []).filter((_, idx) => idx !== index)
       return next.length ? next : [{ statusCodesText: '', keywordsText: '', durationText: '', retryAfter: '' }]
     })
+  }
+
+  const restoreDefaultHeaderPolicy = () => {
+    const nextPreset = recommendedClientHeaderPreset(vendorDraft?.provider)
+    onMutateVendorDraft((draft) => {
+      draft.client_headers.preset = nextPreset
+      draft.client_headers.allowlist = []
+      draft.client_headers.drop = []
+    })
+    onClientHeaderPresetChange(nextPreset)
+    onAllowlistTextChange('')
+    onDropHeadersTextChange('')
   }
 
   return (
@@ -268,7 +289,7 @@ export function VendorsPage({
             </section>
 
             {/* Basic Config */}
-            <section className="grid gap-4 lg:grid-cols-3">
+            <section className="grid gap-4 lg:grid-cols-4">
               <label className="field-wrap">
                 <span className="field-label">Provider</span>
                 <select
@@ -304,6 +325,15 @@ export function VendorsPage({
                   <option value="least_used">least_used</option>
                   <option value="least_requests">least_requests</option>
                 </select>
+              </label>
+              <label className="field-wrap">
+                <span className="field-label">上游 Body 超时</span>
+                <input
+                  className="input-base"
+                  placeholder="例如 30s / 5m / 1h"
+                  value={upstreamBodyTimeoutText}
+                  onChange={(e) => onUpstreamBodyTimeoutTextChange(e.target.value)}
+                />
               </label>
             </section>
 
@@ -535,9 +565,72 @@ export function VendorsPage({
 
             {/* Header Allowlist */}
             <hr className="section-divider" />
-            <div className="space-y-3">
-              <h3 className="section-title text-sm">客户端 Header 白名单</h3>
-              <textarea className="textarea-base h-20" value={allowlistText} onChange={(e) => onAllowlistTextChange(e.target.value)} />
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="section-title text-sm">客户端 Header 策略</h3>
+                <button className={buttonClass('ghost')} type="button" disabled={busy} onClick={restoreDefaultHeaderPolicy}>
+                  恢复默认策略
+                </button>
+              </div>
+              <div className="grid gap-4 xl:grid-cols-3">
+                <label className="field-wrap">
+                  <span className="field-label">白名单预置</span>
+                  <select className="select-base" value={clientHeaderPreset} onChange={(e) => onClientHeaderPresetChange(e.target.value)}>
+                    {CLIENT_HEADER_PRESET_OPTIONS.map((option) => (
+                      <option key={option.value || 'none'} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field-wrap xl:col-span-2">
+                  <span className="field-label">白名单补充</span>
+                  <textarea
+                    className="textarea-base h-24"
+                    placeholder={'逗号或换行分隔，例如：\nOpenAI-Project\nIdempotency-Key'}
+                    value={allowlistText}
+                    onChange={(e) => onAllowlistTextChange(e.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3 space-y-3">
+                <div>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">预置说明</div>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">{selectedPresetOption.description}</div>
+                </div>
+                {!!presetPreviewHeaders.length && (
+                  <div>
+                    <div className="text-xs font-medium text-[var(--text-secondary)]">当前预置默认放行</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {presetPreviewHeaders.map((header) => (
+                        <span key={header} className="rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-xs text-[var(--text-secondary)]">
+                          {header}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <div className="text-xs font-medium text-[var(--text-secondary)]">系统默认清理</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {DEFAULT_CLIENT_HEADER_DROP_PREVIEW.map((header) => (
+                      <span key={header} className="rounded-full border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-xs text-[var(--text-muted)]">
+                        {header}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <label className="field-wrap">
+                <span className="field-label">额外清理 Header</span>
+                <span className="text-xs text-[var(--text-muted)]">默认已内置常见代理 / CDN Header 清理；这里可以继续追加自定义项。</span>
+                <textarea
+                  className="textarea-base h-24"
+                  placeholder={'逗号或换行分隔，例如：\nX-Custom-Trace\nX-Debug-Token'}
+                  value={dropHeadersText}
+                  onChange={(e) => onDropHeadersTextChange(e.target.value)}
+                />
+              </label>
             </div>
 
             <MapRowsEditor

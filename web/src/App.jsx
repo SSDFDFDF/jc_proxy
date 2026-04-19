@@ -85,7 +85,10 @@ function App() {
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}
           failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
+          upstreamBodyTimeoutText={config.upstreamBodyTimeoutText}
+          clientHeaderPreset={config.clientHeaderPreset}
           allowlistText={config.allowlistText}
+          dropHeadersText={config.dropHeadersText}
           injectRows={config.injectRows}
           rewriteRows={config.rewriteRows}
           newVendorForm={config.newVendorForm}
@@ -102,7 +105,10 @@ function App() {
           onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
           setResponseRuleRows={config.setResponseRuleRows}
           onFailoverResponseStatusCodesTextChange={config.setFailoverResponseStatusCodesText}
+          onUpstreamBodyTimeoutTextChange={config.setUpstreamBodyTimeoutText}
+          onClientHeaderPresetChange={config.setClientHeaderPreset}
           onAllowlistTextChange={config.setAllowlistText}
+          onDropHeadersTextChange={config.setDropHeadersText}
           setInjectRows={config.setInjectRows}
           setRewriteRows={config.setRewriteRows}
         />

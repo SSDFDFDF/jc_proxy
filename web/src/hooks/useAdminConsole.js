@@ -161,7 +161,10 @@ export function useAdminConsole() {
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
   const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
+  const [upstreamBodyTimeoutText, setUpstreamBodyTimeoutText] = useState('5m')
+  const [clientHeaderPreset, setClientHeaderPreset] = useState('')
   const [allowlistText, setAllowlistText] = useState('')
+  const [dropHeadersText, setDropHeadersText] = useState('')
   const [injectRows, setInjectRows] = useState([{ key: '', value: '' }])
   const [rewriteRows, setRewriteRows] = useState([{ key: '', value: '' }])
 
@@ -241,7 +244,10 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
       setFailoverResponseStatusCodesText('')
+      setUpstreamBodyTimeoutText('5m')
+      setClientHeaderPreset('')
       setAllowlistText('')
+      setDropHeadersText('')
       setInjectRows([{ key: '', value: '' }])
       setRewriteRows([{ key: '', value: '' }])
       return
@@ -253,7 +259,10 @@ export function useAdminConsole() {
     setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
+    setUpstreamBodyTimeoutText(nsToText(draft.upstream?.body_timeout || 0))
+    setClientHeaderPreset(String(draft.client_headers?.preset || '').trim())
     setAllowlistText(listToText(draft.client_headers?.allowlist || []))
+    setDropHeadersText(listToText(draft.client_headers?.drop || []))
     setInjectRows(mapToRows(draft.inject_headers || {}))
     setRewriteRows(mapToRows(draft.path_rewrites || {}))
   }
@@ -398,12 +407,15 @@ export function useAdminConsole() {
     setBusy(true)
     try {
       const next = clone(vendorDraft)
+      next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
       next.backoff.duration = parseDurationToNs(vendorBackoffDuration, next.backoff.duration)
       next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
       next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
       next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
       next.error_policy.failover.response_status_codes = parseStatusCodesText(failoverResponseStatusCodesText)
+      next.client_headers.preset = String(clientHeaderPreset || '').trim()
       next.client_headers.allowlist = textToList(allowlistText)
+      next.client_headers.drop = textToList(dropHeadersText)
       next.inject_headers = rowsToMap(injectRows)
       next.path_rewrites = rowsToMap(rewriteRows)
       next.client_auth.keys = normalizeKeys(next.client_auth.keys || [])
@@ -744,7 +756,10 @@ export function useAdminConsole() {
       invalidKeyKeywordsText,
       responseRuleRows,
       failoverResponseStatusCodesText,
+      upstreamBodyTimeoutText,
+      clientHeaderPreset,
       allowlistText,
+      dropHeadersText,
       injectRows,
       rewriteRows,
       newVendorForm,
@@ -754,7 +769,10 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText,
       setResponseRuleRows,
       setFailoverResponseStatusCodesText,
+      setUpstreamBodyTimeoutText,
+      setClientHeaderPreset,
       setAllowlistText,
+      setDropHeadersText,
       setInjectRows,
       setRewriteRows,
       setNewVendorForm,
