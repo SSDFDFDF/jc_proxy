@@ -99,8 +99,9 @@ type VendorConfig struct {
 }
 
 type UpstreamConfig struct {
-	BaseURL string   `yaml:"base_url" json:"base_url"`
-	Keys    []string `yaml:"keys,omitempty" json:"-"`
+	BaseURL     string        `yaml:"base_url" json:"base_url"`
+	Keys        []string      `yaml:"keys,omitempty" json:"-"`
+	BodyTimeout time.Duration `yaml:"body_timeout,omitempty" json:"body_timeout,omitempty"`
 }
 
 type UpstreamAuthConfig struct {
@@ -115,7 +116,9 @@ type ClientAuthConfig struct {
 }
 
 type ClientHeadersConfig struct {
+	Preset    string   `yaml:"preset,omitempty" json:"preset,omitempty"`
 	Allowlist []string `yaml:"allowlist" json:"allowlist"`
+	Drop      []string `yaml:"drop,omitempty" json:"drop,omitempty"`
 }
 
 type BackoffConfig struct {
@@ -627,6 +630,9 @@ func (c *Config) applyDefaults() {
 		if v.UpstreamAuth.Prefix == "" && v.UpstreamAuth.Mode == "bearer" {
 			v.UpstreamAuth.Prefix = "Bearer "
 		}
+		if v.Upstream.BodyTimeout == 0 {
+			v.Upstream.BodyTimeout = 5 * time.Minute
+		}
 		if v.Backoff.Threshold <= 0 {
 			v.Backoff.Threshold = 3
 		}
@@ -648,6 +654,9 @@ func (c *Config) applyDefaults() {
 		}
 		if v.ClientHeaders.Allowlist == nil {
 			v.ClientHeaders.Allowlist = []string{}
+		}
+		if v.ClientHeaders.Drop == nil {
+			v.ClientHeaders.Drop = []string{}
 		}
 		c.Vendors[name] = v
 	}
@@ -707,6 +716,9 @@ func (c *Config) validate(requireVendors bool) error {
 				return fmt.Errorf("vendor %q has empty upstream key", vendorName)
 			}
 		}
+		if vendor.Upstream.BodyTimeout < 0 {
+			return fmt.Errorf("vendor %q upstream.body_timeout must be >= 0", vendorName)
+		}
 		switch vendor.LoadBalance {
 		case "round_robin", "random", "least_used", "least_requests":
 		default:
@@ -724,6 +736,9 @@ func (c *Config) validate(requireVendors bool) error {
 		}
 		if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
 			return fmt.Errorf("vendor %q client_auth enabled but keys empty", vendorName)
+		}
+		if _, ok := ClientHeaderAllowlistPreset(vendor.ClientHeaders.Preset); vendor.ClientHeaders.Preset != "" && !ok {
+			return fmt.Errorf("vendor %q invalid client_headers.preset: %s", vendorName, vendor.ClientHeaders.Preset)
 		}
 		if err := validateErrorPolicy(vendor.ErrorPolicy); err != nil {
 			return fmt.Errorf("vendor %q invalid error_policy: %w", vendorName, err)

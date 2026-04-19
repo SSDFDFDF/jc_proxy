@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass } from '../app/utils'
+import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass, parseKeysText } from '../app/utils'
 import { MapRowsEditor } from '../components/MapRowsEditor'
 
 export function VendorsPage({
@@ -86,7 +86,7 @@ export function VendorsPage({
   }
 
   const importClientKeys = () => {
-    const incoming = normalizeKeys(String(clientKeyInputText || '').split(',').map((item) => item.trim()))
+    const incoming = parseKeysText(clientKeyInputText)
     if (!incoming.length) return
     updateClientKeys([...(clientKeys || []), ...incoming])
     setClientKeyInputText('')
@@ -256,10 +256,10 @@ export function VendorsPage({
 
                 <aside className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">批量导入</div>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">逗号分隔客户端密钥，导入时会自动去重。</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">支持换行或逗号分隔，导入时会自动去重。</p>
                   <textarea
                     className="textarea-base mt-3 h-48"
-                    placeholder={'sk-jcp-xxxxxxxxxxxxxxxxxxxxxxxx, sk-jcp-yyyyyyyyyyyyyyyyyyyyyyyy'}
+                    placeholder={'sk-jcp-xxxxxxxxxxxxxxxxxxxxxxxx\nsk-jcp-yyyyyyyyyyyyyyyyyyyyyyyy'}
                     value={clientKeyInputText}
                     onChange={(e) => setClientKeyInputText(e.target.value)}
                   />

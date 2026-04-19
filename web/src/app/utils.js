@@ -69,7 +69,7 @@ export function normalizeKeys(keys) {
 }
 
 export function parseKeysText(text) {
-  return normalizeKeys(String(text || '').split(',').map((item) => item.trim()))
+  return normalizeKeys(String(text || '').split(/[\r\n,，]+/).map((item) => item.trim()))
 }
 
 function randomAlphaNum(length = 24) {

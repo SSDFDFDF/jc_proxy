@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 )
 
 type testKeyController struct {
+	mu         sync.Mutex
 	records    map[string][]keystore.Record
 	lastVendor string
 	lastKey    string
@@ -79,6 +81,10 @@ type trackingReadCloser struct {
 	err       error
 }
 
+type blockingReadCloser struct {
+	closed chan struct{}
+}
+
 func (w *brokenPipeWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
@@ -113,17 +119,39 @@ func (r *trackingReadCloser) Close() error {
 	return nil
 }
 
+func (r *blockingReadCloser) Read(p []byte) (int, error) {
+	<-r.closed
+	return 0, net.ErrClosed
+}
+
+func (r *blockingReadCloser) Close() error {
+	select {
+	case <-r.closed:
+	default:
+		close(r.closed)
+	}
+	return nil
+}
+
 func (t *testKeyController) ListAll() (map[string][]keystore.Record, error) {
 	return t.records, nil
 }
 
 func (t *testKeyController) SetStatus(vendor, key, status, reason, actor string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.lastVendor = vendor
 	t.lastKey = key
 	t.lastStatus = status
 	t.lastReason = reason
 	t.lastActor = actor
 	return nil
+}
+
+func (t *testKeyController) snapshot() (vendor, key, status, reason, actor string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastVendor, t.lastKey, t.lastStatus, t.lastReason, t.lastActor
 }
 
 func (s *blockingConditionalStore) Info() keystore.Info {
@@ -204,6 +232,18 @@ func cloneTestRecordMap(src map[string][]keystore.Record) map[string][]keystore.
 		dst[vendor] = append([]keystore.Record(nil), records...)
 	}
 	return dst
+}
+
+func waitForTestCondition(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 func updateTestRecordStatus(records map[string][]keystore.Record, vendor, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
@@ -574,6 +614,64 @@ func TestForwardHeadersSetResinAccountHeader(t *testing.T) {
 	}
 }
 
+func TestForwardHeadersDropDefaultProxyHeadersWhenAllowlistEmpty(t *testing.T) {
+	v := &vendorGateway{
+		allowlist:   map[string]struct{}{},
+		dropHeaders: headerNameSet(config.DefaultClientHeaderDropList()),
+		upstreamAuth: config.UpstreamAuthConfig{
+			Mode: "passthrough",
+		},
+	}
+
+	src := http.Header{}
+	src.Set("X-Forwarded-For", "203.0.113.8")
+	src.Set("Cf-Ray", "edge-id")
+	src.Set("Content-Type", "application/json")
+
+	out := v.forwardHeaders(src, "")
+	if got := out.Get("X-Forwarded-For"); got != "" {
+		t.Fatalf("default proxy header should be dropped, got %q", got)
+	}
+	if got := out.Get("Cf-Ray"); got != "" {
+		t.Fatalf("default cdn header should be dropped, got %q", got)
+	}
+	if got := out.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type should remain, got %q", got)
+	}
+}
+
+func TestForwardHeadersUsePresetAllowlist(t *testing.T) {
+	v := &vendorGateway{
+		allowlist: headerNameSet(config.ResolveClientHeaderAllowlist(config.ClientHeadersConfig{
+			Preset: "openai",
+		})),
+		dropHeaders: headerNameSet(config.ResolveClientHeaderDropList(config.ClientHeadersConfig{})),
+		upstreamAuth: config.UpstreamAuthConfig{
+			Mode: "passthrough",
+		},
+	}
+
+	src := http.Header{}
+	src.Set("OpenAI-Project", "proj_123")
+	src.Set("Idempotency-Key", "idem_123")
+	src.Set("X-Custom-Trace", "drop-me")
+	src.Set("X-Forwarded-For", "203.0.113.8")
+
+	out := v.forwardHeaders(src, "")
+	if got := out.Get("Openai-Project"); got != "proj_123" {
+		t.Fatalf("preset allowlist should keep OpenAI-Project, got %q", got)
+	}
+	if got := out.Get("Idempotency-Key"); got != "idem_123" {
+		t.Fatalf("preset allowlist should keep Idempotency-Key, got %q", got)
+	}
+	if got := out.Get("X-Custom-Trace"); got != "" {
+		t.Fatalf("preset allowlist should drop custom header, got %q", got)
+	}
+	if got := out.Get("X-Forwarded-For"); got != "" {
+		t.Fatalf("preset allowlist should still drop proxy header, got %q", got)
+	}
+}
+
 func TestCopyResponseHeadersDropConnectionScopedHeaders(t *testing.T) {
 	src := http.Header{}
 	src.Set("Connection", "X-Response-Only")
@@ -649,6 +747,26 @@ func TestResponseCopyBufferSkipsPoolForStreaming(t *testing.T) {
 	}
 	if len(buf) != streamingResponseCopyBufferBytes {
 		t.Fatalf("streaming buffer len = %d, want %d", len(buf), streamingResponseCopyBufferBytes)
+	}
+}
+
+func TestIdleTimeoutReadCloserClosesStalledBody(t *testing.T) {
+	body := &blockingReadCloser{closed: make(chan struct{})}
+	reader := newIdleTimeoutReadCloser(body, 50*time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := reader.Read(make([]byte, 1))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "upstream body timeout") {
+			t.Fatalf("expected timeout error, got %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("timed out waiting for stalled body read to fail")
 	}
 }
 
@@ -791,11 +909,16 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected upstream status passthrough, got %d", w.Code)
 	}
-	if ctrl.lastStatus != keystore.KeyStatusDisabledAuto {
-		t.Fatalf("expected auto disable status, got %q", ctrl.lastStatus)
+	waitForTestCondition(t, time.Second, func() bool {
+		_, _, status, _, _ := ctrl.snapshot()
+		return status == keystore.KeyStatusDisabledAuto
+	})
+	lastVendor, lastKey, lastStatus, _, _ := ctrl.snapshot()
+	if lastStatus != keystore.KeyStatusDisabledAuto {
+		t.Fatalf("expected auto disable status, got %q", lastStatus)
 	}
-	if ctrl.lastVendor != "openai" || ctrl.lastKey != "k1" {
-		t.Fatalf("unexpected disabled key target: %s %s", ctrl.lastVendor, ctrl.lastKey)
+	if lastVendor != "openai" || lastKey != "k1" {
+		t.Fatalf("unexpected disabled key target: %s %s", lastVendor, lastKey)
 	}
 
 	stats := router.VendorStats()["openai"]
@@ -1350,9 +1473,10 @@ func TestRouterStillClassifiesErrorResponseOnClientDisconnect(t *testing.T) {
 	if got := stats[0]["status"]; got != keystore.KeyStatusDisabledAuto {
 		t.Fatalf("expected key to remain auto disabled on upstream 401, got %#v", got)
 	}
-	if ctrl.lastStatus != keystore.KeyStatusDisabledAuto {
-		t.Fatalf("expected controller to persist auto disable, got %q", ctrl.lastStatus)
-	}
+	waitForTestCondition(t, time.Second, func() bool {
+		_, _, status, _, _ := ctrl.snapshot()
+		return status == keystore.KeyStatusDisabledAuto
+	})
 }
 
 func TestRouterFailsOverBufferedPostOnRateLimit(t *testing.T) {

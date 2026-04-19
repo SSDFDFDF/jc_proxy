@@ -481,6 +481,51 @@ admin:
 	}
 }
 
+func TestResolveClientHeaderAllowlistIncludesPresetAndExplicitHeaders(t *testing.T) {
+	headers := ResolveClientHeaderAllowlist(ClientHeadersConfig{
+		Preset:    "openai",
+		Allowlist: []string{"X-Custom-Header", "OpenAI-Project"},
+	})
+
+	for _, want := range []string{"Content-Type", "Idempotency-Key", "Openai-Project", "X-Custom-Header"} {
+		if !containsString(headers, want) {
+			t.Fatalf("ResolveClientHeaderAllowlist() missing %q in %#v", want, headers)
+		}
+	}
+}
+
+func TestPrepareAndValidateRejectsUnknownClientHeaderPreset(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Listen: ":8092"},
+		Storage: StorageConfig{
+			Config:       ConfigStoreConfig{Driver: "file"},
+			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
+		},
+		Vendors: map[string]VendorConfig{
+			"openai": {
+				Upstream: UpstreamConfig{BaseURL: "https://api.openai.com"},
+				ClientHeaders: ClientHeadersConfig{
+					Preset: "unknown-preset",
+				},
+			},
+		},
+	}
+
+	err := cfg.PrepareAndValidate()
+	if err == nil || !strings.Contains(err.Error(), "client_headers.preset") {
+		t.Fatalf("PrepareAndValidate() error = %v, want invalid client_headers.preset", err)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func preserveEnv(t *testing.T, keys ...string) {
 	t.Helper()
 

@@ -124,11 +124,16 @@ func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected upstream 403 response, got %d", w.Code)
 	}
-	if ctrl.lastStatus != keystore.KeyStatusDisabledAuto {
-		t.Fatalf("lastStatus = %q, want %q", ctrl.lastStatus, keystore.KeyStatusDisabledAuto)
+	waitForTestCondition(t, time.Second, func() bool {
+		_, _, status, _, _ := ctrl.snapshot()
+		return status == keystore.KeyStatusDisabledAuto
+	})
+	_, _, lastStatus, lastReason, _ := ctrl.snapshot()
+	if lastStatus != keystore.KeyStatusDisabledAuto {
+		t.Fatalf("lastStatus = %q, want %q", lastStatus, keystore.KeyStatusDisabledAuto)
 	}
-	if !strings.Contains(ctrl.lastReason, "invalid key") {
-		t.Fatalf("lastReason = %q, want invalid key marker", ctrl.lastReason)
+	if !strings.Contains(lastReason, "invalid key") {
+		t.Fatalf("lastReason = %q, want invalid key marker", lastReason)
 	}
 
 	stats := router.VendorStats()["openai"]
