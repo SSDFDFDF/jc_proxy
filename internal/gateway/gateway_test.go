@@ -703,7 +703,7 @@ func TestPrepareRequestBodySkipsPrefetchForUnknownLength(t *testing.T) {
 	req.ContentLength = -1
 	req.Header.Set("Content-Type", "application/json")
 
-	src, err := prepareRequestBody(req)
+	src, err := prepareRequestBody(req, true)
 	if err != nil {
 		t.Fatalf("prepareRequestBody returned error for unknown-length body: %v", err)
 	}
@@ -724,6 +724,36 @@ func TestPrepareRequestBodySkipsPrefetchForUnknownLength(t *testing.T) {
 	}
 	if body.readCalls == 0 {
 		t.Fatal("expected body to be read only after forwarding starts")
+	}
+}
+
+func TestPrepareRequestBodySkipsPrefetchWhenReplayDisabled(t *testing.T) {
+	body := &trackingReadCloser{err: errors.New("unexpected eager read")}
+	req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", body)
+	req.ContentLength = 32
+	req.Header.Set("Content-Type", "application/json")
+
+	src, err := prepareRequestBody(req, false)
+	if err != nil {
+		t.Fatalf("prepareRequestBody returned error with replay disabled: %v", err)
+	}
+	if src.replayable {
+		t.Fatal("replay-disabled body should remain single-use")
+	}
+	if body.readCalls != 0 {
+		t.Fatalf("prepareRequestBody should not pre-read replay-disabled body, got %d reads", body.readCalls)
+	}
+
+	reader, err := src.Body()
+	if err != nil {
+		t.Fatalf("Body() returned error: %v", err)
+	}
+	_, readErr := io.ReadAll(reader)
+	if !errors.Is(readErr, body.err) {
+		t.Fatalf("expected deferred body read error %v, got %v", body.err, readErr)
+	}
+	if body.readCalls == 0 {
+		t.Fatal("expected replay-disabled body to be read only after forwarding starts")
 	}
 }
 

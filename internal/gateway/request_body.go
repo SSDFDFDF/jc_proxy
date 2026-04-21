@@ -50,7 +50,7 @@ func (s *requestBodySource) canRetryResponse(statusCode int, decision keyDecisio
 	}
 }
 
-func prepareRequestBody(req *http.Request) (*requestBodySource, error) {
+func prepareRequestBody(req *http.Request, allowReplay bool) (*requestBodySource, error) {
 	safeRetry := isSafeRetryMethod(req.Method)
 
 	if req == nil || req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
@@ -73,6 +73,10 @@ func prepareRequestBody(req *http.Request) (*requestBodySource, error) {
 		}, nil
 	}
 
+	if !allowReplay {
+		return newSingleUseBodySource(req.Body, req.ContentLength, safeRetry), nil
+	}
+
 	if req.ContentLength < 0 {
 		return newSingleUseBodySource(req.Body, req.ContentLength, safeRetry), nil
 	}
@@ -92,7 +96,7 @@ func prepareRequestBody(req *http.Request) (*requestBodySource, error) {
 		return newSingleUseBodySource(io.NopCloser(reader), req.ContentLength, safeRetry), nil
 	}
 
-	raw := append([]byte(nil), buf...)
+	raw := buf[:len(buf):len(buf)]
 	return &requestBodySource{
 		replayable:    true,
 		safeRetry:     safeRetry,

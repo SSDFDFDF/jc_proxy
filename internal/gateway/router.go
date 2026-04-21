@@ -135,7 +135,7 @@ func (r *Router) prepareProxyRequest(req *http.Request) (*preparedProxyRequest, 
 		return nil, &proxyError{statusCode: http.StatusUnauthorized, message: err.Error()}
 	}
 
-	bodySource, err := prepareRequestBody(req)
+	bodySource, err := prepareRequestBody(req, vg.shouldBufferRequestBody(req.Method))
 	if err != nil {
 		if isClientDisconnectError(err) {
 			return nil, nil

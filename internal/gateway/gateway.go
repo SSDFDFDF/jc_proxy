@@ -33,6 +33,7 @@ type vendorGateway struct {
 	provider            string
 	baseURL             *url.URL
 	pool                *balancer.Pool
+	managedKeyCount     int
 	client              *http.Client
 	clientAuth          map[string]struct{}
 	allowlist           map[string]struct{}
@@ -159,6 +160,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			provider:            config.NormalizeProvider(vendor.Provider, name),
 			baseURL:             baseURL,
 			pool:                pool,
+			managedKeyCount:     len(keyConfigs),
 			client:              client,
 			clientAuth:          clientAuthSet,
 			allowlist:           headerNameSet(config.ResolveClientHeaderAllowlist(vendor.ClientHeaders)),
