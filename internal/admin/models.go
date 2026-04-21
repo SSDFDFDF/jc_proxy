@@ -92,3 +92,50 @@ type RuntimeStatsMeta struct {
 	PageSize int    `json:"page_size"`
 	Total    int    `json:"total"`
 }
+
+type VendorTestPresetResponse struct {
+	Label    string `json:"label"`
+	Method   string `json:"method"`
+	Endpoint string `json:"endpoint"`
+	Body     string `json:"body,omitempty"`
+}
+
+type VendorTestMetaResponse struct {
+	Vendor              string                     `json:"vendor"`
+	Provider            string                     `json:"provider"`
+	BaseURL             string                     `json:"base_url"`
+	DefaultKeyMasked    string                     `json:"default_key_masked,omitempty"`
+	DefaultKeyAvailable bool                       `json:"default_key_available"`
+	ModelEndpoints      []string                   `json:"model_endpoints"`
+	RequestPresets      []VendorTestPresetResponse `json:"request_presets"`
+}
+
+type VendorTestRequest struct {
+	BaseURL  string   `json:"base_url,omitempty"`
+	Method   string   `json:"method,omitempty"`
+	Endpoint string   `json:"endpoint"`
+	Body     string   `json:"body,omitempty"`
+	Key      string   `json:"key,omitempty"`
+	Headers  []KVPair `json:"headers,omitempty"`
+}
+
+type VendorTestResponse struct {
+	Vendor        string              `json:"vendor"`
+	Provider      string              `json:"provider"`
+	BaseURL       string              `json:"base_url"`
+	Endpoint      string              `json:"endpoint"`
+	ResolvedURL   string              `json:"resolved_url"`
+	Method        string              `json:"method"`
+	StatusCode    int                 `json:"status_code"`
+	Headers       map[string][]string `json:"headers"`
+	Body          string              `json:"body"`
+	Truncated     bool                `json:"truncated"`
+	DurationMS    int64               `json:"duration_ms"`
+	UsedKeyMasked string              `json:"used_key_masked,omitempty"`
+	UsedKeySource string              `json:"used_key_source"`
+}
+
+type KVPair struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}

@@ -22,6 +22,12 @@ const NAV_ICONS = {
       <path d="M2 12l10 5 10-5" />
     </svg>
   ),
+  probe: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3.92 3.92a1 1 0 0 1-1.42 1.42l-3.92-3.92A5 5 0 1 0 10 13z" />
+      <circle cx="8" cy="8" r="3" />
+    </svg>
+  ),
   stats: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 20V10" />

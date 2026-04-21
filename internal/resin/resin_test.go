@@ -19,10 +19,10 @@ func TestBuildReverseURL(t *testing.T) {
 
 func TestBuildAccount(t *testing.T) {
 	got := BuildAccount("openai", "test-key")
-	if got == "" || got[:10] != "JC:openai-" {
+	if got == "" || got[:11] != "jcp:openai-" {
 		t.Fatalf("unexpected account: %s", got)
 	}
-	if len(got) != len("JC:openai-")+12 {
+	if len(got) != len("jcp:openai-")+12 {
 		t.Fatalf("account hash length mismatch: %s", got)
 	}
 	if got != BuildAccount("openai", "test-key") {

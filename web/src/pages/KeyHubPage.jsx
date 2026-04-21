@@ -48,6 +48,116 @@ function resolveDisplayState(item, rt = {}) {
   }
 }
 
+const STATUS_SORT_WEIGHTS = {
+  active: 0,
+  disabled_manual: 1,
+  disabled_auto: 2
+}
+
+const SORT_DEFAULTS = {
+  key: 'asc',
+  status: 'asc',
+  load: 'desc',
+  requests: 'desc',
+  errors: 'desc',
+  reason: 'asc'
+}
+
+function buildKeyMetrics(item) {
+  const rt = item.rt || {}
+  const inflight = Number(rt.inflight || 0)
+  const backoff = Number(rt.backoff_remaining_seconds || 0)
+  const totalRequests = Number(rt.total_requests || 0)
+  const successCount = Number(rt.success_count || 0)
+  const failedCount = Math.max(0, totalRequests - successCount)
+  const failures = Number(rt.failures || 0)
+  const lastStatus = Number(rt.last_status || 0)
+  const reason = item.displayDisableReason
+  const err401 = Number(rt.unauthorized_count || 0)
+  const err403 = Number(rt.forbidden_count || 0)
+  const err429 = Number(rt.rate_limit_count || 0)
+  const errOth = Number(rt.other_error_count || 0)
+  const errorCount = err401 + err403 + err429 + errOth
+  const successRate = totalRequests === 0 ? 0 : Math.round((successCount / totalRequests) * 100)
+  const secondaryParts = []
+
+  if (item.displayDisabledBy) secondaryParts.push(`by ${item.displayDisabledBy}`)
+  if (lastStatus >= 400) secondaryParts.push(`HTTP ${lastStatus}`)
+  if (failures > 0) secondaryParts.push(`连败 ${failures}`)
+
+  return {
+    inflight,
+    backoff,
+    totalRequests,
+    successCount,
+    failedCount,
+    failures,
+    lastStatus,
+    reason,
+    err401,
+    err403,
+    err429,
+    errOth,
+    errorCount,
+    hasErrors: errorCount > 0,
+    successRate,
+    errRate: totalRequests === 0 ? 0 : 100 - successRate,
+    secondaryText: secondaryParts.join(' · ')
+  }
+}
+
+function compareValues(left, right) {
+  if (left === right) return 0
+  if (typeof left === 'number' && typeof right === 'number') return left - right
+  return String(left || '').localeCompare(String(right || ''), 'zh-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function compareItems(left, right, sortKey) {
+  switch (sortKey) {
+    case 'key':
+      return compareValues(left.key, right.key)
+    case 'status':
+      return (
+        compareValues(STATUS_SORT_WEIGHTS[left.displayStatus] ?? 99, STATUS_SORT_WEIGHTS[right.displayStatus] ?? 99) ||
+        compareValues(left.metrics.lastStatus, right.metrics.lastStatus) ||
+        compareValues(left.metrics.reason, right.metrics.reason)
+      )
+    case 'load':
+      return (
+        compareValues(left.metrics.inflight, right.metrics.inflight) ||
+        compareValues(left.metrics.backoff, right.metrics.backoff) ||
+        compareValues(left.metrics.totalRequests, right.metrics.totalRequests)
+      )
+    case 'requests':
+      return (
+        compareValues(left.metrics.totalRequests, right.metrics.totalRequests) ||
+        compareValues(left.metrics.successCount, right.metrics.successCount) ||
+        compareValues(left.metrics.failedCount, right.metrics.failedCount)
+      )
+    case 'errors':
+      return (
+        compareValues(left.metrics.errorCount, right.metrics.errorCount) ||
+        compareValues(left.metrics.failures, right.metrics.failures) ||
+        compareValues(left.metrics.lastStatus, right.metrics.lastStatus)
+      )
+    case 'reason':
+      return compareValues(left.metrics.reason || left.metrics.secondaryText, right.metrics.reason || right.metrics.secondaryText)
+    default:
+      return compareValues(left.originalIndex, right.originalIndex)
+  }
+}
+
+function nextSortState(current, sortKey) {
+  const defaultDirection = SORT_DEFAULTS[sortKey] || 'asc'
+  if (current.key !== sortKey) {
+    return { key: sortKey, direction: defaultDirection }
+  }
+  if (current.direction === defaultDirection) {
+    return { key: sortKey, direction: defaultDirection === 'asc' ? 'desc' : 'asc' }
+  }
+  return { key: 'index', direction: 'asc' }
+}
+
 function ErrorPill({ label, count, tone = 'default' }) {
   if (!count) return null
   const toneClasses = {
@@ -91,6 +201,7 @@ export function KeyHubPage({
   const [draftText, setDraftText] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
   const [modalHint, setModalHint] = useState('')
+  const [sortState, setSortState] = useState({ key: 'index', direction: 'asc' })
 
   const allItems = upstreamKeysData.items?.[selectedKeyVendor] || []
   const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendor] || []
@@ -106,13 +217,16 @@ export function KeyHubPage({
 
   /* ── Merge upstream + runtime into unified rows ── */
   const mergedItems = useMemo(() => {
-    return allItems.map((item) => {
+    return allItems.map((item, index) => {
       const rt = runtimeMap.get(item.masked) || {}
-      return {
+      const displayState = resolveDisplayState(item, rt)
+      const mergedItem = {
         ...item,
         rt,
-        ...resolveDisplayState(item, rt)
+        originalIndex: index,
+        ...displayState
       }
+      return { ...mergedItem, metrics: buildKeyMetrics(mergedItem) }
     })
   }, [allItems, runtimeMap])
 
@@ -121,20 +235,21 @@ export function KeyHubPage({
     const q = query.trim().toLowerCase()
     return mergedItems.filter((item) => {
       const rt = item.rt
+      const { backoff, inflight, failures, err401, err403, err429, errOth } = item.metrics
       if (statusFilter === 'active' && item.displayStatus !== 'active') return false
       if (statusFilter === 'disabled' && item.displayStatus === 'active') return false
-      if (statusFilter === 'backoff' && !(Number(rt.backoff_remaining_seconds || 0) > 0)) return false
+      if (statusFilter === 'backoff' && !(backoff > 0)) return false
       if (statusFilter === 'issues' && !(
         item.displayStatus !== 'active' ||
-        Number(rt.backoff_remaining_seconds || 0) > 0 ||
-        Number(rt.failures || 0) > 0 ||
-        Number(rt.unauthorized_count || 0) > 0 ||
-        Number(rt.forbidden_count || 0) > 0 ||
-        Number(rt.rate_limit_count || 0) > 0 ||
-        Number(rt.other_error_count || 0) > 0 ||
+        backoff > 0 ||
+        failures > 0 ||
+        err401 > 0 ||
+        err403 > 0 ||
+        err429 > 0 ||
+        errOth > 0 ||
         item.displayDisableReason
       )) return false
-      if (statusFilter === 'inflight' && !(Number(rt.inflight || 0) > 0)) return false
+      if (statusFilter === 'inflight' && !(inflight > 0)) return false
       if (!q) return true
       const haystack = [item.key, item.masked, item.displayStatus, item.displayDisableReason, item.displayDisabledBy, rt.last_error]
         .filter(Boolean)
@@ -144,11 +259,21 @@ export function KeyHubPage({
     })
   }, [mergedItems, query, statusFilter])
 
+  const sortedItems = useMemo(() => {
+    if (sortState.key === 'index') return filteredItems
+    const direction = sortState.direction === 'asc' ? 1 : -1
+    return [...filteredItems].sort((left, right) => {
+      const result = compareItems(left, right, sortState.key)
+      if (result !== 0) return result * direction
+      return compareValues(left.originalIndex, right.originalIndex)
+    })
+  }, [filteredItems, sortState])
+
   /* ── Pagination ── */
-  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize))
+  const totalPages = Math.max(1, Math.ceil(sortedItems.length / pageSize))
   const currentPage = Math.min(page, totalPages)
   const start = (currentPage - 1) * pageSize
-  const pageItems = filteredItems.slice(start, start + pageSize)
+  const pageItems = sortedItems.slice(start, start + pageSize)
 
   /* ── Reset on vendor change ── */
   useEffect(() => {
@@ -234,6 +359,25 @@ export function KeyHubPage({
     setShowAddModal(false)
   }
 
+  const renderSortableHeader = (label, sortKey, alignClass = 'justify-start') => {
+    const active = sortState.key === sortKey
+    const indicator = active ? (sortState.direction === 'asc' ? '↑' : '↓') : '↕'
+    return (
+      <button
+        className={`table-sort-button ${alignClass} ${active ? 'table-sort-button-active' : ''}`}
+        type="button"
+        onClick={() => {
+          setPage(1)
+          setSortState((current) => nextSortState(current, sortKey))
+        }}
+        title={active ? '再次点击切换方向，再点一次恢复默认顺序' : `按${label}排序`}
+      >
+        <span>{label}</span>
+        <span className="table-sort-indicator" aria-hidden="true">{indicator}</span>
+      </button>
+    )
+  }
+
   return (
     <section className={`${panelClass('p-5')} animate-fade-in`}>
       {/* ═══ Header ═══ */}
@@ -285,9 +429,12 @@ export function KeyHubPage({
               </select>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-xs text-[var(--text-muted)] whitespace-nowrap">
-                <strong className="font-mono text-[var(--text-secondary)]">{filteredItems.length}</strong> / <strong className="font-mono text-[var(--text-secondary)]">{allItems.length}</strong> 条
-              </span>
+              <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] whitespace-nowrap">
+                <span>
+                  <strong className="font-mono text-[var(--text-secondary)]">{filteredItems.length}</strong> / <strong className="font-mono text-[var(--text-secondary)]">{allItems.length}</strong> 条
+                </span>
+                <span className="text-[10px] text-[var(--text-faint)]">点击列头排序</span>
+              </div>
               <div className="flex items-center gap-1.5 border-l border-[var(--border)] pl-3">
                 <button className={buttonClass('ghost')} disabled={busy} onClick={onRefreshStats} title="立即刷新运行态">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -336,41 +483,32 @@ export function KeyHubPage({
 
           {/* ═══ Unified Table ═══ */}
           <div className="table-shell text-xs">
-            <table className="w-full min-w-[900px]">
+            <table className="w-full min-w-[1080px] table-fixed">
+              <colgroup>
+                <col style={{ width: '56px' }} />
+                <col style={{ width: '260px' }} />
+                <col style={{ width: '112px' }} />
+                <col style={{ width: '104px' }} />
+                <col style={{ width: '168px' }} />
+                <col style={{ width: '156px' }} />
+                <col />
+                <col style={{ width: '124px' }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th className="w-10 text-center">#</th>
-                  <th>Key</th>
-                  <th className="w-[80px]">状态</th>
-                  <th className="w-[72px]">负载</th>
-                  <th className="w-[130px]">请求</th>
-                  <th className="w-[110px]">错误</th>
-                  <th>异常 / 原因</th>
+                  <th>{renderSortableHeader('Key', 'key')}</th>
+                  <th>{renderSortableHeader('状态', 'status')}</th>
+                  <th>{renderSortableHeader('负载', 'load')}</th>
+                  <th>{renderSortableHeader('请求', 'requests')}</th>
+                  <th>{renderSortableHeader('错误', 'errors')}</th>
+                  <th>{renderSortableHeader('异常 / 原因', 'reason')}</th>
                   <th className="w-24 text-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {pageItems.map((item, idx) => {
-                  const rt = item.rt || {}
-                  const inflight = Number(rt.inflight || 0)
-                  const backoff = Number(rt.backoff_remaining_seconds || 0)
-                  const totalRequests = Number(rt.total_requests || 0)
-                  const successCount = Number(rt.success_count || 0)
-                  const failedCount = Math.max(0, totalRequests - successCount)
-                  const failures = Number(rt.failures || 0)
-                  const lastStatus = Number(rt.last_status || 0)
-                  const reason = item.displayDisableReason
-                  const err401 = Number(rt.unauthorized_count || 0)
-                  const err403 = Number(rt.forbidden_count || 0)
-                  const err429 = Number(rt.rate_limit_count || 0)
-                  const errOth = Number(rt.other_error_count || 0)
-                  const hasErrors = err401 > 0 || err403 > 0 || err429 > 0 || errOth > 0
-                  const successRate = totalRequests === 0 ? 0 : Math.round((successCount / totalRequests) * 100)
-                  const errRate = totalRequests === 0 ? 0 : 100 - successRate
-                  const secondaryParts = []
-                  if (item.displayDisabledBy) secondaryParts.push(`by ${item.displayDisabledBy}`)
-                  if (lastStatus >= 400) secondaryParts.push(`HTTP ${lastStatus}`)
-                  if (failures > 0) secondaryParts.push(`连败 ${failures}`)
+                  const { inflight, backoff, totalRequests, successCount, failedCount, reason, err401, err403, err429, errOth, hasErrors, successRate, errRate, secondaryText } = item.metrics
 
                   return (
                     <tr key={item.key} className="hover:bg-[var(--bg-hover)] transition-colors">
@@ -416,7 +554,7 @@ export function KeyHubPage({
                       </td>
                       <td>
                         <div className={`truncate ${reason ? 'text-[var(--text-secondary)]' : 'text-[var(--text-faint)]'}`} title={reason}>{reason || '--'}</div>
-                        {secondaryParts.length > 0 && <div className="text-[10px] text-[var(--text-faint)] truncate">{secondaryParts.join(' · ')}</div>}
+                        {secondaryText && <div className="text-[10px] text-[var(--text-faint)] truncate">{secondaryText}</div>}
                       </td>
                       <td>
                         <div className="flex justify-end gap-3">

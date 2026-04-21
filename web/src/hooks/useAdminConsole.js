@@ -645,6 +645,44 @@ export function useAdminConsole() {
     }
   }
 
+  const loadVendorTestMeta = async (vendorName, options = {}) => {
+    const name = String(vendorName || '').trim()
+    if (!name) return null
+    const { silent = true, touchBusy = false } = options
+    if (touchBusy) setBusy(true)
+    try {
+      const data = await api(`/admin/vendors/${encodeURIComponent(name)}/test-meta`)
+      if (!silent) setStatus('success', `已加载 ${name} 的测试配置`)
+      return data
+    } catch (err) {
+      if (!silent) setStatus('error', String(err?.message || err))
+      throw err
+    } finally {
+      if (touchBusy) setBusy(false)
+    }
+  }
+
+  const runVendorTest = async (vendorName, payload, options = {}) => {
+    const name = String(vendorName || '').trim()
+    if (!name) return null
+    const { silent = false, touchBusy = true } = options
+    if (touchBusy) setBusy(true)
+    try {
+      const data = await api(`/admin/vendors/${encodeURIComponent(name)}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      })
+      if (!silent) setStatus('success', '测试请求已完成')
+      return data
+    } catch (err) {
+      if (!silent) setStatus('error', String(err?.message || err))
+      throw err
+    } finally {
+      if (touchBusy) setBusy(false)
+    }
+  }
+
   useEffect(() => {
     if (!token) return
     refreshAll().catch(() => {})
@@ -812,6 +850,10 @@ export function useAdminConsole() {
       newPassword,
       setNewPassword,
       rotatePassword
+    },
+    vendorTest: {
+      loadVendorTestMeta,
+      runVendorTest
     },
     actions: {
       refreshAll

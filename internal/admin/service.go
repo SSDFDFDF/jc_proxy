@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -472,6 +473,103 @@ func (s *Service) Stats(query RuntimeStatsQuery) map[string]any {
 	return buildRuntimeStatsResponse(r.VendorStats(), query)
 }
 
+func (s *Service) VendorTestMeta(vendor string) (*VendorTestMetaResponse, error) {
+	if err := s.requireVendor(vendor); err != nil {
+		return nil, err
+	}
+
+	meta, err := s.runtime.VendorTestMeta(vendor)
+	if err != nil {
+		return nil, err
+	}
+
+	defaultKey, err := s.firstAvailableUpstreamKey(vendor)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &VendorTestMetaResponse{
+		Vendor:              meta.Vendor,
+		Provider:            meta.Provider,
+		BaseURL:             meta.BaseURL,
+		DefaultKeyAvailable: defaultKey != "",
+		ModelEndpoints:      append([]string(nil), meta.ModelEndpoints...),
+		RequestPresets:      make([]VendorTestPresetResponse, 0, len(meta.RequestPresets)),
+	}
+	if defaultKey != "" {
+		resp.DefaultKeyMasked = mask(defaultKey)
+	}
+	for _, preset := range meta.RequestPresets {
+		resp.RequestPresets = append(resp.RequestPresets, VendorTestPresetResponse{
+			Label:    preset.Label,
+			Method:   preset.Method,
+			Endpoint: preset.Endpoint,
+			Body:     preset.Body,
+		})
+	}
+	return resp, nil
+}
+
+func (s *Service) RunVendorTest(ctx context.Context, vendor string, req VendorTestRequest) (*VendorTestResponse, error) {
+	if err := s.requireVendor(vendor); err != nil {
+		return nil, err
+	}
+
+	selectedKey := strings.TrimSpace(req.Key)
+	keySource := "manual"
+	if selectedKey == "" {
+		keySource = "default"
+		var err error
+		selectedKey, err = s.firstAvailableUpstreamKey(vendor)
+		if err != nil {
+			return nil, err
+		}
+		if selectedKey == "" {
+			keySource = "none"
+		}
+	}
+
+	headers := make(map[string]string, len(req.Headers))
+	for _, row := range req.Headers {
+		key := strings.TrimSpace(row.Key)
+		if key == "" {
+			continue
+		}
+		headers[key] = row.Value
+	}
+
+	result, err := s.runtime.ExecuteVendorTest(ctx, vendor, gateway.VendorTestRequest{
+		BaseURL:  req.BaseURL,
+		Method:   req.Method,
+		Endpoint: req.Endpoint,
+		Body:     req.Body,
+		Key:      selectedKey,
+		Headers:  headers,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &VendorTestResponse{
+		Vendor:        vendor,
+		Provider:      result.Provider,
+		BaseURL:       result.BaseURL,
+		Endpoint:      result.Endpoint,
+		ResolvedURL:   result.ResolvedURL,
+		Method:        result.Method,
+		StatusCode:    result.StatusCode,
+		Headers:       result.Headers,
+		Body:          result.Body,
+		Truncated:     result.Truncated,
+		DurationMS:    result.DurationMS,
+		UsedKeySource: keySource,
+	}
+	if selectedKey != "" {
+		resp.UsedKeyMasked = mask(selectedKey)
+	}
+	return resp, nil
+}
+
 func (s *Service) requireVendor(vendor string) error {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
@@ -481,6 +579,28 @@ func (s *Service) requireVendor(vendor string) error {
 		return fmt.Errorf("vendor %q not found", vendor)
 	}
 	return nil
+}
+
+func (s *Service) firstAvailableUpstreamKey(vendor string) (string, error) {
+	records, err := s.keyStore.List(vendor)
+	if err != nil {
+		return "", err
+	}
+	for _, record := range records {
+		if keystore.IsActiveStatus(record.Status) {
+			return record.Key, nil
+		}
+	}
+
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		return "", err
+	}
+	legacy := keystore.NormalizeKeys(cfg.Vendors[vendor].Upstream.Keys)
+	if len(legacy) > 0 {
+		return legacy[0], nil
+	}
+	return "", nil
 }
 
 func buildRuntimeStatsResponse(vendors map[string][]map[string]any, query RuntimeStatsQuery) map[string]any {

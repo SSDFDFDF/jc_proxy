@@ -714,6 +714,41 @@ code, .font-mono {
   background: var(--bg-hover);
 }
 
+.table-sort-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.table-sort-button:hover {
+  color: var(--text-secondary);
+}
+
+.table-sort-button-active {
+  color: var(--text-primary);
+}
+
+.table-sort-indicator {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-faint);
+  transition: color 0.15s ease;
+}
+
+.table-sort-button:hover .table-sort-indicator,
+.table-sort-button-active .table-sort-indicator {
+  color: var(--accent);
+}
+
 /* ═══════════════════════════════════════════════════
    Vendor Item Cards
    ═══════════════════════════════════════════════════ */

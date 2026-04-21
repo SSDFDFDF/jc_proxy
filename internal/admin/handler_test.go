@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,24 +67,33 @@ func makeLoopbackRequest(method, target string, body io.Reader) *http.Request {
 	return req
 }
 
+func loginAdminToken(t *testing.T, mux *http.ServeMux) string {
+	t.Helper()
+	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "admin123"})
+	rr := httptest.NewRecorder()
+	req := makeLoopbackRequest(http.MethodPost, "/admin/login", bytes.NewReader(loginBody))
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("login failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := payload["token"].(string)
+	if token == "" {
+		t.Fatal("empty token")
+	}
+	return token
+}
+
 func TestAdminEndpoints(t *testing.T) {
 	h := makeHandlerForTest(t)
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	loginBody, _ := json.Marshal(map[string]string{"username": "admin", "password": "admin123"})
-	lr := httptest.NewRecorder()
-	lreq := makeLoopbackRequest(http.MethodPost, "/admin/login", bytes.NewReader(loginBody))
-	mux.ServeHTTP(lr, lreq)
-	if lr.Code != http.StatusOK {
-		t.Fatalf("login failed: %d %s", lr.Code, lr.Body.String())
-	}
-	var loginResp map[string]any
-	_ = json.Unmarshal(lr.Body.Bytes(), &loginResp)
-	token, _ := loginResp["token"].(string)
-	if token == "" {
-		t.Fatal("empty token")
-	}
+	token := loginAdminToken(t, mux)
 
 	cases := []string{"/admin/me", "/admin/config", "/admin/stats", "/admin/vendors"}
 	for _, p := range cases {
@@ -118,6 +128,195 @@ func TestAdminEndpoints(t *testing.T) {
 	mux.ServeHTTP(akr, akreq)
 	if akr.Code != http.StatusOK {
 		t.Fatalf("add key failed: %d %s", akr.Code, akr.Body.String())
+	}
+}
+
+func TestAdminVendorTestingEndpoints(t *testing.T) {
+	h := makeHandlerForTest(t)
+
+	type upstreamRequest struct {
+		Path   string
+		Query  string
+		Method string
+		Auth   string
+		Vendor string
+		Body   string
+	}
+
+	var (
+		mu   sync.Mutex
+		hits []upstreamRequest
+	)
+
+	record := func(req upstreamRequest) {
+		mu.Lock()
+		defer mu.Unlock()
+		hits = append(hits, req)
+	}
+
+	upstreamA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		record(upstreamRequest{
+			Path:   r.URL.Path,
+			Query:  r.URL.RawQuery,
+			Method: r.Method,
+			Auth:   r.Header.Get("Authorization"),
+			Vendor: r.Header.Get("X-Test-Vendor"),
+			Body:   string(body),
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"}]}`))
+	}))
+	defer upstreamA.Close()
+
+	upstreamB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		record(upstreamRequest{
+			Path:   r.URL.Path,
+			Query:  r.URL.RawQuery,
+			Method: r.Method,
+			Auth:   r.Header.Get("Authorization"),
+			Vendor: r.Header.Get("X-Test-Vendor"),
+			Body:   string(body),
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstreamB.Close()
+
+	cfg, err := h.service.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vendorCfg := cfg.Vendors["openai"]
+	vendorCfg.Upstream.BaseURL = upstreamA.URL
+	vendorCfg.InjectedHeader = map[string]string{
+		"X-Test-Vendor": "{{vendor}}",
+	}
+	vendorCfg.PathRewrites = map[string]string{
+		"/alias/*": "/v1/*",
+	}
+	cfg.Vendors["openai"] = vendorCfg
+	if err := h.service.UpdateConfig("tester", cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	h.Register(mux)
+	token := loginAdminToken(t, mux)
+
+	metaReq := makeLoopbackRequest(http.MethodGet, "/admin/vendors/openai/test-meta", nil)
+	metaReq.Header.Set("Authorization", "Bearer "+token)
+	metaResp := httptest.NewRecorder()
+	mux.ServeHTTP(metaResp, metaReq)
+	if metaResp.Code != http.StatusOK {
+		t.Fatalf("test-meta failed: %d %s", metaResp.Code, metaResp.Body.String())
+	}
+
+	var meta VendorTestMetaResponse
+	if err := json.Unmarshal(metaResp.Body.Bytes(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.BaseURL != upstreamA.URL {
+		t.Fatalf("meta base_url = %q, want %q", meta.BaseURL, upstreamA.URL)
+	}
+	if !meta.DefaultKeyAvailable {
+		t.Fatalf("default key should be available")
+	}
+	if len(meta.ModelEndpoints) == 0 || meta.ModelEndpoints[0] != "/v1/models" {
+		t.Fatalf("unexpected model endpoints: %#v", meta.ModelEndpoints)
+	}
+	if len(meta.RequestPresets) == 0 || meta.RequestPresets[0].Endpoint != "/v1/chat/completions" {
+		t.Fatalf("unexpected request presets: %#v", meta.RequestPresets)
+	}
+
+	runBody, _ := json.Marshal(map[string]any{
+		"method":   http.MethodGet,
+		"endpoint": "/alias/models?limit=20",
+	})
+	runReq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/openai/test", bytes.NewReader(runBody))
+	runReq.Header.Set("Authorization", "Bearer "+token)
+	runResp := httptest.NewRecorder()
+	mux.ServeHTTP(runResp, runReq)
+	if runResp.Code != http.StatusOK {
+		t.Fatalf("default vendor test failed: %d %s", runResp.Code, runResp.Body.String())
+	}
+
+	var runPayload VendorTestResponse
+	if err := json.Unmarshal(runResp.Body.Bytes(), &runPayload); err != nil {
+		t.Fatal(err)
+	}
+	if runPayload.UsedKeySource != "default" {
+		t.Fatalf("used_key_source = %q, want default", runPayload.UsedKeySource)
+	}
+	if !strings.Contains(runPayload.ResolvedURL, "/v1/models?limit=20") {
+		t.Fatalf("resolved_url = %q", runPayload.ResolvedURL)
+	}
+
+	mu.Lock()
+	if len(hits) == 0 {
+		mu.Unlock()
+		t.Fatal("expected upstream hit")
+	}
+	firstHit := hits[0]
+	mu.Unlock()
+	if firstHit.Path != "/v1/models" {
+		t.Fatalf("default test path = %q, want /v1/models", firstHit.Path)
+	}
+	if firstHit.Query != "limit=20" {
+		t.Fatalf("default test query = %q, want limit=20", firstHit.Query)
+	}
+	if firstHit.Auth != "Bearer k1" {
+		t.Fatalf("default test auth = %q, want Bearer k1", firstHit.Auth)
+	}
+	if firstHit.Vendor != "openai" {
+		t.Fatalf("default test vendor header = %q, want openai", firstHit.Vendor)
+	}
+
+	overrideBody, _ := json.Marshal(map[string]any{
+		"base_url": upstreamB.URL,
+		"method":   http.MethodPost,
+		"endpoint": "/v1/chat/completions",
+		"body":     "{\"model\":\"manual\"}",
+		"key":      "manual-secret",
+	})
+	overrideReq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/openai/test", bytes.NewReader(overrideBody))
+	overrideReq.Header.Set("Authorization", "Bearer "+token)
+	overrideResp := httptest.NewRecorder()
+	mux.ServeHTTP(overrideResp, overrideReq)
+	if overrideResp.Code != http.StatusOK {
+		t.Fatalf("manual vendor test failed: %d %s", overrideResp.Code, overrideResp.Body.String())
+	}
+
+	var overridePayload VendorTestResponse
+	if err := json.Unmarshal(overrideResp.Body.Bytes(), &overridePayload); err != nil {
+		t.Fatal(err)
+	}
+	if overridePayload.UsedKeySource != "manual" {
+		t.Fatalf("used_key_source = %q, want manual", overridePayload.UsedKeySource)
+	}
+	if overridePayload.BaseURL != upstreamB.URL {
+		t.Fatalf("override base_url = %q, want %q", overridePayload.BaseURL, upstreamB.URL)
+	}
+
+	mu.Lock()
+	if len(hits) < 2 {
+		mu.Unlock()
+		t.Fatal("expected second upstream hit")
+	}
+	secondHit := hits[1]
+	mu.Unlock()
+	if secondHit.Path != "/v1/chat/completions" {
+		t.Fatalf("manual test path = %q", secondHit.Path)
+	}
+	if secondHit.Auth != "Bearer manual-secret" {
+		t.Fatalf("manual test auth = %q, want Bearer manual-secret", secondHit.Auth)
+	}
+	if secondHit.Method != http.MethodPost {
+		t.Fatalf("manual test method = %q, want POST", secondHit.Method)
+	}
+	if secondHit.Body != "{\"model\":\"manual\"}" {
+		t.Fatalf("manual test body = %q", secondHit.Body)
 	}
 }
 

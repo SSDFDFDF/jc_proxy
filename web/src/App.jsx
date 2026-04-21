@@ -7,10 +7,11 @@ import { SecurityPage } from './pages/SecurityPage'
 import { KeyHubPage } from './pages/KeyHubPage'
 import { SystemPage } from './pages/SystemPage'
 import { VendorsPage } from './pages/VendorsPage'
+import { VendorTestPage } from './pages/VendorTestPage'
 
 function App() {
   const consoleState = useAdminConsole()
-  const { auth, shell, overview, config, upstream, statsView, security, actions } = consoleState
+  const { auth, shell, overview, config, upstream, statsView, security, vendorTest, actions } = consoleState
 
   if (!auth.isAuthed) {
     return (
@@ -111,6 +112,19 @@ function App() {
           onDropHeadersTextChange={config.setDropHeadersText}
           setInjectRows={config.setInjectRows}
           setRewriteRows={config.setRewriteRows}
+        />
+      )}
+
+      {shell.nav === 'vendorTest' && (
+        <VendorTestPage
+          busy={auth.busy}
+          vendorRows={overview.vendorRows}
+          selectedVendor={config.selectedVendor}
+          refreshStamp={auth.lastSyncAt}
+          onSelectVendor={config.selectVendor}
+          onRefresh={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
+          onLoadMeta={vendorTest.loadVendorTestMeta}
+          onRunTest={vendorTest.runVendorTest}
         />
       )}
 

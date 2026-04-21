@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -79,20 +80,7 @@ func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path 
 }
 
 func (v *vendorGateway) buildTargetURL(path, rawQuery, selectedKey string) (string, error) {
-	target := *v.baseURL
-	target.Path = singleJoiningSlash(v.baseURL.Path, path)
-	target.RawQuery = rawQuery
-	resolved := target.String()
-
-	if v.resinRuntime == nil {
-		return resolved, nil
-	}
-	urlText, err := resin.BuildReverseURL(resolved, *v.resinRuntime)
-	if err != nil {
-		return "", err
-	}
-	_ = selectedKey
-	return urlText, nil
+	return buildTargetURLFromBase(v.baseURL, path, rawQuery, selectedKey, v.resinRuntime)
 }
 
 func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetURL string, headers http.Header, bodySource *requestBodySource, selectedKey string) (*http.Request, error) {
@@ -200,6 +188,27 @@ func singleJoiningSlash(a, b string) string {
 	default:
 		return a + b
 	}
+}
+
+func buildTargetURLFromBase(baseURL *url.URL, path, rawQuery, selectedKey string, resinRuntime *resin.RuntimeConfig) (string, error) {
+	if baseURL == nil {
+		return "", errors.New("upstream base_url is empty")
+	}
+
+	target := *baseURL
+	target.Path = singleJoiningSlash(baseURL.Path, path)
+	target.RawQuery = rawQuery
+	resolved := target.String()
+
+	if resinRuntime == nil {
+		return resolved, nil
+	}
+	urlText, err := resin.BuildReverseURL(resolved, *resinRuntime)
+	if err != nil {
+		return "", err
+	}
+	_ = selectedKey
+	return urlText, nil
 }
 
 func newRewriteMatcher(m map[string]string) rewriteMatcher {

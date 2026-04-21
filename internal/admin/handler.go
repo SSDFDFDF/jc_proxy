@@ -381,6 +381,14 @@ func (h *Handler) handleVendorByPath(w http.ResponseWriter, r *http.Request) {
 		h.handleClientKeys(w, r, vendor)
 		return
 	}
+	if resource == "test-meta" {
+		h.handleVendorTestMeta(w, r, vendor)
+		return
+	}
+	if resource == "test" {
+		h.handleVendorTest(w, r, vendor)
+		return
+	}
 	writeError(w, http.StatusNotFound, "unknown vendor resource")
 }
 
@@ -440,6 +448,39 @@ func (h *Handler) handleClientKeys(w http.ResponseWriter, r *http.Request, vendo
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (h *Handler) handleVendorTestMeta(w http.ResponseWriter, r *http.Request, vendor string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	resp, err := h.service.VendorTestMeta(vendor)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) handleVendorTest(w http.ResponseWriter, r *http.Request, vendor string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req VendorTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+
+	resp, err := h.service.RunVendorTest(r.Context(), vendor, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func extractToken(r *http.Request) string {
