@@ -77,7 +77,6 @@ export function VendorsPage({
   vendorRows,
   selectedVendor,
   vendorDraft,
-  vendorBackoffDuration,
   invalidKeyStatusCodesText,
   invalidKeyKeywordsText,
   responseRuleRows,
@@ -98,7 +97,6 @@ export function VendorsPage({
   onSaveVendor,
   onDeleteVendor,
   onMutateVendorDraft,
-  onVendorBackoffDurationChange,
   onInvalidKeyStatusCodesTextChange,
   onInvalidKeyKeywordsTextChange,
   setResponseRuleRows,
@@ -371,7 +369,7 @@ export function VendorsPage({
 
             <CollapsibleSection
               title="上游配置"
-              description="基础参数、鉴权方式、负载均衡和退避基线统一收敛到这里。"
+              description="基础参数、鉴权方式和负载均衡统一收敛到这里。"
               summary={`${vendorDraft.provider || 'generic'} · ${vendorDraft.load_balance || 'round_robin'}`}
               open={expandedSections.upstreamConfig}
               onToggle={() => toggleSection('upstreamConfig')}
@@ -439,65 +437,40 @@ export function VendorsPage({
                 </div>
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
-                  <div>
-                    <div className="text-sm font-medium text-[var(--text-primary)]">上游鉴权</div>
-                    <div className="mt-1 text-xs text-[var(--text-muted)]">配置转发到上游时使用的鉴权头和前缀。</div>
-                  </div>
-                  <div className="grid gap-4 xl:grid-cols-3">
-                    <label className="field-wrap">
-                      <span className="field-label">上游鉴权模式</span>
-                      <select
-                        className="select-base"
-                        value={vendorDraft.upstream_auth?.mode || 'bearer'}
-                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.mode = e.target.value })}
-                      >
-                        <option value="bearer">bearer</option>
-                        <option value="header">header</option>
-                        <option value="passthrough">passthrough</option>
-                      </select>
-                    </label>
-                    <label className="field-wrap">
-                      <span className="field-label">鉴权 Header</span>
-                      <input
-                        className="input-base"
-                        value={vendorDraft.upstream_auth?.header || ''}
-                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.header = e.target.value })}
-                      />
-                    </label>
-                    <label className="field-wrap">
-                      <span className="field-label">鉴权前缀</span>
-                      <input
-                        className="input-base"
-                        value={vendorDraft.upstream_auth?.prefix || ''}
-                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.prefix = e.target.value })}
-                      />
-                    </label>
-                  </div>
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
+                <div>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">上游鉴权</div>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">配置转发到上游时使用的鉴权头和前缀。</div>
                 </div>
-
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
-                  <div>
-                    <div className="text-sm font-medium text-[var(--text-primary)]">退避基线</div>
-                    <div className="mt-1 text-xs text-[var(--text-muted)]">控制密钥退避的基线参数。连续命中会在规则时长基础上指数放大，成功后重置。</div>
-                  </div>
-                  <div className="grid gap-4">
-                    <label className="field-wrap">
-                      <span className="field-label">退避阈值</span>
-                      <input
-                        type="number"
-                        min="1"
-                        className="input-base"
-                        value={vendorDraft.backoff?.threshold ?? 3}
-                        onChange={(e) => onMutateVendorDraft((draft) => { draft.backoff.threshold = Number(e.target.value || 1) })}
-                      />
-                    </label>
-                    <label className="field-wrap">
-                      <span className="field-label">退避时长</span>
-                      <input className="input-base" value={vendorBackoffDuration} onChange={(e) => onVendorBackoffDurationChange(e.target.value)} />
-                    </label>
-                  </div>
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <label className="field-wrap">
+                    <span className="field-label">上游鉴权模式</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft.upstream_auth?.mode || 'bearer'}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.mode = e.target.value })}
+                    >
+                      <option value="bearer">bearer</option>
+                      <option value="header">header</option>
+                      <option value="passthrough">passthrough</option>
+                    </select>
+                  </label>
+                  <label className="field-wrap">
+                    <span className="field-label">鉴权 Header</span>
+                    <input
+                      className="input-base"
+                      value={vendorDraft.upstream_auth?.header || ''}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.header = e.target.value })}
+                    />
+                  </label>
+                  <label className="field-wrap">
+                    <span className="field-label">鉴权前缀</span>
+                    <input
+                      className="input-base"
+                      value={vendorDraft.upstream_auth?.prefix || ''}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.prefix = e.target.value })}
+                    />
+                  </label>
                 </div>
               </div>
             </CollapsibleSection>

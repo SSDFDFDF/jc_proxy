@@ -54,18 +54,16 @@ func (s loadScore) less(other loadScore) bool {
 }
 
 type Pool struct {
-	strategy         string
-	keys             []KeyState
-	rrIdx            int
-	backoffThreshold int
-	backoffDuration  time.Duration
+	strategy string
+	keys     []KeyState
+	rrIdx    int
 
 	rng  *rand.Rand
 	mu   sync.Mutex
 	nowf func() time.Time
 }
 
-func NewPool(strategy string, keys []string, backoffThreshold int, backoffDuration time.Duration) (*Pool, error) {
+func NewPool(strategy string, keys []string) (*Pool, error) {
 	configs := make([]KeyConfig, 0, len(keys))
 	for _, key := range keys {
 		configs = append(configs, KeyConfig{
@@ -73,20 +71,14 @@ func NewPool(strategy string, keys []string, backoffThreshold int, backoffDurati
 			Status: keystore.KeyStatusActive,
 		})
 	}
-	return NewPoolWithConfigs(strategy, configs, backoffThreshold, backoffDuration)
+	return NewPoolWithConfigs(strategy, configs)
 }
 
-func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int, backoffDuration time.Duration) (*Pool, error) {
+func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
 	switch strategy {
 	case "round_robin", "random", "least_used", "least_requests":
 	default:
 		return nil, errors.New("invalid strategy")
-	}
-	if backoffThreshold <= 0 {
-		backoffThreshold = 3
-	}
-	if backoffDuration <= 0 {
-		backoffDuration = 3 * time.Hour
 	}
 
 	states := make([]KeyState, 0, len(keys))
@@ -114,12 +106,10 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig, backoffThreshold int,
 	}
 
 	return &Pool{
-		strategy:         strategy,
-		keys:             states,
-		backoffThreshold: backoffThreshold,
-		backoffDuration:  backoffDuration,
-		rng:              rand.New(rand.NewSource(time.Now().UnixNano())),
-		nowf:             time.Now,
+		strategy: strategy,
+		keys:     states,
+		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		nowf:     time.Now,
 	}, nil
 }
 
@@ -234,9 +224,6 @@ func (p *Pool) Cooldown(idx int, statusCode int, reason string, duration time.Du
 	}
 	p.recordErrorLocked(idx, statusCode, reason)
 	p.recordFailureLocked(idx)
-	if duration <= 0 {
-		duration = p.backoffDuration
-	}
 	duration = scaledCooldownDuration(p.keys[idx].CooldownLevel, duration)
 	p.keys[idx].CooldownUntil = p.nowf().Add(duration)
 }
@@ -459,9 +446,6 @@ func (p *Pool) totalRequestsLocked(idx int) int {
 
 func (p *Pool) recordFailureLocked(idx int) {
 	p.keys[idx].Failures++
-	if p.keys[idx].Failures >= p.backoffThreshold {
-		p.keys[idx].Failures = 0
-	}
 	if p.keys[idx].CooldownLevel < 10 {
 		p.keys[idx].CooldownLevel++
 	}

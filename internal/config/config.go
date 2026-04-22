@@ -93,7 +93,6 @@ type VendorConfig struct {
 	ClientHeaders  ClientHeadersConfig `yaml:"client_headers" json:"client_headers"`
 	InjectedHeader map[string]string   `yaml:"inject_headers" json:"inject_headers"`
 	PathRewrites   map[string]string   `yaml:"path_rewrites" json:"path_rewrites"`
-	Backoff        BackoffConfig       `yaml:"backoff" json:"backoff"`
 	ErrorPolicy    ErrorPolicyConfig   `yaml:"error_policy" json:"error_policy"`
 	Resin          ResinConfig         `yaml:"resin" json:"resin"`
 }
@@ -120,11 +119,6 @@ type ClientHeadersConfig struct {
 	Preset    string   `yaml:"preset,omitempty" json:"preset,omitempty"`
 	Allowlist []string `yaml:"allowlist" json:"allowlist"`
 	Drop      []string `yaml:"drop,omitempty" json:"drop,omitempty"`
-}
-
-type BackoffConfig struct {
-	Threshold int           `yaml:"threshold" json:"threshold"`
-	Duration  time.Duration `yaml:"duration" json:"duration"`
 }
 
 type ErrorPolicyConfig struct {
@@ -636,12 +630,6 @@ func (c *Config) applyDefaults() {
 		}
 		if v.Upstream.ResponseHeaderTimeout == 0 {
 			v.Upstream.ResponseHeaderTimeout = 120 * time.Second
-		}
-		if v.Backoff.Threshold <= 0 {
-			v.Backoff.Threshold = 3
-		}
-		if v.Backoff.Duration <= 0 {
-			v.Backoff.Duration = 3 * time.Hour
 		}
 		applyErrorPolicyDefaults(&v.ErrorPolicy)
 		if v.Resin.Mode == "" {

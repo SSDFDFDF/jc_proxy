@@ -156,7 +156,6 @@ export function useAdminConsole() {
 
   const [selectedVendor, setSelectedVendor] = useState('')
   const [vendorDraft, setVendorDraft] = useState(null)
-  const [vendorBackoffDuration, setVendorBackoffDuration] = useState('3h')
   const [invalidKeyStatusCodesText, setInvalidKeyStatusCodesText] = useState('')
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
@@ -240,7 +239,6 @@ export function useAdminConsole() {
     const vendor = cfg?.vendors?.[vendorName]
     if (!vendor) {
       setVendorDraft(null)
-      setVendorBackoffDuration('3h')
       setInvalidKeyStatusCodesText('')
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
@@ -256,7 +254,6 @@ export function useAdminConsole() {
     }
     const draft = withVendorDefaults(vendor)
     setVendorDraft(draft)
-    setVendorBackoffDuration(nsToText(draft.backoff?.duration || 0))
     setInvalidKeyStatusCodesText(statusCodesToText(draft.error_policy?.auto_disable?.invalid_key_status_codes || []))
     setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
@@ -412,7 +409,6 @@ export function useAdminConsole() {
       const next = clone(vendorDraft)
       next.upstream.response_header_timeout = parseDurationToNs(upstreamResponseHeaderTimeoutText, next.upstream.response_header_timeout)
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
-      next.backoff.duration = parseDurationToNs(vendorBackoffDuration, next.backoff.duration)
       next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
       next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
       next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
@@ -793,7 +789,6 @@ export function useAdminConsole() {
       setRawConfigText,
       selectedVendor,
       vendorDraft,
-      vendorBackoffDuration,
       invalidKeyStatusCodesText,
       invalidKeyKeywordsText,
       responseRuleRows,
@@ -807,7 +802,6 @@ export function useAdminConsole() {
       rewriteRows,
       newVendorForm,
       systemForm,
-      setVendorBackoffDuration,
       setInvalidKeyStatusCodesText,
       setInvalidKeyKeywordsText,
       setResponseRuleRows,

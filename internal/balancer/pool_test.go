@@ -10,7 +10,7 @@ import (
 )
 
 func TestRoundRobinAcquire(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1", "k2", "k3"}, 3, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1", "k2", "k3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestLeastUsedPrefersLowerInflightThenLowerUsage(t *testing.T) {
 			Status:       keystore.KeyStatusActive,
 			RuntimeStats: keystore.RuntimeStats{TotalRequests: 1},
 		},
-	}, 3, time.Hour)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestLeastRequestsBalancesByUsageCount(t *testing.T) {
 			Status:       keystore.KeyStatusActive,
 			RuntimeStats: keystore.RuntimeStats{TotalRequests: 6},
 		},
-	}, 3, time.Hour)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestLeastRequestsBalancesByUsageCount(t *testing.T) {
 }
 
 func TestCooldownSkipsAcquire(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1"}, 2, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestCooldownSkipsAcquire(t *testing.T) {
 }
 
 func TestCooldownDurationExponentiallyScalesFromConfiguredBase(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1"}, 10, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestCooldownDurationExponentiallyScalesFromConfiguredBase(t *testing.T) {
 }
 
 func TestTransientCooldownEscalatesAndResetsAfterSuccess(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1"}, 10, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestTransientCooldownEscalatesAndResetsAfterSuccess(t *testing.T) {
 }
 
 func TestCooldownCategories(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1"}, 10, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestCooldownCategories(t *testing.T) {
 }
 
 func TestOtherErrorsAggregatedAndLastErrorPreserved(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1"}, 2, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestOtherErrorsAggregatedAndLastErrorPreserved(t *testing.T) {
 }
 
 func TestLastErrorIsTruncated(t *testing.T) {
-	p, err := NewPool("round_robin", []string{"k1"}, 2, time.Hour)
+	p, err := NewPool("round_robin", []string{"k1"})
 	if err != nil {
 		t.Fatal(err)
 	}

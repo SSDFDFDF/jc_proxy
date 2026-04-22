@@ -112,7 +112,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			}
 		}
 
-		pool, err := balancer.NewPoolWithConfigs(vendor.LoadBalance, keyConfigs, vendor.Backoff.Threshold, vendor.Backoff.Duration)
+		pool, err := balancer.NewPoolWithConfigs(vendor.LoadBalance, keyConfigs)
 		if err != nil {
 			return nil, fmt.Errorf("vendor %s init key pool: %w", name, err)
 		}

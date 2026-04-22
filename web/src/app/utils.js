@@ -134,7 +134,6 @@ export function emptyVendorConfig() {
     client_headers: { preset: '', allowlist: [], drop: [] },
     inject_headers: {},
     path_rewrites: {},
-    backoff: { threshold: 3, duration: 10_800_000_000_000 },
     error_policy: {
       auto_disable: {
         invalid_key: true,
@@ -177,7 +176,6 @@ export function withVendorDefaults(vendor) {
     },
     inject_headers: { ...base.inject_headers, ...(next.inject_headers || {}) },
     path_rewrites: { ...base.path_rewrites, ...(next.path_rewrites || {}) },
-    backoff: { ...base.backoff, ...(next.backoff || {}) },
     error_policy: {
       auto_disable: {
         invalid_key: next.error_policy?.auto_disable?.invalid_key ?? base.error_policy.auto_disable.invalid_key,

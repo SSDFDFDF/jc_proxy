@@ -81,7 +81,6 @@ function App() {
           vendorRows={overview.vendorRows}
           selectedVendor={config.selectedVendor}
           vendorDraft={config.vendorDraft}
-          vendorBackoffDuration={config.vendorBackoffDuration}
           invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}
@@ -102,7 +101,6 @@ function App() {
           onSaveVendor={config.saveVendor}
           onDeleteVendor={config.deleteVendor}
           onMutateVendorDraft={config.mutateVendorDraft}
-          onVendorBackoffDurationChange={config.setVendorBackoffDuration}
           onInvalidKeyStatusCodesTextChange={config.setInvalidKeyStatusCodesText}
           onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
           setResponseRuleRows={config.setResponseRuleRows}

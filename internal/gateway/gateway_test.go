@@ -1038,10 +1038,6 @@ func TestRouterTracksUpstreamStatusStats(t *testing.T) {
 					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
-				Backoff: config.BackoffConfig{
-					Threshold: 3,
-					Duration:  time.Hour,
-				},
 			},
 		},
 	}
