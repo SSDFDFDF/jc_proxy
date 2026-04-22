@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -13,6 +14,8 @@ const (
 	pooledResponseCopyBufferBytes    = 32 << 10
 	streamingResponseCopyBufferBytes = 4 << 10
 )
+
+var errAbortDownstreamResponse = errors.New("abort downstream response")
 
 type flushWriter struct {
 	writer  io.Writer
@@ -95,15 +98,12 @@ func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
 	}
 }
 
-func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, selectedVersion int64, decision keyDecision, decisionApplied bool) {
+func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, selectedVersion int64, decision keyDecision, decisionApplied bool) error {
 	defer resp.Body.Close()
 
 	if body == nil {
 		body = http.NoBody
 	}
-
-	copyResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
 
 	streaming := shouldFlushResponse(req, resp)
 	buf, releaseBuf := r.responseCopyBuffer(streaming)
@@ -113,23 +113,77 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 	if streaming {
 		if flusher, ok := w.(http.Flusher); ok {
 			writer = &flushWriter{writer: w, flusher: flusher}
-			flusher.Flush()
 		}
 	}
 
-	_, copyErr := io.CopyBuffer(writer, body, buf)
-	if copyErr != nil {
+	applyCompletedDecisionIfNeeded := func() {
+		if !decisionApplied {
+			vg.applyDecision(idx, selectedKey, selectedVersion, decision)
+			decisionApplied = true
+		}
+	}
+
+	applyInterruptedDecisionIfNeeded := func() {
 		if !decisionApplied {
 			if resp.StatusCode >= http.StatusBadRequest {
 				vg.applyDecision(idx, selectedKey, selectedVersion, decision)
 			} else {
 				vg.applyDecision(idx, selectedKey, selectedVersion, keyDecision{action: keyActionNone})
 			}
+			decisionApplied = true
 		}
-		return
 	}
 
-	if !decisionApplied {
-		vg.applyDecision(idx, selectedKey, selectedVersion, decision)
+	committed := false
+	commitUpstream := func() {
+		if committed {
+			return
+		}
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		committed = true
+		if streaming {
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			commitUpstream()
+			if _, writeErr := writer.Write(buf[:n]); writeErr != nil {
+				applyInterruptedDecisionIfNeeded()
+				return nil
+			}
+		}
+
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			commitUpstream()
+			applyCompletedDecisionIfNeeded()
+			return nil
+		}
+		if isCanceledUpstreamError(req.Context(), readErr) {
+			applyInterruptedDecisionIfNeeded()
+			return nil
+		}
+
+		applyInterruptedDecisionIfNeeded()
+		if !committed {
+			if resp.StatusCode >= http.StatusBadRequest {
+				commitUpstream()
+			} else {
+				http.Error(w, "upstream response interrupted", http.StatusBadGateway)
+			}
+			return nil
+		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			return nil
+		}
+		return errAbortDownstreamResponse
 	}
 }

@@ -67,6 +67,8 @@ function buildKeyMetrics(item) {
   const rt = item.rt || {}
   const inflight = Number(rt.inflight || 0)
   const backoff = Number(rt.backoff_remaining_seconds || 0)
+  const cooldownLevel = Number(rt.cooldown_level || 0)
+  const cooldownMultiplier = cooldownLevel > 1 ? 2 ** (cooldownLevel - 1) : 1
   const totalRequests = Number(rt.total_requests || 0)
   const successCount = Number(rt.success_count || 0)
   const failedCount = Math.max(0, totalRequests - successCount)
@@ -84,10 +86,13 @@ function buildKeyMetrics(item) {
   if (item.displayDisabledBy) secondaryParts.push(`by ${item.displayDisabledBy}`)
   if (lastStatus >= 400) secondaryParts.push(`HTTP ${lastStatus}`)
   if (failures > 0) secondaryParts.push(`连败 ${failures}`)
+  if (cooldownLevel > 1) secondaryParts.push(`退避 x${cooldownMultiplier}`)
 
   return {
     inflight,
     backoff,
+    cooldownLevel,
+    cooldownMultiplier,
     totalRequests,
     successCount,
     failedCount,

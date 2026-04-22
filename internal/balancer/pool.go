@@ -3,6 +3,7 @@ package balancer
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -236,6 +237,7 @@ func (p *Pool) Cooldown(idx int, statusCode int, reason string, duration time.Du
 	if duration <= 0 {
 		duration = p.backoffDuration
 	}
+	duration = scaledCooldownDuration(p.keys[idx].CooldownLevel, duration)
 	p.keys[idx].CooldownUntil = p.nowf().Add(duration)
 }
 
@@ -463,6 +465,27 @@ func (p *Pool) recordFailureLocked(idx int) {
 	if p.keys[idx].CooldownLevel < 10 {
 		p.keys[idx].CooldownLevel++
 	}
+}
+
+func scaledCooldownDuration(level int, base time.Duration) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	if level <= 1 {
+		return base
+	}
+
+	factor := int64(1)
+	for i := 1; i < level; i++ {
+		if factor > math.MaxInt64/2 {
+			return time.Duration(math.MaxInt64)
+		}
+		factor *= 2
+	}
+	if int64(base) > math.MaxInt64/factor {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(int64(base) * factor)
 }
 
 func (p *Pool) recordSuccessLocked(idx int) {

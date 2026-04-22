@@ -192,6 +192,9 @@ func (s *Service) UpsertVendor(actor, vendor string, vc config.VendorConfig) err
 	}
 	legacyKeys := keystore.NormalizeKeys(vc.Upstream.Keys)
 	vc.Upstream.Keys = nil
+	if prev, ok := cfg.Vendors[vendor]; ok {
+		vc = mergeVendorConfigForAdminUpsert(prev, vc)
+	}
 	cfg.Vendors[vendor] = vc
 	if err := s.UpdateConfig(actor, cfg); err != nil {
 		return err
@@ -206,6 +209,49 @@ func (s *Service) UpsertVendor(actor, vendor string, vc config.VendorConfig) err
 	}
 	s.audit.Log(actor, "vendor.upsert", map[string]any{"vendor": vendor, "legacy_keys_imported": len(legacyKeys)})
 	return nil
+}
+
+// The admin vendor editor currently only surfaces part of error_policy.
+// Preserve hidden sub-fields on update so opening the console and saving
+// does not silently reset runtime behavior configured elsewhere.
+func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.VendorConfig {
+	next.ErrorPolicy = mergeErrorPolicyForAdminUpsert(prev.ErrorPolicy, next.ErrorPolicy)
+	return next
+}
+
+func mergeErrorPolicyForAdminUpsert(prev, next config.ErrorPolicyConfig) config.ErrorPolicyConfig {
+	next.AutoDisable.PaymentRequired = mergeBoolPtrForAdminUpsert(prev.AutoDisable.PaymentRequired, next.AutoDisable.PaymentRequired)
+	next.AutoDisable.QuotaExhausted = mergeBoolPtrForAdminUpsert(prev.AutoDisable.QuotaExhausted, next.AutoDisable.QuotaExhausted)
+
+	next.Cooldown.RequestError = mergeCooldownRuleForAdminUpsert(prev.Cooldown.RequestError, next.Cooldown.RequestError)
+	next.Cooldown.Unauthorized = mergeCooldownRuleForAdminUpsert(prev.Cooldown.Unauthorized, next.Cooldown.Unauthorized)
+	next.Cooldown.PaymentRequired = mergeCooldownRuleForAdminUpsert(prev.Cooldown.PaymentRequired, next.Cooldown.PaymentRequired)
+	next.Cooldown.Forbidden = mergeCooldownRuleForAdminUpsert(prev.Cooldown.Forbidden, next.Cooldown.Forbidden)
+	next.Cooldown.RateLimit = mergeCooldownRuleForAdminUpsert(prev.Cooldown.RateLimit, next.Cooldown.RateLimit)
+	next.Cooldown.ServerError = mergeCooldownRuleForAdminUpsert(prev.Cooldown.ServerError, next.Cooldown.ServerError)
+	next.Cooldown.OpenAISlowDown = mergeCooldownRuleForAdminUpsert(prev.Cooldown.OpenAISlowDown, next.Cooldown.OpenAISlowDown)
+
+	next.Failover.Unauthorized = mergeBoolPtrForAdminUpsert(prev.Failover.Unauthorized, next.Failover.Unauthorized)
+	next.Failover.PaymentRequired = mergeBoolPtrForAdminUpsert(prev.Failover.PaymentRequired, next.Failover.PaymentRequired)
+	next.Failover.Forbidden = mergeBoolPtrForAdminUpsert(prev.Failover.Forbidden, next.Failover.Forbidden)
+	next.Failover.RateLimit = mergeBoolPtrForAdminUpsert(prev.Failover.RateLimit, next.Failover.RateLimit)
+	next.Failover.ServerError = mergeBoolPtrForAdminUpsert(prev.Failover.ServerError, next.Failover.ServerError)
+
+	return next
+}
+
+func mergeBoolPtrForAdminUpsert(prev, next *bool) *bool {
+	if next != nil {
+		return next
+	}
+	return prev
+}
+
+func mergeCooldownRuleForAdminUpsert(prev, next config.ErrorCooldownRule) config.ErrorCooldownRule {
+	if next.Enabled != nil || next.Duration != 0 {
+		return next
+	}
+	return prev
 }
 
 func (s *Service) DeleteVendor(actor, vendor string) error {

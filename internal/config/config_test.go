@@ -517,6 +517,51 @@ func TestPrepareAndValidateRejectsUnknownClientHeaderPreset(t *testing.T) {
 	}
 }
 
+func TestPrepareAndValidateSetsDefaultUpstreamResponseHeaderTimeout(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Listen: ":8092"},
+		Storage: StorageConfig{
+			Config:       ConfigStoreConfig{Driver: "file"},
+			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
+		},
+		Vendors: map[string]VendorConfig{
+			"openai": {
+				Upstream: UpstreamConfig{BaseURL: "https://api.openai.com"},
+			},
+		},
+	}
+
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("PrepareAndValidate() error = %v", err)
+	}
+	if got := cfg.Vendors["openai"].Upstream.ResponseHeaderTimeout; got != 120*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", got, 120*time.Second)
+	}
+}
+
+func TestPrepareAndValidateRejectsNegativeUpstreamResponseHeaderTimeout(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Listen: ":8092"},
+		Storage: StorageConfig{
+			Config:       ConfigStoreConfig{Driver: "file"},
+			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
+		},
+		Vendors: map[string]VendorConfig{
+			"openai": {
+				Upstream: UpstreamConfig{
+					BaseURL:               "https://api.openai.com",
+					ResponseHeaderTimeout: -1 * time.Second,
+				},
+			},
+		},
+	}
+
+	err := cfg.PrepareAndValidate()
+	if err == nil || !strings.Contains(err.Error(), "upstream.response_header_timeout") {
+		t.Fatalf("PrepareAndValidate() error = %v, want invalid upstream.response_header_timeout", err)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

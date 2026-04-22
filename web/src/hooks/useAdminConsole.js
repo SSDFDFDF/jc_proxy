@@ -161,6 +161,7 @@ export function useAdminConsole() {
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
   const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
+  const [upstreamResponseHeaderTimeoutText, setUpstreamResponseHeaderTimeoutText] = useState('120s')
   const [upstreamBodyTimeoutText, setUpstreamBodyTimeoutText] = useState('5m')
   const [clientHeaderPreset, setClientHeaderPreset] = useState('')
   const [allowlistText, setAllowlistText] = useState('')
@@ -244,6 +245,7 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
       setFailoverResponseStatusCodesText('')
+      setUpstreamResponseHeaderTimeoutText('120s')
       setUpstreamBodyTimeoutText('5m')
       setClientHeaderPreset('')
       setAllowlistText('')
@@ -259,6 +261,7 @@ export function useAdminConsole() {
     setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
+    setUpstreamResponseHeaderTimeoutText(nsToText(draft.upstream?.response_header_timeout || 0))
     setUpstreamBodyTimeoutText(nsToText(draft.upstream?.body_timeout || 0))
     setClientHeaderPreset(String(draft.client_headers?.preset || '').trim())
     setAllowlistText(listToText(draft.client_headers?.allowlist || []))
@@ -407,6 +410,7 @@ export function useAdminConsole() {
     setBusy(true)
     try {
       const next = clone(vendorDraft)
+      next.upstream.response_header_timeout = parseDurationToNs(upstreamResponseHeaderTimeoutText, next.upstream.response_header_timeout)
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
       next.backoff.duration = parseDurationToNs(vendorBackoffDuration, next.backoff.duration)
       next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
@@ -794,6 +798,7 @@ export function useAdminConsole() {
       invalidKeyKeywordsText,
       responseRuleRows,
       failoverResponseStatusCodesText,
+      upstreamResponseHeaderTimeoutText,
       upstreamBodyTimeoutText,
       clientHeaderPreset,
       allowlistText,
@@ -807,6 +812,7 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText,
       setResponseRuleRows,
       setFailoverResponseStatusCodesText,
+      setUpstreamResponseHeaderTimeoutText,
       setUpstreamBodyTimeoutText,
       setClientHeaderPreset,
       setAllowlistText,

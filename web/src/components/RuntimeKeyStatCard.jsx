@@ -21,6 +21,8 @@ export function RuntimeKeyStatCard({ item }) {
   const failed = Math.max(0, total - success)
   const inflight = Number(item.inflight || 0)
   const backoff = Number(item.backoff_remaining_seconds || 0)
+  const cooldownLevel = Number(item.cooldown_level || 0)
+  const cooldownMultiplier = cooldownLevel > 1 ? 2 ** (cooldownLevel - 1) : 1
   const streak = Number(item.failures || 0)
   const status = String(item.status || 'active')
   const disableReason = String(item.disable_reason || '').trim()
@@ -36,7 +38,7 @@ export function RuntimeKeyStatCard({ item }) {
           {statPill('state', statusLabel, statusTone)}
           {backoff > 0 && (
             <span className="rounded-md bg-[var(--danger-soft)] border border-[rgba(239,68,68,0.3)] px-2 py-1 text-[11px] font-medium text-[var(--danger)]">
-              cooldown {backoff}s
+              cooldown {backoff}s{cooldownLevel > 1 ? ` · x${cooldownMultiplier}` : ''}
             </span>
           )}
         </div>
@@ -48,6 +50,7 @@ export function RuntimeKeyStatCard({ item }) {
         {statPill('x', failed, failed > 0 ? 'err' : 'default')}
         {statPill('run', inflight, inflight > 0 ? 'warn' : 'default')}
         {statPill('streak', streak, streak > 0 ? 'warn' : 'default')}
+        {cooldownLevel > 1 && statPill('expo', `x${cooldownMultiplier}`, 'warn')}
       </div>
 
       <div className="mt-2 flex flex-wrap gap-2">

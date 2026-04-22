@@ -86,6 +86,7 @@ function App() {
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}
           failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
+          upstreamResponseHeaderTimeoutText={config.upstreamResponseHeaderTimeoutText}
           upstreamBodyTimeoutText={config.upstreamBodyTimeoutText}
           clientHeaderPreset={config.clientHeaderPreset}
           allowlistText={config.allowlistText}
@@ -106,6 +107,7 @@ function App() {
           onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
           setResponseRuleRows={config.setResponseRuleRows}
           onFailoverResponseStatusCodesTextChange={config.setFailoverResponseStatusCodesText}
+          onUpstreamResponseHeaderTimeoutTextChange={config.setUpstreamResponseHeaderTimeoutText}
           onUpstreamBodyTimeoutTextChange={config.setUpstreamBodyTimeoutText}
           onClientHeaderPresetChange={config.setClientHeaderPreset}
           onAllowlistTextChange={config.setAllowlistText}

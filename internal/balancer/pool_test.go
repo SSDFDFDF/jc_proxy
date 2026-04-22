@@ -148,6 +148,82 @@ func TestCooldownSkipsAcquire(t *testing.T) {
 	}
 }
 
+func TestCooldownDurationExponentiallyScalesFromConfiguredBase(t *testing.T) {
+	p, err := NewPool("round_robin", []string{"k1"}, 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	p.nowf = func() time.Time { return now }
+
+	wantDurations := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second}
+	for i, want := range wantDurations {
+		idx, _, ok := p.Acquire()
+		if !ok {
+			t.Fatalf("acquire %d failed", i)
+		}
+		p.Cooldown(idx, http.StatusTooManyRequests, formatStatusError(http.StatusTooManyRequests), 5*time.Second)
+
+		ks := p.Snapshot()[0]
+		if got := ks.CooldownUntil.Sub(now); got != want {
+			t.Fatalf("cooldown %d duration = %v, want %v", i, got, want)
+		}
+		now = now.Add(want + time.Second)
+	}
+}
+
+func TestTransientCooldownEscalatesAndResetsAfterSuccess(t *testing.T) {
+	p, err := NewPool("round_robin", []string{"k1"}, 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	p.nowf = func() time.Time { return now }
+
+	idx, _, ok := p.Acquire()
+	if !ok {
+		t.Fatal("first acquire failed")
+	}
+	p.Cooldown(idx, http.StatusInternalServerError, formatStatusError(http.StatusInternalServerError), 2*time.Second)
+	if got := p.Snapshot()[0].CooldownUntil.Sub(now); got != 2*time.Second {
+		t.Fatalf("first transient cooldown = %v, want %v", got, 2*time.Second)
+	}
+
+	now = now.Add(3 * time.Second)
+	idx, _, ok = p.Acquire()
+	if !ok {
+		t.Fatal("second acquire failed")
+	}
+	p.Cooldown(idx, 0, "dial tcp timeout", 2*time.Second)
+	ks := p.Snapshot()[0]
+	if got := ks.CooldownUntil.Sub(now); got != 4*time.Second {
+		t.Fatalf("second transient cooldown = %v, want %v", got, 4*time.Second)
+	}
+	if got := ks.CooldownLevel; got != 2 {
+		t.Fatalf("cooldown level after repeated transient failures = %d, want 2", got)
+	}
+
+	now = now.Add(6 * time.Second)
+	idx, _, ok = p.Acquire()
+	if !ok {
+		t.Fatal("success acquire failed")
+	}
+	p.ReleaseSuccess(idx)
+	ks = p.Snapshot()[0]
+	if got := ks.CooldownLevel; got != 0 {
+		t.Fatalf("cooldown level after success = %d, want 0", got)
+	}
+
+	idx, _, ok = p.Acquire()
+	if !ok {
+		t.Fatal("post-success acquire failed")
+	}
+	p.Cooldown(idx, http.StatusInternalServerError, formatStatusError(http.StatusInternalServerError), 2*time.Second)
+	if got := p.Snapshot()[0].CooldownUntil.Sub(now); got != 2*time.Second {
+		t.Fatalf("cooldown after reset = %v, want %v", got, 2*time.Second)
+	}
+}
+
 func TestCooldownCategories(t *testing.T) {
 	p, err := NewPool("round_robin", []string{"k1"}, 10, time.Hour)
 	if err != nil {

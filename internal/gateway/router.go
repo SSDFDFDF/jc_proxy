@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -230,15 +231,21 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 				_ = resp.Body.Close()
 				return false
 			}
-			r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true)
+			if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true); errors.Is(err, errAbortDownstreamResponse) {
+				panic(http.ErrAbortHandler)
+			}
 			return true
 		}
 
-		r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false)
+		if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false); errors.Is(err, errAbortDownstreamResponse) {
+			panic(http.ErrAbortHandler)
+		}
 		return true
 	}
 
 	decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
-	r.writeUpstreamResponse(w, req, resp, resp.Body, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false)
+	if err := r.writeUpstreamResponse(w, req, resp, resp.Body, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false); errors.Is(err, errAbortDownstreamResponse) {
+		panic(http.ErrAbortHandler)
+	}
 	return true
 }

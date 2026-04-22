@@ -126,7 +126,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			ResponseHeaderTimeout: 120 * time.Second,
+			ResponseHeaderTimeout: vendor.Upstream.ResponseHeaderTimeout,
 		}
 		client := &http.Client{
 			Transport: transport,

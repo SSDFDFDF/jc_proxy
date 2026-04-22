@@ -85,6 +85,12 @@ type blockingReadCloser struct {
 	closed chan struct{}
 }
 
+type stagedReadCloser struct {
+	chunks [][]byte
+	err    error
+	idx    int
+}
+
 func (w *brokenPipeWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
@@ -130,6 +136,25 @@ func (r *blockingReadCloser) Close() error {
 	default:
 		close(r.closed)
 	}
+	return nil
+}
+
+func (r *stagedReadCloser) Read(p []byte) (int, error) {
+	if r.idx < len(r.chunks) {
+		chunk := r.chunks[r.idx]
+		r.idx++
+		n := copy(p, chunk)
+		return n, nil
+	}
+	if r.err != nil {
+		err := r.err
+		r.err = nil
+		return 0, err
+	}
+	return 0, io.EOF
+}
+
+func (r *stagedReadCloser) Close() error {
 	return nil
 }
 
@@ -797,6 +822,164 @@ func TestIdleTimeoutReadCloserClosesStalledBody(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("timed out waiting for stalled body read to fail")
+	}
+}
+
+func TestRouterUsesConfiguredResponseHeaderTimeout(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL:               "https://api.openai.com",
+					Keys:                  []string{"k1"},
+					ResponseHeaderTimeout: 7 * time.Second,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	transport, ok := router.vendors["openai"].client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("unexpected transport type: %T", router.vendors["openai"].client.Transport)
+	}
+	if got := transport.ResponseHeaderTimeout; got != 7*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", got, 7*time.Second)
+	}
+}
+
+func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL:     "https://example.test",
+					Keys:        []string{"k1"},
+					BodyTimeout: 50 * time.Millisecond,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["openai"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       &blockingReadCloser{closed: make(chan struct{})},
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	w := httptest.NewRecorder()
+
+	started := time.Now()
+	router.ServeHTTP(w, req)
+	elapsed := time.Since(started)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 when upstream body stalls before first byte, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "upstream response interrupted") {
+		t.Fatalf("unexpected body: %q", w.Body.String())
+	}
+	if elapsed < 40*time.Millisecond || elapsed > 500*time.Millisecond {
+		t.Fatalf("body timeout should stop waiting near configured deadline, elapsed=%v", elapsed)
+	}
+
+	stats := router.VendorStats()["openai"]
+	if got := stats[0]["failures"]; got != 0 {
+		t.Fatalf("stall before first byte should not mark key failure, got %#v", got)
+	}
+	if got := stats[0]["other_error_count"]; got != 0 {
+		t.Fatalf("stall before first byte should not count as key error, got %#v", got)
+	}
+}
+
+func TestRouterAbortsClientConnectionWhenSuccessfulStreamBreaksMidBody(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL: "https://example.test",
+					Keys:    []string{"k1"},
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["openai"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			headers := make(http.Header)
+			headers.Set("Content-Type", "text/event-stream")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     headers,
+				Body: &stagedReadCloser{
+					chunks: [][]byte{[]byte("data: hello\n\n")},
+					err:    io.ErrUnexpectedEOF,
+				},
+			}, nil
+		}),
+	}
+
+	ts := httptest.NewServer(router)
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/openai/v1/chat/completions?stream=true")
+	if err != nil {
+		t.Fatalf("client get failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after first chunk flush, got %d", resp.StatusCode)
+	}
+	if string(body) != "data: hello\n\n" {
+		t.Fatalf("unexpected partial body: %q", string(body))
+	}
+	if readErr == nil {
+		t.Fatal("expected stream break to surface as client read error")
+	}
+
+	stats := router.VendorStats()["openai"]
+	if got := stats[0]["failures"]; got != 0 {
+		t.Fatalf("mid-stream upstream break should not mark key failure, got %#v", got)
+	}
+	if got := stats[0]["other_error_count"]; got != 0 {
+		t.Fatalf("mid-stream upstream break should not count as key error, got %#v", got)
+	}
+	if got := stats[0]["inflight"]; got != 0 {
+		t.Fatalf("inflight should be released after mid-stream abort, got %#v", got)
 	}
 }
 

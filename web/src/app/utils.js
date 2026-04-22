@@ -123,7 +123,11 @@ export function recommendedClientHeaderPreset(provider) {
 export function emptyVendorConfig() {
   return {
     provider: 'generic',
-    upstream: { base_url: '', body_timeout: 300_000_000_000 },
+    upstream: {
+      base_url: '',
+      response_header_timeout: 120_000_000_000,
+      body_timeout: 300_000_000_000
+    },
     load_balance: 'round_robin',
     upstream_auth: { mode: 'bearer', header: 'Authorization', prefix: 'Bearer ' },
     client_auth: { enabled: false, keys: [] },

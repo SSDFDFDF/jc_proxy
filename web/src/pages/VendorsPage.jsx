@@ -82,6 +82,7 @@ export function VendorsPage({
   invalidKeyKeywordsText,
   responseRuleRows,
   failoverResponseStatusCodesText,
+  upstreamResponseHeaderTimeoutText,
   upstreamBodyTimeoutText,
   clientHeaderPreset,
   allowlistText,
@@ -102,6 +103,7 @@ export function VendorsPage({
   onInvalidKeyKeywordsTextChange,
   setResponseRuleRows,
   onFailoverResponseStatusCodesTextChange,
+  onUpstreamResponseHeaderTimeoutTextChange,
   onUpstreamBodyTimeoutTextChange,
   onClientHeaderPresetChange,
   onAllowlistTextChange,
@@ -379,7 +381,7 @@ export function VendorsPage({
                   <div className="text-sm font-medium text-[var(--text-primary)]">基础配置</div>
                   <div className="mt-1 text-xs text-[var(--text-muted)]">Provider、上游地址和超时设置。</div>
                 </div>
-                <div className="grid gap-4 lg:grid-cols-4">
+                <div className="grid gap-4 lg:grid-cols-5">
                   <label className="field-wrap">
                     <span className="field-label">Provider</span>
                     <select
@@ -415,6 +417,15 @@ export function VendorsPage({
                       <option value="least_used">least_used</option>
                       <option value="least_requests">least_requests</option>
                     </select>
+                  </label>
+                  <label className="field-wrap">
+                    <span className="field-label">上游首包超时</span>
+                    <input
+                      className="input-base"
+                      placeholder="例如 15s / 30s / 2m"
+                      value={upstreamResponseHeaderTimeoutText}
+                      onChange={(e) => onUpstreamResponseHeaderTimeoutTextChange(e.target.value)}
+                    />
                   </label>
                   <label className="field-wrap">
                     <span className="field-label">上游 Body 超时</span>
@@ -469,7 +480,7 @@ export function VendorsPage({
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
                   <div>
                     <div className="text-sm font-medium text-[var(--text-primary)]">退避基线</div>
-                    <div className="mt-1 text-xs text-[var(--text-muted)]">控制密钥进入退避的阈值与默认时长。</div>
+                    <div className="mt-1 text-xs text-[var(--text-muted)]">控制密钥退避的基线参数。连续命中会在规则时长基础上指数放大，成功后重置。</div>
                   </div>
                   <div className="grid gap-4">
                     <label className="field-wrap">
@@ -542,7 +553,7 @@ export function VendorsPage({
                 <div className="section-card-header">
                   <div>
                     <h4>退避规则</h4>
-                    <p>按顺序匹配响应码 / 关键字，并设置退避时长与 Retry-After 策略。</p>
+                    <p>按顺序匹配响应码 / 关键字，并设置基础退避时长与 Retry-After 策略。连续命中会按该时长指数放大。</p>
                   </div>
                   <button className={buttonClass('ghost')} onClick={addResponseRuleRow}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

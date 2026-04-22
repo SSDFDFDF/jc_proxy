@@ -1,13 +1,20 @@
 package admin
 
 import (
+	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/gateway"
 	"jc_proxy/internal/keystore"
 )
+
+func testBoolPtr(v bool) *bool {
+	b := v
+	return &b
+}
 
 func testConfig() *config.Config {
 	cfg := &config.Config{
@@ -88,6 +95,101 @@ func TestVendorAndKeyCRUD(t *testing.T) {
 	}
 	if err := s.DeleteVendor(actor, "anthropic"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
+	s := newTestService(t)
+
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := cfg.Vendors["openai"]
+	current.Provider = "openai"
+	current.ErrorPolicy = config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			InvalidKey:      testBoolPtr(true),
+			PaymentRequired: testBoolPtr(false),
+			QuotaExhausted:  testBoolPtr(false),
+		},
+		Cooldown: config.ErrorCooldownConfig{
+			RateLimit:      config.ErrorCooldownRule{Enabled: testBoolPtr(true), Duration: 37 * time.Second},
+			OpenAISlowDown: config.ErrorCooldownRule{Enabled: testBoolPtr(true), Duration: 11 * time.Minute},
+			ResponseRules: []config.ErrorResponseCooldownRule{
+				{StatusCodes: []int{http.StatusTooManyRequests}, Duration: 9 * time.Second},
+			},
+		},
+		Failover: config.ErrorFailoverConfig{
+			RequestError: testBoolPtr(true),
+			RateLimit:    testBoolPtr(false),
+			ServerError:  testBoolPtr(false),
+		},
+	}
+	cfg.Vendors["openai"] = current
+	if err := s.UpdateConfig("admin", cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	update := current
+	update.LoadBalance = "least_used"
+	update.ErrorPolicy = config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			InvalidKey:            testBoolPtr(false),
+			InvalidKeyStatusCodes: []int{401, 403},
+			InvalidKeyKeywords:    []string{"incorrect_api_key"},
+		},
+		Cooldown: config.ErrorCooldownConfig{
+			ResponseRules: []config.ErrorResponseCooldownRule{
+				{StatusCodes: []int{http.StatusTeapot}, Duration: 45 * time.Second},
+			},
+		},
+		Failover: config.ErrorFailoverConfig{
+			RequestError:        testBoolPtr(false),
+			ResponseStatusCodes: []int{http.StatusTeapot},
+		},
+	}
+
+	if err := s.UpsertVendor("admin", "openai", update); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := s.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.Vendors["openai"]
+
+	if got.LoadBalance != "least_used" {
+		t.Fatalf("LoadBalance = %q, want %q", got.LoadBalance, "least_used")
+	}
+	if got.ErrorPolicy.AutoDisable.PaymentRequired == nil || *got.ErrorPolicy.AutoDisable.PaymentRequired {
+		t.Fatalf("AutoDisable.PaymentRequired = %#v, want false preserved", got.ErrorPolicy.AutoDisable.PaymentRequired)
+	}
+	if got.ErrorPolicy.AutoDisable.QuotaExhausted == nil || *got.ErrorPolicy.AutoDisable.QuotaExhausted {
+		t.Fatalf("AutoDisable.QuotaExhausted = %#v, want false preserved", got.ErrorPolicy.AutoDisable.QuotaExhausted)
+	}
+	if got.ErrorPolicy.Cooldown.RateLimit.Duration != 37*time.Second {
+		t.Fatalf("Cooldown.RateLimit.Duration = %v, want %v", got.ErrorPolicy.Cooldown.RateLimit.Duration, 37*time.Second)
+	}
+	if got.ErrorPolicy.Cooldown.RateLimit.Enabled == nil || !*got.ErrorPolicy.Cooldown.RateLimit.Enabled {
+		t.Fatalf("Cooldown.RateLimit.Enabled = %#v, want true preserved", got.ErrorPolicy.Cooldown.RateLimit.Enabled)
+	}
+	if got.ErrorPolicy.Cooldown.OpenAISlowDown.Duration != 11*time.Minute {
+		t.Fatalf("Cooldown.OpenAISlowDown.Duration = %v, want %v", got.ErrorPolicy.Cooldown.OpenAISlowDown.Duration, 11*time.Minute)
+	}
+	if got.ErrorPolicy.Failover.RateLimit == nil || *got.ErrorPolicy.Failover.RateLimit {
+		t.Fatalf("Failover.RateLimit = %#v, want false preserved", got.ErrorPolicy.Failover.RateLimit)
+	}
+	if got.ErrorPolicy.Failover.ServerError == nil || *got.ErrorPolicy.Failover.ServerError {
+		t.Fatalf("Failover.ServerError = %#v, want false preserved", got.ErrorPolicy.Failover.ServerError)
+	}
+	if got.ErrorPolicy.Failover.RequestError == nil || *got.ErrorPolicy.Failover.RequestError {
+		t.Fatalf("Failover.RequestError = %#v, want false updated", got.ErrorPolicy.Failover.RequestError)
+	}
+	if len(got.ErrorPolicy.Cooldown.ResponseRules) != 1 || got.ErrorPolicy.Cooldown.ResponseRules[0].StatusCodes[0] != http.StatusTeapot {
+		t.Fatalf("Cooldown.ResponseRules = %#v, want updated visible rule", got.ErrorPolicy.Cooldown.ResponseRules)
 	}
 }
 
