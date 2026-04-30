@@ -125,8 +125,9 @@ export function emptyVendorConfig() {
     provider: 'generic',
     upstream: {
       base_url: '',
-      response_header_timeout: 120_000_000_000,
-      body_timeout: 300_000_000_000
+      response_header_timeout: 300_000_000_000,
+      body_timeout: 300_000_000_000,
+      interim_response_interval: 30_000_000_000
     },
     load_balance: 'round_robin',
     upstream_auth: { mode: 'bearer', header: 'Authorization', prefix: 'Bearer ' },

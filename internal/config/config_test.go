@@ -534,12 +534,78 @@ func TestPrepareAndValidateSetsDefaultUpstreamResponseHeaderTimeout(t *testing.T
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("PrepareAndValidate() error = %v", err)
 	}
-	if got := cfg.Vendors["openai"].Upstream.ResponseHeaderTimeout; got != 120*time.Second {
-		t.Fatalf("ResponseHeaderTimeout = %v, want %v", got, 120*time.Second)
+	if got := cfg.Vendors["openai"].Upstream.ResponseHeaderTimeout; got == nil || *got != 300*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", got, 300*time.Second)
+	}
+	if got := cfg.Vendors["openai"].Upstream.InterimResponseInterval; got == nil || *got != 30*time.Second {
+		t.Fatalf("InterimResponseInterval = %v, want %v", got, 30*time.Second)
+	}
+}
+
+func TestLoadBytesSupportsDisabledUpstreamInterimResponse(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+server:
+  listen: ":8092"
+
+storage:
+  config:
+    driver: "file"
+  upstream_keys:
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+
+vendors:
+  openai:
+    upstream:
+      base_url: "https://api.openai.com"
+      interim_response_interval: 0s
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	got := cfg.Vendors["openai"].Upstream.InterimResponseInterval
+	if got == nil {
+		t.Fatal("InterimResponseInterval = nil, want explicit zero")
+	}
+	if *got != 0 {
+		t.Fatalf("InterimResponseInterval = %v, want 0", *got)
+	}
+}
+
+func TestLoadBytesSupportsDisabledUpstreamResponseHeaderTimeout(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+server:
+  listen: ":8092"
+
+storage:
+  config:
+    driver: "file"
+  upstream_keys:
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+
+vendors:
+  openai:
+    upstream:
+      base_url: "https://api.openai.com"
+      response_header_timeout: 0s
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	got := cfg.Vendors["openai"].Upstream.ResponseHeaderTimeout
+	if got == nil {
+		t.Fatal("ResponseHeaderTimeout = nil, want explicit zero")
+	}
+	if *got != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 0", *got)
 	}
 }
 
 func TestPrepareAndValidateRejectsNegativeUpstreamResponseHeaderTimeout(t *testing.T) {
+	negative := -1 * time.Second
 	cfg := &Config{
 		Server: ServerConfig{Listen: ":8092"},
 		Storage: StorageConfig{
@@ -550,7 +616,7 @@ func TestPrepareAndValidateRejectsNegativeUpstreamResponseHeaderTimeout(t *testi
 			"openai": {
 				Upstream: UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
-					ResponseHeaderTimeout: -1 * time.Second,
+					ResponseHeaderTimeout: &negative,
 				},
 			},
 		},
@@ -559,6 +625,30 @@ func TestPrepareAndValidateRejectsNegativeUpstreamResponseHeaderTimeout(t *testi
 	err := cfg.PrepareAndValidate()
 	if err == nil || !strings.Contains(err.Error(), "upstream.response_header_timeout") {
 		t.Fatalf("PrepareAndValidate() error = %v, want invalid upstream.response_header_timeout", err)
+	}
+}
+
+func TestPrepareAndValidateRejectsNegativeUpstreamInterimResponseInterval(t *testing.T) {
+	negative := -1 * time.Second
+	cfg := &Config{
+		Server: ServerConfig{Listen: ":8092"},
+		Storage: StorageConfig{
+			Config:       ConfigStoreConfig{Driver: "file"},
+			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
+		},
+		Vendors: map[string]VendorConfig{
+			"openai": {
+				Upstream: UpstreamConfig{
+					BaseURL:                 "https://api.openai.com",
+					InterimResponseInterval: &negative,
+				},
+			},
+		},
+	}
+
+	err := cfg.PrepareAndValidate()
+	if err == nil || !strings.Contains(err.Error(), "upstream.interim_response_interval") {
+		t.Fatalf("PrepareAndValidate() error = %v, want invalid upstream.interim_response_interval", err)
 	}
 }
 

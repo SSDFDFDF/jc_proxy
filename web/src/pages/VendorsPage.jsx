@@ -83,6 +83,7 @@ export function VendorsPage({
   failoverResponseStatusCodesText,
   upstreamResponseHeaderTimeoutText,
   upstreamBodyTimeoutText,
+  upstreamInterimResponseIntervalText,
   clientHeaderPreset,
   allowlistText,
   dropHeadersText,
@@ -103,6 +104,7 @@ export function VendorsPage({
   onFailoverResponseStatusCodesTextChange,
   onUpstreamResponseHeaderTimeoutTextChange,
   onUpstreamBodyTimeoutTextChange,
+  onUpstreamInterimResponseIntervalTextChange,
   onClientHeaderPresetChange,
   onAllowlistTextChange,
   onDropHeadersTextChange,
@@ -432,6 +434,15 @@ export function VendorsPage({
                       placeholder="例如 30s / 5m / 1h"
                       value={upstreamBodyTimeoutText}
                       onChange={(e) => onUpstreamBodyTimeoutTextChange(e.target.value)}
+                    />
+                  </label>
+                  <label className="field-wrap">
+                    <span className="field-label">102 保活间隔</span>
+                    <input
+                      className="input-base"
+                      placeholder="例如 0s / 30s / 1m"
+                      value={upstreamInterimResponseIntervalText}
+                      onChange={(e) => onUpstreamInterimResponseIntervalTextChange(e.target.value)}
                     />
                   </label>
                 </div>

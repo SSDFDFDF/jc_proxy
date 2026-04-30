@@ -98,7 +98,7 @@ func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
 	}
 }
 
-func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, selectedVersion int64, decision keyDecision, decisionApplied bool) error {
+func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, selectedVersion int64, decision keyDecision, decisionApplied bool, interim *interimResponseSender) error {
 	defer resp.Body.Close()
 
 	if body == nil {
@@ -139,8 +139,10 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 		if committed {
 			return
 		}
-		copyResponseHeaders(w.Header(), resp.Header)
-		w.WriteHeader(resp.StatusCode)
+		commitFinalResponse(interim, func() {
+			copyResponseHeaders(w.Header(), resp.Header)
+			w.WriteHeader(resp.StatusCode)
+		})
 		committed = true
 		if streaming {
 			if flusher, ok := w.(http.Flusher); ok {
@@ -177,7 +179,7 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 			if resp.StatusCode >= http.StatusBadRequest {
 				commitUpstream()
 			} else {
-				http.Error(w, "upstream response interrupted", http.StatusBadGateway)
+				writeHTTPError(w, interim, "upstream response interrupted", http.StatusBadGateway)
 			}
 			return nil
 		}
@@ -186,4 +188,22 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 		}
 		return errAbortDownstreamResponse
 	}
+}
+
+func writeHTTPError(w http.ResponseWriter, interim *interimResponseSender, message string, statusCode int) {
+	if interim == nil {
+		http.Error(w, message, statusCode)
+		return
+	}
+	commitFinalResponse(interim, func() {
+		http.Error(w, message, statusCode)
+	})
+}
+
+func commitFinalResponse(interim *interimResponseSender, fn func()) {
+	if interim == nil {
+		fn()
+		return
+	}
+	interim.commitFinal(fn)
 }

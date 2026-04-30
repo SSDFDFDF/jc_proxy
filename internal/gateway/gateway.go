@@ -41,6 +41,7 @@ type vendorGateway struct {
 	injectHeaders       map[string]string
 	upstreamAuth        config.UpstreamAuthConfig
 	upstreamBodyTimeout time.Duration
+	interimInterval     time.Duration
 	errorPolicy         config.ErrorPolicyConfig
 	rewrites            rewriteMatcher
 	resinRuntime        *resin.RuntimeConfig
@@ -126,7 +127,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			ResponseHeaderTimeout: vendor.Upstream.ResponseHeaderTimeout,
+			ResponseHeaderTimeout: upstreamResponseHeaderTimeout(vendor.Upstream),
 		}
 		client := &http.Client{
 			Transport: transport,
@@ -168,6 +169,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			injectHeaders:       vendor.InjectedHeader,
 			upstreamAuth:        vendor.UpstreamAuth,
 			upstreamBodyTimeout: vendor.Upstream.BodyTimeout,
+			interimInterval:     upstreamInterimInterval(vendor.Upstream),
 			errorPolicy:         vendor.ErrorPolicy,
 			rewrites:            newRewriteMatcher(vendor.PathRewrites),
 			resinRuntime:        rr,
@@ -221,4 +223,18 @@ func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
 		}
 		vendor.pool.MergeRuntimeStats(prevVendor.pool.Snapshot())
 	}
+}
+
+func upstreamInterimInterval(cfg config.UpstreamConfig) time.Duration {
+	if cfg.InterimResponseInterval == nil {
+		return 0
+	}
+	return *cfg.InterimResponseInterval
+}
+
+func upstreamResponseHeaderTimeout(cfg config.UpstreamConfig) time.Duration {
+	if cfg.ResponseHeaderTimeout == nil {
+		return 0
+	}
+	return *cfg.ResponseHeaderTimeout
 }

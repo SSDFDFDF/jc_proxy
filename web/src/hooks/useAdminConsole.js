@@ -160,8 +160,9 @@ export function useAdminConsole() {
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
   const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
-  const [upstreamResponseHeaderTimeoutText, setUpstreamResponseHeaderTimeoutText] = useState('120s')
+  const [upstreamResponseHeaderTimeoutText, setUpstreamResponseHeaderTimeoutText] = useState('300s')
   const [upstreamBodyTimeoutText, setUpstreamBodyTimeoutText] = useState('5m')
+  const [upstreamInterimResponseIntervalText, setUpstreamInterimResponseIntervalText] = useState('30s')
   const [clientHeaderPreset, setClientHeaderPreset] = useState('')
   const [allowlistText, setAllowlistText] = useState('')
   const [dropHeadersText, setDropHeadersText] = useState('')
@@ -243,8 +244,9 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
       setFailoverResponseStatusCodesText('')
-      setUpstreamResponseHeaderTimeoutText('120s')
+      setUpstreamResponseHeaderTimeoutText('300s')
       setUpstreamBodyTimeoutText('5m')
+      setUpstreamInterimResponseIntervalText('30s')
       setClientHeaderPreset('')
       setAllowlistText('')
       setDropHeadersText('')
@@ -260,6 +262,7 @@ export function useAdminConsole() {
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
     setUpstreamResponseHeaderTimeoutText(nsToText(draft.upstream?.response_header_timeout || 0))
     setUpstreamBodyTimeoutText(nsToText(draft.upstream?.body_timeout || 0))
+    setUpstreamInterimResponseIntervalText(nsToText(draft.upstream?.interim_response_interval || 0))
     setClientHeaderPreset(String(draft.client_headers?.preset || '').trim())
     setAllowlistText(listToText(draft.client_headers?.allowlist || []))
     setDropHeadersText(listToText(draft.client_headers?.drop || []))
@@ -409,6 +412,7 @@ export function useAdminConsole() {
       const next = clone(vendorDraft)
       next.upstream.response_header_timeout = parseDurationToNs(upstreamResponseHeaderTimeoutText, next.upstream.response_header_timeout)
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
+      next.upstream.interim_response_interval = parseDurationToNs(upstreamInterimResponseIntervalText, next.upstream.interim_response_interval)
       next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
       next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
       next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
@@ -795,6 +799,7 @@ export function useAdminConsole() {
       failoverResponseStatusCodesText,
       upstreamResponseHeaderTimeoutText,
       upstreamBodyTimeoutText,
+      upstreamInterimResponseIntervalText,
       clientHeaderPreset,
       allowlistText,
       dropHeadersText,
@@ -808,6 +813,7 @@ export function useAdminConsole() {
       setFailoverResponseStatusCodesText,
       setUpstreamResponseHeaderTimeoutText,
       setUpstreamBodyTimeoutText,
+      setUpstreamInterimResponseIntervalText,
       setClientHeaderPreset,
       setAllowlistText,
       setDropHeadersText,

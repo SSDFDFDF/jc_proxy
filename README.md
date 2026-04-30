@@ -167,6 +167,18 @@ server:
 
 这样可以避免长连接在固定时长后被服务端主动切断。
 
+对非流式长响应，供应商可配置：
+
+```yaml
+vendors:
+  openai:
+    upstream:
+      interim_response_interval: 30s
+```
+
+网关会在最终响应开始前发送 HTTP `102 Processing` 作为保活，不会写入最终响应体；设为 `0s` 可关闭。
+网关等待上游响应头的默认超时是 `300s`，如需等待更久可调大 `response_header_timeout`，或显式设为 `0s` 关闭该超时。
+
 ## 测试
 
 ```bash

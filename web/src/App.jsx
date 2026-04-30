@@ -87,6 +87,7 @@ function App() {
           failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
           upstreamResponseHeaderTimeoutText={config.upstreamResponseHeaderTimeoutText}
           upstreamBodyTimeoutText={config.upstreamBodyTimeoutText}
+          upstreamInterimResponseIntervalText={config.upstreamInterimResponseIntervalText}
           clientHeaderPreset={config.clientHeaderPreset}
           allowlistText={config.allowlistText}
           dropHeadersText={config.dropHeadersText}
@@ -107,6 +108,7 @@ function App() {
           onFailoverResponseStatusCodesTextChange={config.setFailoverResponseStatusCodesText}
           onUpstreamResponseHeaderTimeoutTextChange={config.setUpstreamResponseHeaderTimeoutText}
           onUpstreamBodyTimeoutTextChange={config.setUpstreamBodyTimeoutText}
+          onUpstreamInterimResponseIntervalTextChange={config.setUpstreamInterimResponseIntervalText}
           onClientHeaderPresetChange={config.setClientHeaderPreset}
           onAllowlistTextChange={config.setAllowlistText}
           onDropHeadersTextChange={config.setDropHeadersText}

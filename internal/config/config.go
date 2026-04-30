@@ -98,10 +98,11 @@ type VendorConfig struct {
 }
 
 type UpstreamConfig struct {
-	BaseURL               string        `yaml:"base_url" json:"base_url"`
-	Keys                  []string      `yaml:"keys,omitempty" json:"-"`
-	ResponseHeaderTimeout time.Duration `yaml:"response_header_timeout,omitempty" json:"response_header_timeout,omitempty"`
-	BodyTimeout           time.Duration `yaml:"body_timeout,omitempty" json:"body_timeout,omitempty"`
+	BaseURL                 string         `yaml:"base_url" json:"base_url"`
+	Keys                    []string       `yaml:"keys,omitempty" json:"-"`
+	ResponseHeaderTimeout   *time.Duration `yaml:"response_header_timeout,omitempty" json:"response_header_timeout,omitempty"`
+	BodyTimeout             time.Duration  `yaml:"body_timeout,omitempty" json:"body_timeout,omitempty"`
+	InterimResponseInterval *time.Duration `yaml:"interim_response_interval,omitempty" json:"interim_response_interval,omitempty"`
 }
 
 type UpstreamAuthConfig struct {
@@ -185,6 +186,10 @@ func boolValue(v *bool, fallback bool) bool {
 func boolPtr(v bool) *bool {
 	b := v
 	return &b
+}
+
+func durationPtr(v time.Duration) *time.Duration {
+	return &v
 }
 
 func Load(path string) (*Config, error) {
@@ -628,8 +633,11 @@ func (c *Config) applyDefaults() {
 		if v.Upstream.BodyTimeout == 0 {
 			v.Upstream.BodyTimeout = 5 * time.Minute
 		}
-		if v.Upstream.ResponseHeaderTimeout == 0 {
-			v.Upstream.ResponseHeaderTimeout = 120 * time.Second
+		if v.Upstream.ResponseHeaderTimeout == nil {
+			v.Upstream.ResponseHeaderTimeout = durationPtr(300 * time.Second)
+		}
+		if v.Upstream.InterimResponseInterval == nil {
+			v.Upstream.InterimResponseInterval = durationPtr(30 * time.Second)
 		}
 		applyErrorPolicyDefaults(&v.ErrorPolicy)
 		if v.Resin.Mode == "" {
@@ -711,8 +719,11 @@ func (c *Config) validate(requireVendors bool) error {
 		if vendor.Upstream.BodyTimeout < 0 {
 			return fmt.Errorf("vendor %q upstream.body_timeout must be >= 0", vendorName)
 		}
-		if vendor.Upstream.ResponseHeaderTimeout < 0 {
+		if vendor.Upstream.ResponseHeaderTimeout != nil && *vendor.Upstream.ResponseHeaderTimeout < 0 {
 			return fmt.Errorf("vendor %q upstream.response_header_timeout must be >= 0", vendorName)
+		}
+		if vendor.Upstream.InterimResponseInterval != nil && *vendor.Upstream.InterimResponseInterval < 0 {
+			return fmt.Errorf("vendor %q upstream.interim_response_interval must be >= 0", vendorName)
 		}
 		switch vendor.LoadBalance {
 		case "round_robin", "random", "least_used", "least_requests":

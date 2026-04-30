@@ -41,13 +41,17 @@ type blockingConditionalStore struct {
 }
 
 type flushCountWriter struct {
+	mu         sync.Mutex
 	header     http.Header
 	statusCode int
+	statuses   []int
 	body       bytes.Buffer
 	flushCount int
 }
 
 func (w *flushCountWriter) Header() http.Header {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.header == nil {
 		w.header = make(http.Header)
 	}
@@ -55,10 +59,15 @@ func (w *flushCountWriter) Header() http.Header {
 }
 
 func (w *flushCountWriter) WriteHeader(statusCode int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.statuses = append(w.statuses, statusCode)
 	w.statusCode = statusCode
 }
 
 func (w *flushCountWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.statusCode == 0 {
 		w.statusCode = http.StatusOK
 	}
@@ -66,7 +75,27 @@ func (w *flushCountWriter) Write(p []byte) (int, error) {
 }
 
 func (w *flushCountWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.flushCount++
+}
+
+func (w *flushCountWriter) statusSnapshot() (int, []int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.statusCode, append([]int(nil), w.statuses...)
+}
+
+func (w *flushCountWriter) bodyString() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.String()
+}
+
+func (w *flushCountWriter) flushCountSnapshot() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.flushCount
 }
 
 type brokenPipeWriter struct {
@@ -89,6 +118,12 @@ type stagedReadCloser struct {
 	chunks [][]byte
 	err    error
 	idx    int
+}
+
+type delayedReadCloser struct {
+	release <-chan struct{}
+	data    []byte
+	sent    bool
 }
 
 func (w *brokenPipeWriter) Header() http.Header {
@@ -155,6 +190,19 @@ func (r *stagedReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *stagedReadCloser) Close() error {
+	return nil
+}
+
+func (r *delayedReadCloser) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.EOF
+	}
+	<-r.release
+	r.sent = true
+	return copy(p, r.data), nil
+}
+
+func (r *delayedReadCloser) Close() error {
 	return nil
 }
 
@@ -826,6 +874,7 @@ func TestIdleTimeoutReadCloserClosesStalledBody(t *testing.T) {
 }
 
 func TestRouterUsesConfiguredResponseHeaderTimeout(t *testing.T) {
+	responseHeaderTimeout := 7 * time.Second
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
 		Vendors: map[string]config.VendorConfig{
@@ -833,7 +882,7 @@ func TestRouterUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 				Upstream: config.UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
 					Keys:                  []string{"k1"},
-					ResponseHeaderTimeout: 7 * time.Second,
+					ResponseHeaderTimeout: &responseHeaderTimeout,
 				},
 				LoadBalance: "round_robin",
 			},
@@ -854,6 +903,175 @@ func TestRouterUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 	}
 	if got := transport.ResponseHeaderTimeout; got != 7*time.Second {
 		t.Fatalf("ResponseHeaderTimeout = %v, want %v", got, 7*time.Second)
+	}
+}
+
+func TestRouterCanDisableResponseHeaderTimeout(t *testing.T) {
+	responseHeaderTimeout := time.Duration(0)
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL:               "https://api.openai.com",
+					Keys:                  []string{"k1"},
+					ResponseHeaderTimeout: &responseHeaderTimeout,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	transport, ok := router.vendors["openai"].client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("unexpected transport type: %T", router.vendors["openai"].client.Transport)
+	}
+	if got := transport.ResponseHeaderTimeout; got != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want 0", got)
+	}
+}
+
+func TestRouterSendsInterimProcessingBeforeDelayedFinalResponse(t *testing.T) {
+	release := make(chan struct{})
+	interimInterval := 10 * time.Millisecond
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL:                 "https://example.test",
+					Keys:                    []string{"k1"},
+					InterimResponseInterval: &interimInterval,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["openai"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       &delayedReadCloser{release: release, data: []byte("ok")},
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/chat/completions", nil)
+	w := &flushCountWriter{}
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	waitForTestCondition(t, 200*time.Millisecond, func() bool {
+		_, statuses := w.statusSnapshot()
+		return len(statuses) > 0
+	})
+	_, statuses := w.statusSnapshot()
+	if got := statuses[0]; got != http.StatusProcessing {
+		t.Fatalf("first status = %d, want 102", got)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("router did not finish after releasing body")
+	}
+
+	statusCode, statuses := w.statusSnapshot()
+	if statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, want 200", statusCode)
+	}
+	if got := w.bodyString(); got != "ok" {
+		t.Fatalf("body = %q, want ok", got)
+	}
+	if len(statuses) < 2 || statuses[len(statuses)-1] != http.StatusOK {
+		t.Fatalf("statuses = %#v, want final 200 after interim", statuses)
+	}
+}
+
+func TestRouterCanDisableInterimProcessing(t *testing.T) {
+	release := make(chan struct{})
+	interimInterval := time.Duration(0)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL:                 "https://example.test",
+					Keys:                    []string{"k1"},
+					InterimResponseInterval: &interimInterval,
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["openai"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       &delayedReadCloser{release: release, data: []byte("ok")},
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/chat/completions", nil)
+	w := &flushCountWriter{}
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	_, statuses := w.statusSnapshot()
+	if len(statuses) != 0 {
+		t.Fatalf("statuses before final response = %#v, want none", statuses)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("router did not finish after releasing body")
+	}
+
+	_, statuses = w.statusSnapshot()
+	if got := statuses; len(got) != 1 || got[0] != http.StatusOK {
+		t.Fatalf("statuses = %#v, want only final 200", got)
+	}
+	if got := w.bodyString(); got != "ok" {
+		t.Fatalf("body = %q, want ok", got)
 	}
 }
 
@@ -1584,13 +1802,14 @@ func TestRouterFlushesStreamingResponses(t *testing.T) {
 	w := &flushCountWriter{}
 	router.ServeHTTP(w, req)
 
-	if w.statusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.statusCode)
+	statusCode, _ := w.statusSnapshot()
+	if statusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", statusCode)
 	}
-	if w.flushCount == 0 {
+	if w.flushCountSnapshot() == 0 {
 		t.Fatal("expected at least one flush for streaming response")
 	}
-	if got := w.body.String(); got != "data: hello\n\n" {
+	if got := w.bodyString(); got != "data: hello\n\n" {
 		t.Fatalf("unexpected body: %q", got)
 	}
 }

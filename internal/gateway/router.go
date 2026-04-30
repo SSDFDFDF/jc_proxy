@@ -157,11 +157,14 @@ func (r *Router) serveVendorRequest(w http.ResponseWriter, req *http.Request, pr
 	}
 
 	vg := prepared.vendor
+	interim := newInterimResponseSender(w, vg.interimInterval)
+	defer interim.stop()
+
 	triedManagedKeyIdx := make(map[int]struct{})
 	for {
 		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx)
 		if proxyErr != nil {
-			http.Error(w, proxyErr.message, proxyErr.statusCode)
+			writeHTTPError(w, interim, proxyErr.message, proxyErr.statusCode)
 			return
 		}
 		if attempt == nil {
@@ -184,7 +187,7 @@ func (r *Router) serveVendorRequest(w http.ResponseWriter, req *http.Request, pr
 			if prepared.bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx) {
 				continue
 			}
-			http.Error(w, "upstream request failed", http.StatusBadGateway)
+			writeHTTPError(w, interim, "upstream request failed", http.StatusBadGateway)
 			return
 		}
 
@@ -192,13 +195,13 @@ func (r *Router) serveVendorRequest(w http.ResponseWriter, req *http.Request, pr
 			resp.Body = newIdleTimeoutReadCloser(resp.Body, vg.upstreamBodyTimeout)
 		}
 
-		if r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx) {
+		if r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, interim) {
 			return
 		}
 	}
 }
 
-func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, vg *vendorGateway, attempt *upstreamAttempt, bodySource *requestBodySource, triedManagedKeyIdx map[int]struct{}) bool {
+func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, vg *vendorGateway, attempt *upstreamAttempt, bodySource *requestBodySource, triedManagedKeyIdx map[int]struct{}, interim *interimResponseSender) bool {
 	if resp.StatusCode >= http.StatusBadRequest {
 		preview, bodyReader, err := captureResponsePreview(resp.Body, 2048, resp.Header)
 		if err != nil {
@@ -217,7 +220,7 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx) {
 				return false
 			}
-			http.Error(w, "upstream request failed", http.StatusBadGateway)
+			writeHTTPError(w, interim, "upstream request failed", http.StatusBadGateway)
 			return true
 		}
 
@@ -231,20 +234,20 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 				_ = resp.Body.Close()
 				return false
 			}
-			if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true); errors.Is(err, errAbortDownstreamResponse) {
+			if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true, interim); errors.Is(err, errAbortDownstreamResponse) {
 				panic(http.ErrAbortHandler)
 			}
 			return true
 		}
 
-		if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false); errors.Is(err, errAbortDownstreamResponse) {
+		if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false, interim); errors.Is(err, errAbortDownstreamResponse) {
 			panic(http.ErrAbortHandler)
 		}
 		return true
 	}
 
 	decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
-	if err := r.writeUpstreamResponse(w, req, resp, resp.Body, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false); errors.Is(err, errAbortDownstreamResponse) {
+	if err := r.writeUpstreamResponse(w, req, resp, resp.Body, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false, interim); errors.Is(err, errAbortDownstreamResponse) {
 		panic(http.ErrAbortHandler)
 	}
 	return true

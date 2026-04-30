@@ -49,6 +49,11 @@ vendors:
     provider: "openai"
     upstream:
       base_url: "https://api.openai.com"
+      response_header_timeout: 300s
+      body_timeout: 5m
+      # 在最终响应开始前周期性发送 HTTP 102 Processing，避免 Cloudflare 等代理因长时间无响应断开。
+      # 这是 interim response，不会写入最终响应体；设为 0s 可关闭。
+      interim_response_interval: 30s
     load_balance: "round_robin" # round_robin | random | least_used | least_requests
     upstream_auth:
       mode: "bearer"
