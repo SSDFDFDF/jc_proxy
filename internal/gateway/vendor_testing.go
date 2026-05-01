@@ -16,7 +16,10 @@ import (
 	"jc_proxy/internal/resin"
 )
 
-const vendorTestMaxResponseBytes = 256 * 1024
+const (
+	vendorTestMaxResponseBytes = 256 * 1024
+	modelListMaxResponseBytes  = 2 * 1024 * 1024
+)
 
 type VendorTestPreset struct {
 	Label    string `json:"label"`
@@ -108,6 +111,13 @@ func (r *Router) lookupVendor(vendor string) (*vendorGateway, error) {
 		return nil, fmt.Errorf("vendor %q not found", name)
 	}
 	return vg, nil
+}
+
+func isModelListEndpoint(path string) bool {
+	p := config.NormalizePath(path)
+	return strings.HasSuffix(p, "/models") ||
+		strings.HasSuffix(p, "/v1/models") ||
+		strings.HasSuffix(p, "/v1beta/models")
 }
 
 func suggestedModelEndpoints(provider string) []string {
@@ -202,7 +212,11 @@ func (v *vendorGateway) executeTest(ctx context.Context, req VendorTestRequest) 
 	}
 	defer resp.Body.Close()
 
-	body, truncated, err := readVendorTestBody(resp.Body, vendorTestMaxResponseBytes)
+	maxBytes := vendorTestMaxResponseBytes
+	if isModelListEndpoint(endpointPath) {
+		maxBytes = modelListMaxResponseBytes
+	}
+	body, truncated, err := readVendorTestBody(resp.Body, int64(maxBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read upstream response failed: %w", err)
 	}
