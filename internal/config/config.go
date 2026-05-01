@@ -167,6 +167,7 @@ type ErrorFailoverConfig struct {
 	RateLimit           *bool `yaml:"rate_limit" json:"rate_limit"`
 	ServerError         *bool `yaml:"server_error" json:"server_error"`
 	ResponseStatusCodes []int `yaml:"response_status_codes,omitempty" json:"response_status_codes,omitempty"`
+	MaxAttempts         int   `yaml:"max_attempts" json:"max_attempts"`
 }
 
 type ResinConfig struct {
@@ -804,6 +805,9 @@ func applyErrorPolicyDefaults(policy *ErrorPolicyConfig) {
 	}
 	if policy.Failover.ServerError == nil {
 		policy.Failover.ServerError = boolPtr(true)
+	}
+	if policy.Failover.MaxAttempts <= 0 {
+		policy.Failover.MaxAttempts = 5
 	}
 }
 

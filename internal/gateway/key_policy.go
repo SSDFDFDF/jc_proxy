@@ -290,38 +290,6 @@ func isQuotaExhausted(provider, body string) bool {
 	}
 }
 
-func cooldownForRateLimit(level int, retryAfter time.Duration) time.Duration {
-	if retryAfter > 0 {
-		return retryAfter
-	}
-	switch level {
-	case 0, 1:
-		return 5 * time.Second
-	case 2:
-		return 15 * time.Second
-	case 3:
-		return 1 * time.Minute
-	default:
-		return 5 * time.Minute
-	}
-}
-
-func cooldownForTransient(level int, retryAfter time.Duration) time.Duration {
-	if retryAfter > 0 {
-		return retryAfter
-	}
-	switch level {
-	case 0, 1:
-		return 2 * time.Second
-	case 2:
-		return 5 * time.Second
-	case 3:
-		return 15 * time.Second
-	default:
-		return 1 * time.Minute
-	}
-}
-
 func parseRetryAfter(raw string) time.Duration {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

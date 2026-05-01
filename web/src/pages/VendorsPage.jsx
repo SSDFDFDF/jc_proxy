@@ -630,6 +630,21 @@ export function VendorsPage({
                     onChange={(e) => onFailoverResponseStatusCodesTextChange(e.target.value)}
                   />
                 </label>
+                <label className="field-wrap">
+                  <span className="field-label">最大切号次数</span>
+                  <input
+                    className="input-base"
+                    type="number"
+                    min="1"
+                    max="20"
+                    placeholder="默认 5"
+                    value={vendorDraft.error_policy?.failover?.max_attempts || ''}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10)
+                      onMutateVendorDraft((draft) => { draft.error_policy.failover.max_attempts = v > 0 ? v : 0 })
+                    }}
+                  />
+                </label>
               </div>
             </CollapsibleSection>
 

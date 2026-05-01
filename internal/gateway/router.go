@@ -161,7 +161,19 @@ func (r *Router) serveVendorRequest(w http.ResponseWriter, req *http.Request, pr
 	defer interim.stop()
 
 	triedManagedKeyIdx := make(map[int]struct{})
+	maxAttempts := vg.errorPolicy.Failover.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	attempts := 0
+
 	for {
+		attempts++
+		if attempts > maxAttempts {
+			writeHTTPError(w, interim, "exceeded maximum failover attempts", http.StatusBadGateway)
+			return
+		}
+
 		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx)
 		if proxyErr != nil {
 			writeHTTPError(w, interim, proxyErr.message, proxyErr.statusCode)

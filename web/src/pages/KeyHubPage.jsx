@@ -402,11 +402,14 @@ export function KeyHubPage({
             onClick={() => onSelectVendor(item.vendor)}
           >
             <span>{item.vendor}</span>
-            <small>
-              启用 {item.activeCount} / 禁用 {item.disabledCount}
-              {(item.backoff > 0 || item.inflight > 0) && (
-                <span className="ml-1 opacity-70">· 退避 {item.backoff} · 并发 {item.inflight}</span>
-              )}
+            <small className="inline-flex items-center gap-1.5 font-mono tabular-nums whitespace-nowrap">
+              <span className="text-[var(--success)]" title="启用">✓</span><span>{item.activeCount}</span>
+              <span className="text-[var(--text-faint)]">·</span>
+              <span className="text-[var(--danger)]" title="禁用">✗</span><span>{item.disabledCount}</span>
+              <span className="text-[var(--text-faint)]">·</span>
+              <span className={item.backoff > 0 ? 'text-[var(--warning)]' : 'text-[var(--text-faint)]'} title="退避">⏱</span><span>{item.backoff}</span>
+              <span className="text-[var(--text-faint)]">·</span>
+              <span className={item.inflight > 0 ? 'text-[var(--accent)]' : 'text-[var(--text-faint)]'} title="并发">↑</span><span>{item.inflight}</span>
             </small>
           </button>
         ))}
