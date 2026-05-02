@@ -58,9 +58,10 @@ type Pool struct {
 	keys     []KeyState
 	rrIdx    int
 
-	rng  *rand.Rand
-	mu   sync.Mutex
-	nowf func() time.Time
+	rng           *rand.Rand
+	mu            sync.Mutex
+	nowf          func() time.Time
+	pickerScratch []int // reusable scratch slice for random picks; protected by mu
 }
 
 func NewPool(strategy string, keys []string) (*Pool, error) {
@@ -122,28 +123,10 @@ func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok
 	defer p.mu.Unlock()
 
 	now := p.nowf()
-	available := make([]int, 0, len(p.keys))
-	for i := range p.keys {
-		if _, skip := excluded[i]; skip {
-			continue
-		}
-		if !keystore.IsActiveStatus(p.keys[i].Status) {
-			continue
-		}
-		if p.keys[i].CooldownUntil.After(now) {
-			continue
-		}
-		available = append(available, i)
-	}
-	if len(available) == 0 {
-		return 0, "", false
-	}
-
 	pick := -1
 	switch p.strategy {
 	case "random":
-		pick = available[p.rng.Intn(len(available))]
-		ok = true
+		pick, ok = p.pickRandomLocked(now, excluded)
 	case "least_used":
 		pick, ok = p.pickByScoreLocked(now, excluded, func(i int) loadScore {
 			return loadScore{
@@ -284,6 +267,21 @@ func (p *Pool) Snapshot() []KeyState {
 	return cp
 }
 
+// HasAvailable reports whether at least one key (not in excluded) is active
+// and out of cooldown. It avoids the full Snapshot copy used on the hot
+// failover-retry path.
+func (p *Pool) HasAvailable(excluded map[int]struct{}) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.nowf()
+	for i := range p.keys {
+		if p.isAvailableLocked(i, now, excluded) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Pool) MergeRuntimeStats(states []KeyState) {
 	if len(states) == 0 {
 		return
@@ -394,6 +392,30 @@ func (p *Pool) pickRoundRobinLocked(now time.Time, excluded map[int]struct{}) (i
 	return 0, false
 }
 
+func (p *Pool) pickRandomLocked(now time.Time, excluded map[int]struct{}) (int, bool) {
+	if len(p.keys) == 0 {
+		return 0, false
+	}
+	scratch := p.pickerScratch[:0]
+	for i := range p.keys {
+		if _, skip := excluded[i]; skip {
+			continue
+		}
+		if !keystore.IsActiveStatus(p.keys[i].Status) {
+			continue
+		}
+		if p.keys[i].CooldownUntil.After(now) {
+			continue
+		}
+		scratch = append(scratch, i)
+	}
+	p.pickerScratch = scratch
+	if len(scratch) == 0 {
+		return 0, false
+	}
+	return scratch[p.rng.Intn(len(scratch))], true
+}
+
 func (p *Pool) pickByScoreLocked(now time.Time, excluded map[int]struct{}, scoref func(int) loadScore) (int, bool) {
 	if len(p.keys) == 0 {
 		return 0, false
@@ -439,7 +461,7 @@ func (p *Pool) totalRequestsLocked(idx int) int {
 		return 0
 	}
 	if p.keys[idx].stats != nil {
-		return p.keys[idx].stats.Snapshot().TotalRequests
+		return int(p.keys[idx].stats.TotalRequestsFast())
 	}
 	return p.keys[idx].TotalRequests
 }

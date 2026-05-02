@@ -32,6 +32,7 @@ type vendorGateway struct {
 	name                string
 	provider            string
 	baseURL             *url.URL
+	baseURLPrefix       string
 	pool                *balancer.Pool
 	managedKeyCount     int
 	client              *http.Client
@@ -128,6 +129,8 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			ResponseHeaderTimeout: upstreamResponseHeaderTimeout(vendor.Upstream),
+			ReadBufferSize:        16 << 10,
+			WriteBufferSize:       16 << 10,
 		}
 		client := &http.Client{
 			Transport: transport,
@@ -160,6 +163,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			name:                name,
 			provider:            config.NormalizeProvider(vendor.Provider, name),
 			baseURL:             baseURL,
+			baseURLPrefix:       baseURL.String(),
 			pool:                pool,
 			managedKeyCount:     len(keyConfigs),
 			client:              client,

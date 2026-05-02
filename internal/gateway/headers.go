@@ -22,7 +22,7 @@ var hopHeaders = map[string]struct{}{
 }
 
 func (v *vendorGateway) forwardHeaders(src http.Header, selectedKey string) http.Header {
-	headers := make(http.Header, len(src)+4)
+	headers := make(http.Header, len(src)+len(v.injectHeaders)+2)
 	connectionHeaders := extraHopTokens(src)
 	if len(v.allowlist) == 0 {
 		for k, vals := range src {
@@ -30,9 +30,7 @@ func (v *vendorGateway) forwardHeaders(src http.Header, selectedKey string) http
 			if v.shouldDropClientHeader(canon) || isConnectionScopedHopHeader(canon, connectionHeaders) {
 				continue
 			}
-			for _, val := range vals {
-				headers.Add(canon, val)
-			}
+			headers[canon] = vals
 		}
 	} else {
 		for k, vals := range src {
@@ -43,15 +41,13 @@ func (v *vendorGateway) forwardHeaders(src http.Header, selectedKey string) http
 			if _, ok := v.allowlist[canon]; !ok && !v.isPassthroughAuthHeader(canon) {
 				continue
 			}
-			for _, val := range vals {
-				headers.Add(canon, val)
-			}
+			headers[canon] = vals
 		}
 	}
 
 	if v.upstreamAuth.Mode != "passthrough" {
-		headers.Del("Authorization")
-		headers.Del("X-Api-Key")
+		delete(headers, "Authorization")
+		delete(headers, "X-Api-Key")
 	}
 
 	for k, val := range v.injectHeaders {
@@ -70,7 +66,7 @@ func (v *vendorGateway) forwardHeaders(src http.Header, selectedKey string) http
 		headers.Set(resin.AccountHeader, resin.BuildAccount(v.provider, selectedKey))
 	}
 
-	headers.Del("Host")
+	delete(headers, "Host")
 	return headers
 }
 
@@ -101,9 +97,14 @@ func isHopHeader(name string) bool {
 }
 
 func extraHopTokens(headers http.Header) map[string]struct{} {
-	tokens := make(map[string]struct{})
-	for _, raw := range headers.Values("Connection") {
-		for _, part := range strings.Split(raw, ",") {
+	connection := headers["Connection"]
+	trailer := headers["Trailer"]
+	if len(connection) == 0 && len(trailer) == 0 {
+		return nil
+	}
+	tokens := make(map[string]struct{}, len(connection)+len(trailer))
+	for _, raw := range connection {
+		for part := range strings.SplitSeq(raw, ",") {
 			token := textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(part))
 			if token == "" {
 				continue
@@ -111,8 +112,8 @@ func extraHopTokens(headers http.Header) map[string]struct{} {
 			tokens[token] = struct{}{}
 		}
 	}
-	for _, raw := range headers.Values("Trailer") {
-		for _, part := range strings.Split(raw, ",") {
+	for _, raw := range trailer {
+		for part := range strings.SplitSeq(raw, ",") {
 			token := textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(part))
 			if token == "" {
 				continue
@@ -137,8 +138,9 @@ func headerCredential(headers http.Header) string {
 	}
 	auth := strings.TrimSpace(headers.Get("Authorization"))
 	if auth != "" {
-		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			if token := strings.TrimSpace(auth[7:]); token != "" {
+		const bearerPrefix = "bearer "
+		if len(auth) >= len(bearerPrefix) && strings.EqualFold(auth[:len(bearerPrefix)], bearerPrefix) {
+			if token := strings.TrimSpace(auth[len(bearerPrefix):]); token != "" {
 				return token
 			}
 		} else {

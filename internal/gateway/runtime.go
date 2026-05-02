@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
@@ -20,9 +21,9 @@ type UpstreamKeyController interface {
 }
 
 type Runtime struct {
-	mu        sync.RWMutex
-	router    *Router
-	cfg       *config.Config
+	updateMu  sync.Mutex
+	router    atomic.Pointer[Router]
+	cfg       atomic.Pointer[config.Config]
 	keySource UpstreamKeySource
 	keyCtrl   UpstreamKeyController
 	stats     *runtimeStatsRegistry
@@ -33,23 +34,21 @@ func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, erro
 	if err != nil {
 		return nil, err
 	}
-	rt := &Runtime{cfg: cloned, keySource: keySource, stats: newRuntimeStatsRegistry()}
+	rt := &Runtime{keySource: keySource, stats: newRuntimeStatsRegistry()}
 	if ctrl, ok := keySource.(UpstreamKeyController); ok {
 		rt.keyCtrl = ctrl
 	}
+	rt.cfg.Store(cloned)
 	r, err := rt.buildRouter(cloned)
 	if err != nil {
 		return nil, err
 	}
-	rt.router = r
+	rt.router.Store(r)
 	return rt, nil
 }
 
 func (rt *Runtime) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	rt.mu.RLock()
-	r := rt.router
-	rt.mu.RUnlock()
-	r.ServeHTTP(w, req)
+	rt.router.Load().ServeHTTP(w, req)
 }
 
 func (rt *Runtime) Update(cfg *config.Config) error {
@@ -57,21 +56,19 @@ func (rt *Runtime) Update(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	rt.updateMu.Lock()
+	defer rt.updateMu.Unlock()
 	r, err := rt.buildRouter(cloned)
 	if err != nil {
 		return fmt.Errorf("rebuild router: %w", err)
 	}
-	rt.mu.Lock()
-	rt.router = r
-	rt.cfg = cloned
-	rt.mu.Unlock()
+	rt.router.Store(r)
+	rt.cfg.Store(cloned)
 	return nil
 }
 
 func (rt *Runtime) RefreshKeys() error {
-	rt.mu.RLock()
-	current := rt.cfg
-	rt.mu.RUnlock()
+	current := rt.cfg.Load()
 	if current == nil {
 		return errors.New("runtime config is empty")
 	}
@@ -79,9 +76,7 @@ func (rt *Runtime) RefreshKeys() error {
 }
 
 func (rt *Runtime) Snapshot() *Router {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-	return rt.router
+	return rt.router.Load()
 }
 
 func (rt *Runtime) buildRouter(cfg *config.Config) (*Router, error) {

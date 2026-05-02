@@ -145,23 +145,6 @@ func captureRuntimeStats(router *Router) map[string]map[string]keystore.RuntimeS
 }
 
 func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.RuntimeStats) (map[string][]keystore.RuntimeStatsDelta, map[string]map[string]keystore.RuntimeStats) {
-	nextBaseline := cloneRuntimeStatsSnapshot(current)
-	for vendor, prevKeys := range previous {
-		if len(prevKeys) == 0 {
-			continue
-		}
-		nextKeys := nextBaseline[vendor]
-		if nextKeys == nil {
-			nextKeys = make(map[string]keystore.RuntimeStats, len(prevKeys))
-			nextBaseline[vendor] = nextKeys
-		}
-		for key, prevStats := range prevKeys {
-			if _, ok := nextKeys[key]; ok {
-				continue
-			}
-			nextKeys[key] = prevStats
-		}
-	}
 	deltas := make(map[string][]keystore.RuntimeStatsDelta)
 
 	for vendor, currentKeys := range current {
@@ -200,22 +183,31 @@ func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.Ru
 		}
 	}
 
+	// current came from captureRuntimeStats and has no other readers, so we
+	// can mutate it in place and use it as the next baseline. Keys present
+	// in previous but missing from current are merged back so that historical
+	// counters are not lost across snapshots.
+	for vendor, prevKeys := range previous {
+		if len(prevKeys) == 0 {
+			continue
+		}
+		nextKeys := current[vendor]
+		if nextKeys == nil {
+			nextKeys = make(map[string]keystore.RuntimeStats, len(prevKeys))
+			current[vendor] = nextKeys
+		}
+		for key, prevStats := range prevKeys {
+			if _, ok := nextKeys[key]; ok {
+				continue
+			}
+			nextKeys[key] = prevStats
+		}
+	}
+
 	for vendor, records := range deltas {
 		if len(records) == 0 {
 			delete(deltas, vendor)
 		}
 	}
-	return deltas, nextBaseline
-}
-
-func cloneRuntimeStatsSnapshot(src map[string]map[string]keystore.RuntimeStats) map[string]map[string]keystore.RuntimeStats {
-	out := make(map[string]map[string]keystore.RuntimeStats, len(src))
-	for vendor, records := range src {
-		perVendor := make(map[string]keystore.RuntimeStats, len(records))
-		for key, stats := range records {
-			perVendor[key] = stats
-		}
-		out[vendor] = perVendor
-	}
-	return out
+	return deltas, current
 }

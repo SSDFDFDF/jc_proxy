@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"time"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
@@ -80,6 +79,9 @@ func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path 
 }
 
 func (v *vendorGateway) buildTargetURL(path, rawQuery, selectedKey string) (string, error) {
+	if v.resinRuntime == nil && v.baseURLPrefix != "" && pathIsURLSafe(path) {
+		return joinTargetURL(v.baseURLPrefix, path, rawQuery), nil
+	}
 	return buildTargetURLFromBase(v.baseURL, path, rawQuery, selectedKey, v.resinRuntime)
 }
 
@@ -106,20 +108,7 @@ func (v *vendorGateway) hasAvailableKey(excluded map[int]struct{}) bool {
 	if !v.usesManagedUpstreamKeys() || v.pool == nil {
 		return false
 	}
-	now := time.Now()
-	for idx, state := range v.pool.Snapshot() {
-		if _, skip := excluded[idx]; skip {
-			continue
-		}
-		if !keystore.IsActiveStatus(state.Status) {
-			continue
-		}
-		if state.CooldownUntil.After(now) {
-			continue
-		}
-		return true
-	}
-	return false
+	return v.pool.HasAvailable(excluded)
 }
 
 func (v *vendorGateway) shouldBufferRequestBody(method string) bool {
@@ -252,6 +241,60 @@ func buildTargetURLFromBase(baseURL *url.URL, path, rawQuery, selectedKey string
 	}
 	_ = selectedKey
 	return urlText, nil
+}
+
+// joinTargetURL builds an upstream URL by string concatenation. Only safe
+// when the caller has already verified path contains no URL-escapable
+// characters (see pathIsURLSafe).
+func joinTargetURL(prefix, path, rawQuery string) string {
+	hasPrefixSlash := strings.HasSuffix(prefix, "/")
+	hasPathSlash := strings.HasPrefix(path, "/")
+
+	var sb strings.Builder
+	size := len(prefix) + len(path) + 1 + len(rawQuery)
+	if rawQuery != "" {
+		size++
+	}
+	sb.Grow(size)
+	sb.WriteString(prefix)
+	switch {
+	case hasPrefixSlash && hasPathSlash:
+		sb.WriteString(path[1:])
+	case !hasPrefixSlash && !hasPathSlash:
+		sb.WriteByte('/')
+		sb.WriteString(path)
+	default:
+		sb.WriteString(path)
+	}
+	if rawQuery != "" {
+		sb.WriteByte('?')
+		sb.WriteString(rawQuery)
+	}
+	return sb.String()
+}
+
+// pathIsURLSafe reports whether all bytes are safe to embed in a URL path
+// without further escaping. Mirrors the subset that url.URL.EscapedPath
+// passes through unchanged for path segments.
+func pathIsURLSafe(path string) bool {
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c >= 'a' && c <= 'z' {
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			continue
+		}
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		switch c {
+		case '-', '_', '.', '~', '/', ':', '@', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=':
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func newRewriteMatcher(m map[string]string) rewriteMatcher {

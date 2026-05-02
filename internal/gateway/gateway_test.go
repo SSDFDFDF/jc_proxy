@@ -1593,13 +1593,18 @@ func TestBuildRuntimeStatsDeltasSkipsUnchangedSnapshot(t *testing.T) {
 			},
 		},
 	}
+	previous := map[string]map[string]keystore.RuntimeStats{
+		"openai": {
+			"k1": current["openai"]["k1"],
+		},
+	}
 
-	deltas, nextBaseline := buildRuntimeStatsDeltas(current, cloneRuntimeStatsSnapshot(current))
+	deltas, nextBaseline := buildRuntimeStatsDeltas(current, previous)
 	if len(deltas) != 0 {
 		t.Fatalf("deltas = %#v, want empty for unchanged snapshot", deltas)
 	}
-	if got := nextBaseline["openai"]["k1"]; !got.Equal(current["openai"]["k1"]) {
-		t.Fatalf("nextBaseline = %#v, want %#v", got, current["openai"]["k1"])
+	if got := nextBaseline["openai"]["k1"]; !got.Equal(previous["openai"]["k1"]) {
+		t.Fatalf("nextBaseline = %#v, want %#v", got, previous["openai"]["k1"])
 	}
 }
 

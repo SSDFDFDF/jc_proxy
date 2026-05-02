@@ -403,9 +403,9 @@ export function KeyHubPage({
           >
             <span>{item.vendor}</span>
             <small className="inline-flex items-center gap-1.5 font-mono tabular-nums whitespace-nowrap">
-              <span className="text-[var(--success)]" title="启用">✓</span><span>{item.activeCount}</span>
+              <span className="text-[var(--success)]" title="启用">◉</span><span>{item.activeCount}</span>
               <span className="text-[var(--text-faint)]">·</span>
-              <span className="text-[var(--danger)]" title="禁用">✗</span><span>{item.disabledCount}</span>
+              <span className="text-[var(--danger)]" title="禁用">◎</span><span>{item.disabledCount}</span>
               <span className="text-[var(--text-faint)]">·</span>
               <span className={item.backoff > 0 ? 'text-[var(--warning)]' : 'text-[var(--text-faint)]'} title="退避">⏱</span><span>{item.backoff}</span>
               <span className="text-[var(--text-faint)]">·</span>

@@ -59,9 +59,7 @@ type VendorTestResult struct {
 }
 
 func (rt *Runtime) VendorTestMeta(vendor string) (VendorTestMeta, error) {
-	rt.mu.RLock()
-	router := rt.router
-	rt.mu.RUnlock()
+	router := rt.router.Load()
 	if router == nil {
 		return VendorTestMeta{}, errors.New("runtime router unavailable")
 	}
@@ -69,9 +67,7 @@ func (rt *Runtime) VendorTestMeta(vendor string) (VendorTestMeta, error) {
 }
 
 func (rt *Runtime) ExecuteVendorTest(ctx context.Context, vendor string, req VendorTestRequest) (*VendorTestResult, error) {
-	rt.mu.RLock()
-	router := rt.router
-	rt.mu.RUnlock()
+	router := rt.router.Load()
 	if router == nil {
 		return nil, errors.New("runtime router unavailable")
 	}

@@ -7,73 +7,64 @@ import (
 )
 
 type interimResponseSender struct {
+	w        http.ResponseWriter
+	flusher  http.Flusher
+	interval time.Duration
+
 	mu        sync.Mutex
-	w         http.ResponseWriter
-	flusher   http.Flusher
 	committed bool
-	stopCh    chan struct{}
-	doneCh    chan struct{}
-	stopOnce  sync.Once
+	stopped   bool
+	timer     *time.Timer
 }
 
 func newInterimResponseSender(w http.ResponseWriter, interval time.Duration) *interimResponseSender {
 	s := &interimResponseSender{
-		w:      w,
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		w:        w,
+		interval: interval,
 	}
 	if flusher, ok := w.(http.Flusher); ok {
 		s.flusher = flusher
 	}
 	if interval <= 0 {
-		close(s.doneCh)
 		return s
 	}
-	go s.run(interval)
+	s.mu.Lock()
+	s.timer = time.AfterFunc(interval, s.tick)
+	s.mu.Unlock()
 	return s
 }
 
-func (s *interimResponseSender) run(interval time.Duration) {
-	defer close(s.doneCh)
-
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-timer.C:
-			s.writeInterim(http.StatusProcessing)
-			timer.Reset(interval)
-		case <-s.stopCh:
-			return
-		}
-	}
-}
-
-func (s *interimResponseSender) writeInterim(statusCode int) {
+func (s *interimResponseSender) tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.committed {
+	if s.committed || s.stopped {
 		return
 	}
-	s.w.WriteHeader(statusCode)
+	s.w.WriteHeader(http.StatusProcessing)
 	if s.flusher != nil {
 		s.flusher.Flush()
+	}
+	if s.timer != nil {
+		s.timer.Reset(s.interval)
 	}
 }
 
 func (s *interimResponseSender) stop() {
-	s.stopOnce.Do(func() {
-		close(s.stopCh)
-	})
-	<-s.doneCh
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopped = true
+	if s.timer != nil {
+		s.timer.Stop()
+	}
 }
 
 func (s *interimResponseSender) commitFinal(fn func()) {
-	s.stop()
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stopped = true
+	if s.timer != nil {
+		s.timer.Stop()
+	}
 	if s.committed {
 		return
 	}

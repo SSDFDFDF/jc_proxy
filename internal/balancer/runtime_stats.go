@@ -3,13 +3,15 @@ package balancer
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"jc_proxy/internal/keystore"
 )
 
 type RuntimeStatsHandle struct {
-	mu    sync.Mutex
-	stats keystore.RuntimeStats
+	mu            sync.Mutex
+	stats         keystore.RuntimeStats
+	totalRequests atomic.Int64
 }
 
 func NewRuntimeStatsHandle(initial keystore.RuntimeStats) *RuntimeStatsHandle {
@@ -27,6 +29,16 @@ func (h *RuntimeStatsHandle) Snapshot() keystore.RuntimeStats {
 	return h.stats
 }
 
+// TotalRequestsFast returns an atomically-read count without touching the
+// stats mutex. Used by load-aware pickers in the hot path so we don't
+// take a second lock while the pool's main mutex is already held.
+func (h *RuntimeStatsHandle) TotalRequestsFast() int64 {
+	if h == nil {
+		return 0
+	}
+	return h.totalRequests.Load()
+}
+
 func (h *RuntimeStatsHandle) MergeBaseline(baseline keystore.RuntimeStats) {
 	if h == nil {
 		return
@@ -40,6 +52,7 @@ func (h *RuntimeStatsHandle) MergeBaseline(baseline keystore.RuntimeStats) {
 	}
 	if baseline.TotalRequests > h.stats.TotalRequests {
 		h.stats.TotalRequests = baseline.TotalRequests
+		h.totalRequests.Store(int64(baseline.TotalRequests))
 	}
 	if baseline.SuccessCount > h.stats.SuccessCount {
 		h.stats.SuccessCount = baseline.SuccessCount
@@ -68,6 +81,7 @@ func (h *RuntimeStatsHandle) RecordSuccess() {
 	h.stats.SuccessCount++
 	h.stats.LastStatus = http.StatusOK
 	h.stats.LastError = ""
+	h.totalRequests.Store(int64(h.stats.TotalRequests))
 }
 
 func (h *RuntimeStatsHandle) RecordError(statusCode int, reason string) {
@@ -92,6 +106,7 @@ func (h *RuntimeStatsHandle) RecordError(statusCode int, reason string) {
 			h.stats.OtherErrorCount++
 		}
 	}
+	h.totalRequests.Store(int64(h.stats.TotalRequests))
 }
 
 func (h *RuntimeStatsHandle) ClearLastError() {

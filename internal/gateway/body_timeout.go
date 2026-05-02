@@ -12,10 +12,9 @@ import (
 type idleTimeoutReadCloser struct {
 	body      io.ReadCloser
 	timeout   time.Duration
-	activityC chan struct{}
-	doneC     chan struct{}
-	closeOnce sync.Once
+	timer     atomic.Pointer[time.Timer]
 	timedOut  atomic.Bool
+	closeOnce sync.Once
 }
 
 func newIdleTimeoutReadCloser(body io.ReadCloser, timeout time.Duration) io.ReadCloser {
@@ -23,22 +22,19 @@ func newIdleTimeoutReadCloser(body io.ReadCloser, timeout time.Duration) io.Read
 		return body
 	}
 
-	reader := &idleTimeoutReadCloser{
-		body:      body,
-		timeout:   timeout,
-		activityC: make(chan struct{}, 1),
-		doneC:     make(chan struct{}),
+	r := &idleTimeoutReadCloser{
+		body:    body,
+		timeout: timeout,
 	}
-	go reader.watch()
-	return reader
+	r.timer.Store(time.AfterFunc(timeout, r.expire))
+	return r
 }
 
 func (r *idleTimeoutReadCloser) Read(p []byte) (int, error) {
 	n, err := r.body.Read(p)
 	if n > 0 {
-		select {
-		case r.activityC <- struct{}{}:
-		default:
+		if t := r.timer.Load(); t != nil {
+			t.Reset(r.timeout)
 		}
 	}
 	if err != nil {
@@ -57,32 +53,15 @@ func (r *idleTimeoutReadCloser) Read(p []byte) (int, error) {
 func (r *idleTimeoutReadCloser) Close() error {
 	var err error
 	r.closeOnce.Do(func() {
-		close(r.doneC)
+		if t := r.timer.Load(); t != nil {
+			t.Stop()
+		}
 		err = r.body.Close()
 	})
 	return err
 }
 
-func (r *idleTimeoutReadCloser) watch() {
-	timer := time.NewTimer(r.timeout)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-r.doneC:
-			return
-		case <-r.activityC:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(r.timeout)
-		case <-timer.C:
-			r.timedOut.Store(true)
-			_ = r.Close()
-			return
-		}
-	}
+func (r *idleTimeoutReadCloser) expire() {
+	r.timedOut.Store(true)
+	_ = r.Close()
 }
