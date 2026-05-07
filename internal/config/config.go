@@ -87,6 +87,7 @@ type UpstreamKeyStorePGSQLConfig struct {
 type VendorConfig struct {
 	Provider       string              `yaml:"provider" json:"provider"`
 	Upstream       UpstreamConfig      `yaml:"upstream" json:"upstream"`
+	Aggregate      AggregateConfig     `yaml:"aggregate,omitempty" json:"aggregate,omitempty"`
 	LoadBalance    string              `yaml:"load_balance" json:"load_balance"`
 	UpstreamAuth   UpstreamAuthConfig  `yaml:"upstream_auth" json:"upstream_auth"`
 	ClientAuth     ClientAuthConfig    `yaml:"client_auth" json:"client_auth"`
@@ -175,6 +176,16 @@ type ResinConfig struct {
 	URL      string `yaml:"url" json:"url"`
 	Platform string `yaml:"platform" json:"platform"`
 	Mode     string `yaml:"mode" json:"mode"` // reverse only for now
+}
+
+type AggregateConfig struct {
+	Children []AggregateChild `yaml:"children" json:"children"`
+}
+
+type AggregateChild struct {
+	Vendor   string `yaml:"vendor" json:"vendor"`
+	Weight   int    `yaml:"weight,omitempty" json:"weight,omitempty"`
+	Priority int    `yaml:"priority,omitempty" json:"priority,omitempty"`
 }
 
 func boolValue(v *bool, fallback bool) bool {
@@ -622,6 +633,16 @@ func (c *Config) applyDefaults() {
 		if v.LoadBalance == "" {
 			v.LoadBalance = "round_robin"
 		}
+		// Aggregate vendors skip upstream-specific defaults
+		if v.Provider == "aggregate" {
+			for i := range v.Aggregate.Children {
+				if v.Aggregate.Children[i].Weight <= 0 {
+					v.Aggregate.Children[i].Weight = 1
+				}
+			}
+			c.Vendors[name] = v
+			continue
+		}
 		if v.UpstreamAuth.Mode == "" {
 			v.UpstreamAuth.Mode = "bearer"
 		}
@@ -709,6 +730,39 @@ func (c *Config) validate(requireVendors bool) error {
 	}
 
 	for vendorName, vendor := range c.Vendors {
+		switch vendor.LoadBalance {
+		case "round_robin", "random", "least_used", "least_requests":
+		default:
+			return fmt.Errorf("vendor %q invalid load_balance: %s", vendorName, vendor.LoadBalance)
+		}
+		switch NormalizeProvider(vendor.Provider, vendorName) {
+		case "openai", "anthropic", "gemini", "deepseek", "azure_openai", "generic":
+		case "aggregate":
+			if len(vendor.Aggregate.Children) == 0 {
+				return fmt.Errorf("vendor %q aggregate.children is empty", vendorName)
+			}
+			for _, child := range vendor.Aggregate.Children {
+				if strings.TrimSpace(child.Vendor) == "" {
+					return fmt.Errorf("vendor %q has empty aggregate child vendor name", vendorName)
+				}
+				if child.Vendor == vendorName {
+					return fmt.Errorf("vendor %q aggregate child cannot reference itself", vendorName)
+				}
+				childVendor, ok := c.Vendors[child.Vendor]
+				if !ok {
+					return fmt.Errorf("vendor %q aggregate child %q not found", vendorName, child.Vendor)
+				}
+				if NormalizeProvider(childVendor.Provider, child.Vendor) == "aggregate" {
+					return fmt.Errorf("vendor %q aggregate child %q cannot be aggregate (nesting not allowed)", vendorName, child.Vendor)
+				}
+			}
+			if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
+				return fmt.Errorf("vendor %q client_auth enabled but keys empty", vendorName)
+			}
+			continue
+		default:
+			return fmt.Errorf("vendor %q invalid provider: %s", vendorName, vendor.Provider)
+		}
 		if strings.TrimSpace(vendor.Upstream.BaseURL) == "" {
 			return fmt.Errorf("vendor %q upstream.base_url is required", vendorName)
 		}
@@ -725,16 +779,6 @@ func (c *Config) validate(requireVendors bool) error {
 		}
 		if vendor.Upstream.InterimResponseInterval != nil && *vendor.Upstream.InterimResponseInterval < 0 {
 			return fmt.Errorf("vendor %q upstream.interim_response_interval must be >= 0", vendorName)
-		}
-		switch vendor.LoadBalance {
-		case "round_robin", "random", "least_used", "least_requests":
-		default:
-			return fmt.Errorf("vendor %q invalid load_balance: %s", vendorName, vendor.LoadBalance)
-		}
-		switch NormalizeProvider(vendor.Provider, vendorName) {
-		case "openai", "anthropic", "gemini", "deepseek", "azure_openai", "generic":
-		default:
-			return fmt.Errorf("vendor %q invalid provider: %s", vendorName, vendor.Provider)
 		}
 		switch vendor.UpstreamAuth.Mode {
 		case "bearer", "header", "passthrough":
@@ -953,6 +997,8 @@ func NormalizeProvider(provider, fallback string) string {
 		raw = strings.ToLower(strings.TrimSpace(fallback))
 	}
 	switch {
+	case raw == "aggregate":
+		return "aggregate"
 	case raw == "azure_openai" || raw == "azure-openai":
 		return "azure_openai"
 	case strings.Contains(raw, "openai"):

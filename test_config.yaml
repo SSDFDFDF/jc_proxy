@@ -1,0 +1,21 @@
+admin:
+  enabled: true
+  username: "admin"
+  password: "password"
+vendors:
+  v1:
+    provider: openai
+    upstream:
+      base_url: "https://api.openai.com"
+  v2:
+    provider: openai
+    upstream:
+      base_url: "https://api.openai.com"
+  agg:
+    provider: aggregate
+    aggregate:
+      children:
+        - vendor: v1
+          weight: 1
+        - vendor: v2
+          weight: 1

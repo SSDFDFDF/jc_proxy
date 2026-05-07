@@ -207,7 +207,7 @@ func (s *Service) UpsertVendor(actor, vendor string, vc config.VendorConfig) err
 			return err
 		}
 	}
-	s.audit.Log(actor, "vendor.upsert", map[string]any{"vendor": vendor, "legacy_keys_imported": len(legacyKeys)})
+	s.audit.Log(actor, "vendor.upsert", map[string]any{"vendor": vendor, "provider": vc.Provider, "legacy_keys_imported": len(legacyKeys)})
 	return nil
 }
 
@@ -429,12 +429,13 @@ func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 				UpdatedAt:     record.UpdatedAt.UTC().Format(time.RFC3339),
 			})
 		}
+		_, configured := cfg.Vendors[vendor]
 		resp.Vendors = append(resp.Vendors, UpstreamKeyVendorSummary{
 			Vendor:        vendor,
 			Count:         len(items),
 			ActiveCount:   activeCount,
 			DisabledCount: disabledCount,
-			Configured:    cfg.Vendors[vendor].Upstream.BaseURL != "",
+			Configured:    configured,
 		})
 		resp.Items[vendor] = items
 	}

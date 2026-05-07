@@ -132,6 +132,11 @@ func (r *Router) prepareProxyRequest(req *http.Request) (*preparedProxyRequest, 
 	if !exists {
 		return nil, &proxyError{statusCode: http.StatusNotFound, message: "unknown vendor"}
 	}
+
+	if vg.isAggregate {
+		return r.prepareAggregateRequest(req, vg, upstreamPath)
+	}
+
 	if err := vg.authorizeClient(req); err != nil {
 		return nil, &proxyError{statusCode: http.StatusUnauthorized, message: err.Error()}
 	}
@@ -147,6 +152,40 @@ func (r *Router) prepareProxyRequest(req *http.Request) (*preparedProxyRequest, 
 	return &preparedProxyRequest{
 		vendor:     vg,
 		path:       vg.rewrites.Apply(config.NormalizePath(upstreamPath)),
+		bodySource: bodySource,
+	}, nil
+}
+
+func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, path string) (*preparedProxyRequest, *proxyError) {
+	if err := agg.authorizeClient(req); err != nil {
+		return nil, &proxyError{statusCode: http.StatusUnauthorized, message: err.Error()}
+	}
+
+	child := agg.aggPool.PickAvailable(func(e *aggregateChildEntry) bool {
+		if e.vendor == nil {
+			return false
+		}
+		// Passthrough vendors don't manage keys — always available.
+		if !e.vendor.usesManagedUpstreamKeys() {
+			return true
+		}
+		return e.vendor.hasAvailableKey(nil)
+	})
+	if child == nil {
+		return nil, &proxyError{statusCode: http.StatusServiceUnavailable, message: "no available child vendor"}
+	}
+
+	bodySource, err := prepareRequestBody(req, child.vendor.shouldBufferRequestBody(req.Method))
+	if err != nil {
+		if isClientDisconnectError(err) {
+			return nil, nil
+		}
+		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "read request body failed"}
+	}
+
+	return &preparedProxyRequest{
+		vendor:     child.vendor,
+		path:       child.vendor.rewrites.Apply(config.NormalizePath(path)),
 		bodySource: bodySource,
 	}, nil
 }

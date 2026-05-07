@@ -212,6 +212,29 @@ export function VendorsPage({
     onDropHeadersTextChange('')
   }
 
+  const isAggregate = vendorDraft?.provider === 'aggregate'
+  const aggregateChildren = vendorDraft?.aggregate?.children || []
+
+  const addAggregateChild = () => {
+    onMutateVendorDraft((draft) => {
+      if (!draft.aggregate) draft.aggregate = { children: [] }
+      if (!draft.aggregate.children) draft.aggregate.children = []
+      draft.aggregate.children.push({ vendor: '', weight: 1, priority: 0 })
+    })
+  }
+
+  const removeAggregateChild = (index) => {
+    onMutateVendorDraft((draft) => {
+      if (draft.aggregate?.children) draft.aggregate.children.splice(index, 1)
+    })
+  }
+
+  const updateAggregateChild = (index, field, value) => {
+    onMutateVendorDraft((draft) => {
+      if (draft.aggregate?.children?.[index]) draft.aggregate.children[index][field] = value
+    })
+  }
+
   return (
     <section className="grid gap-5 2xl:grid-cols-[280px_1fr] animate-fade-in">
       {/* Sidebar */}
@@ -233,7 +256,11 @@ export function VendorsPage({
               onClick={() => onSelectVendor(row.name)}
             >
               <strong>{row.name}</strong>
-              <span>上游 {row.upstreamKeys} · 客户端 {row.clientKeys}</span>
+              <span>
+                {row.provider === 'aggregate'
+                  ? `聚合 · 子节点 ${row.aggregateChildCount}`
+                  : `上游 ${row.upstreamKeys} · 客户端 ${row.clientKeys}`}
+              </span>
             </button>
           ))}
         </div>
@@ -242,18 +269,28 @@ export function VendorsPage({
         <section className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
           <h3 className="section-title text-sm mb-3">新建供应商</h3>
           <div className="space-y-3">
+            <select
+              className="select-base w-full"
+              value={newVendorForm.provider || 'generic'}
+              onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, provider: e.target.value }))}
+            >
+              <option value="generic">独立供应商 (常规)</option>
+              <option value="aggregate">聚合供应商 (路由分发)</option>
+            </select>
             <input
               className="input-base w-full"
               placeholder="供应商名称，例如 openai"
               value={newVendorForm.name}
               onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, name: e.target.value }))}
             />
-            <input
-              className="input-base w-full"
-              placeholder="上游 base_url"
-              value={newVendorForm.baseURL}
-              onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, baseURL: e.target.value }))}
-            />
+            {newVendorForm.provider !== 'aggregate' && (
+              <input
+                className="input-base w-full"
+                placeholder="上游 base_url"
+                value={newVendorForm.baseURL}
+                onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, baseURL: e.target.value }))}
+              />
+            )}
             <button className={`${buttonClass('primary')} w-full`} disabled={busy} onClick={onCreateVendor}>
               创建供应商
             </button>
@@ -379,7 +416,7 @@ export function VendorsPage({
               <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
                 <div>
                   <div className="text-sm font-medium text-[var(--text-primary)]">基础配置</div>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">Provider、上游地址和超时设置。</div>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">{isAggregate ? '聚合路由策略与参数。' : 'Provider、上游地址和超时设置。'}</div>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-5">
                   <label className="field-wrap">
@@ -395,18 +432,21 @@ export function VendorsPage({
                       <option value="gemini">gemini</option>
                       <option value="deepseek">deepseek</option>
                       <option value="azure_openai">azure_openai</option>
+                      <option value="aggregate">aggregate (聚合)</option>
                     </select>
                   </label>
+                  {!isAggregate && (
+                    <label className="field-wrap">
+                      <span className="field-label">上游 Base URL</span>
+                      <input
+                        className="input-base"
+                        value={vendorDraft.upstream?.base_url || ''}
+                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream.base_url = e.target.value })}
+                      />
+                    </label>
+                  )}
                   <label className="field-wrap">
-                    <span className="field-label">上游 Base URL</span>
-                    <input
-                      className="input-base"
-                      value={vendorDraft.upstream?.base_url || ''}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream.base_url = e.target.value })}
-                    />
-                  </label>
-                  <label className="field-wrap">
-                    <span className="field-label">负载均衡策略</span>
+                    <span className="field-label">{isAggregate ? '聚合分发策略' : '负载均衡策略'}</span>
                     <select
                       className="select-base"
                       value={vendorDraft.load_balance || 'round_robin'}
@@ -418,74 +458,141 @@ export function VendorsPage({
                       <option value="least_requests">least_requests</option>
                     </select>
                   </label>
-                  <label className="field-wrap">
-                    <span className="field-label">上游首包超时</span>
-                    <input
-                      className="input-base"
-                      placeholder="例如 15s / 30s / 2m"
-                      value={upstreamResponseHeaderTimeoutText}
-                      onChange={(e) => onUpstreamResponseHeaderTimeoutTextChange(e.target.value)}
-                    />
-                  </label>
-                  <label className="field-wrap">
-                    <span className="field-label">上游 Body 超时</span>
-                    <input
-                      className="input-base"
-                      placeholder="例如 30s / 5m / 1h"
-                      value={upstreamBodyTimeoutText}
-                      onChange={(e) => onUpstreamBodyTimeoutTextChange(e.target.value)}
-                    />
-                  </label>
-                  <label className="field-wrap">
-                    <span className="field-label">102 保活间隔</span>
-                    <input
-                      className="input-base"
-                      placeholder="例如 0s / 30s / 1m"
-                      value={upstreamInterimResponseIntervalText}
-                      onChange={(e) => onUpstreamInterimResponseIntervalTextChange(e.target.value)}
-                    />
-                  </label>
+                  {!isAggregate && (
+                    <>
+                      <label className="field-wrap">
+                        <span className="field-label">上游首包超时</span>
+                        <input
+                          className="input-base"
+                          placeholder="例如 15s / 30s / 2m"
+                          value={upstreamResponseHeaderTimeoutText}
+                          onChange={(e) => onUpstreamResponseHeaderTimeoutTextChange(e.target.value)}
+                        />
+                      </label>
+                      <label className="field-wrap">
+                        <span className="field-label">上游 Body 超时</span>
+                        <input
+                          className="input-base"
+                          placeholder="例如 30s / 5m / 1h"
+                          value={upstreamBodyTimeoutText}
+                          onChange={(e) => onUpstreamBodyTimeoutTextChange(e.target.value)}
+                        />
+                      </label>
+                      <label className="field-wrap">
+                        <span className="field-label">102 保活间隔</span>
+                        <input
+                          className="input-base"
+                          placeholder="例如 0s / 30s / 1m"
+                          value={upstreamInterimResponseIntervalText}
+                          onChange={(e) => onUpstreamInterimResponseIntervalTextChange(e.target.value)}
+                        />
+                      </label>
+                    </>
+                  )}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
-                <div>
-                  <div className="text-sm font-medium text-[var(--text-primary)]">上游鉴权</div>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">配置转发到上游时使用的鉴权头和前缀。</div>
+              {isAggregate && (
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">子供应商列表</div>
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">请求将被分发到以下子供应商，不支持嵌套聚合。</div>
+                    </div>
+                    <button className={buttonClass('ghost')} onClick={addAggregateChild}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                      添加子项
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    {!aggregateChildren.length && (
+                      <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+                        暂无子供应商，请添加。
+                      </div>
+                    )}
+                    {aggregateChildren.map((child, index) => (
+                      <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[1fr_120px_120px_auto] xl:items-center">
+                        <label className="field-wrap mb-0">
+                          <span className="field-label">子供应商名称</span>
+                          <input
+                            className="input-base"
+                            placeholder="已有供应商名称"
+                            value={child.vendor || ''}
+                            onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
+                          />
+                        </label>
+                        <label className="field-wrap mb-0">
+                          <span className="field-label">权重</span>
+                          <input
+                            className="input-base"
+                            type="number"
+                            min="1"
+                            value={child.weight || 1}
+                            onChange={(e) => updateAggregateChild(index, 'weight', parseInt(e.target.value, 10) || 1)}
+                          />
+                        </label>
+                        <label className="field-wrap mb-0">
+                          <span className="field-label">优先级 (越小越优先)</span>
+                          <input
+                            className="input-base"
+                            type="number"
+                            min="0"
+                            value={child.priority || 0}
+                            onChange={(e) => updateAggregateChild(index, 'priority', parseInt(e.target.value, 10) || 0)}
+                          />
+                        </label>
+                        <div className="flex xl:mt-6">
+                          <button className={buttonClass('danger')} type="button" onClick={() => removeAggregateChild(index)}>移除</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="grid gap-4 xl:grid-cols-3">
-                  <label className="field-wrap">
-                    <span className="field-label">上游鉴权模式</span>
-                    <select
-                      className="select-base"
-                      value={vendorDraft.upstream_auth?.mode || 'bearer'}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.mode = e.target.value })}
-                    >
-                      <option value="bearer">bearer</option>
-                      <option value="header">header</option>
-                      <option value="passthrough">passthrough</option>
-                    </select>
-                  </label>
-                  <label className="field-wrap">
-                    <span className="field-label">鉴权 Header</span>
-                    <input
-                      className="input-base"
-                      value={vendorDraft.upstream_auth?.header || ''}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.header = e.target.value })}
-                    />
-                  </label>
-                  <label className="field-wrap">
-                    <span className="field-label">鉴权前缀</span>
-                    <input
-                      className="input-base"
-                      value={vendorDraft.upstream_auth?.prefix || ''}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.prefix = e.target.value })}
-                    />
-                  </label>
+              )}
+
+              {!isAggregate && (
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
+                  <div>
+                    <div className="text-sm font-medium text-[var(--text-primary)]">上游鉴权</div>
+                    <div className="mt-1 text-xs text-[var(--text-muted)]">配置转发到上游时使用的鉴权头和前缀。</div>
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-3">
+                    <label className="field-wrap">
+                      <span className="field-label">上游鉴权模式</span>
+                      <select
+                        className="select-base"
+                        value={vendorDraft.upstream_auth?.mode || 'bearer'}
+                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.mode = e.target.value })}
+                      >
+                        <option value="bearer">bearer</option>
+                        <option value="header">header</option>
+                        <option value="passthrough">passthrough</option>
+                      </select>
+                    </label>
+                    <label className="field-wrap">
+                      <span className="field-label">鉴权 Header</span>
+                      <input
+                        className="input-base"
+                        value={vendorDraft.upstream_auth?.header || ''}
+                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.header = e.target.value })}
+                      />
+                    </label>
+                    <label className="field-wrap">
+                      <span className="field-label">鉴权前缀</span>
+                      <input
+                        className="input-base"
+                        value={vendorDraft.upstream_auth?.prefix || ''}
+                        onChange={(e) => onMutateVendorDraft((draft) => { draft.upstream_auth.prefix = e.target.value })}
+                      />
+                    </label>
+                  </div>
                 </div>
-              </div>
+              )}
             </CollapsibleSection>
 
+            {!isAggregate && (<>
             <CollapsibleSection
               title="错误适配"
               description="无效密钥检测、退避规则和请求切换统一配置。"
@@ -782,6 +889,7 @@ export function VendorsPage({
                 valuePlaceholder="/to/path 或 /to/*"
               />
             </CollapsibleSection>
+            </>)}
           </div>
         )}
       </article>

@@ -172,7 +172,7 @@ export function useAdminConsole() {
   const [selectedKeyVendor, setSelectedKeyVendor] = useState('')
   const [showSecrets, setShowSecrets] = useState(false)
 
-  const [newVendorForm, setNewVendorForm] = useState({ name: '', baseURL: '' })
+  const [newVendorForm, setNewVendorForm] = useState({ name: '', baseURL: '', provider: 'generic' })
   const [newPassword, setNewPassword] = useState('')
   const [systemForm, setSystemForm] = useState(DEFAULT_SYSTEM_FORM)
 
@@ -442,11 +442,12 @@ export function useAdminConsole() {
   const createVendor = async () => {
     const name = newVendorForm.name.trim()
     const baseURL = newVendorForm.baseURL.trim()
+    const provider = newVendorForm.provider || 'generic'
     if (!name) {
       setStatus('warn', '请输入供应商名称')
       return
     }
-    if (!baseURL) {
+    if (provider !== 'aggregate' && !baseURL) {
       setStatus('warn', '请输入上游 base_url')
       return
     }
@@ -455,12 +456,16 @@ export function useAdminConsole() {
       await api('/admin/vendors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vendor: name, config: buildNewVendorConfig(baseURL) })
+        body: JSON.stringify({ vendor: name, config: buildNewVendorConfig(baseURL, provider) })
       })
-      setNewVendorForm({ name: '', baseURL: '' })
+      setNewVendorForm({ name: '', baseURL: '', provider: 'generic' })
       setNav('vendors')
       await refreshAll(name, name)
-      setStatus('success', `供应商 ${name} 已创建，可前往上游密钥页面补充配置`)
+      if (provider === 'aggregate') {
+        setStatus('success', `聚合供应商 ${name} 已创建`)
+      } else {
+        setStatus('success', `供应商 ${name} 已创建，可前往上游密钥页面补充配置`)
+      }
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -715,10 +720,12 @@ export function useAdminConsole() {
         const runtimeKeys = stats.vendors?.[name] || []
         return {
           name,
+          provider: vendor.provider || 'generic',
           upstreamKeys: keyCountMap[name] || 0,
           clientKeys: vendor.client_auth?.keys?.length || 0,
           clientAuthEnabled: !!vendor.client_auth?.enabled,
           resinEnabled: !!vendor.resin?.enabled,
+          aggregateChildCount: vendor.aggregate?.children?.length || 0,
           backoff: runtimeKeys.filter((item) => Number(item.backoff_remaining_seconds || 0) > 0).length,
           inflight: runtimeKeys.reduce((sum, item) => sum + Number(item.inflight || 0), 0)
         }
