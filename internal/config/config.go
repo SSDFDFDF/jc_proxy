@@ -738,9 +738,6 @@ func (c *Config) validate(requireVendors bool) error {
 		switch NormalizeProvider(vendor.Provider, vendorName) {
 		case "openai", "anthropic", "gemini", "deepseek", "azure_openai", "generic":
 		case "aggregate":
-			if len(vendor.Aggregate.Children) == 0 {
-				return fmt.Errorf("vendor %q aggregate.children is empty", vendorName)
-			}
 			for _, child := range vendor.Aggregate.Children {
 				if strings.TrimSpace(child.Vendor) == "" {
 					return fmt.Errorf("vendor %q has empty aggregate child vendor name", vendorName)
