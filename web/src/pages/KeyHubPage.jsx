@@ -324,18 +324,20 @@ export function KeyHubPage({
     }
 
     for (const item of upstreamVendors) {
+      const row = runtimeLookup.get(item.vendor)
+      if (row?.provider === 'aggregate') continue
       seen.add(item.vendor)
-      const runtime = runtimeLookup.get(item.vendor)
       const counts = buildCounts(item.vendor, item.active_count || 0, item.disabled_count || 0)
       tabs.push({
         vendor: item.vendor,
         activeCount: counts.activeCount,
         disabledCount: counts.disabledCount,
-        backoff: runtime?.backoff || 0,
-        inflight: runtime?.inflight || 0
+        backoff: row?.backoff || 0,
+        inflight: row?.inflight || 0
       })
     }
     for (const row of vendorRows) {
+      if (row.provider === 'aggregate') continue
       if (!seen.has(row.name)) {
         const counts = buildCounts(row.name, 0, 0)
         tabs.push({ vendor: row.name, activeCount: counts.activeCount, disabledCount: counts.disabledCount, backoff: row.backoff || 0, inflight: row.inflight || 0 })
