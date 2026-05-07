@@ -516,12 +516,20 @@ export function VendorsPage({
                       <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[1fr_120px_120px_auto] xl:items-center">
                         <label className="field-wrap mb-0">
                           <span className="field-label">子供应商名称</span>
-                          <input
-                            className="input-base"
-                            placeholder="已有供应商名称"
+                          <select
+                            className="select-base"
                             value={child.vendor || ''}
                             onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
-                          />
+                          >
+                            <option value="" disabled>-- 请选择已有供应商 --</option>
+                            {vendorRows
+                              .filter((v) => v.name !== selectedVendor && v.provider !== 'aggregate')
+                              .map((v) => (
+                                <option key={v.name} value={v.name}>
+                                  {v.name} ({v.provider})
+                                </option>
+                              ))}
+                          </select>
                         </label>
                         <label className="field-wrap mb-0">
                           <span className="field-label">权重</span>
