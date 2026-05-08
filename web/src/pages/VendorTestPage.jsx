@@ -167,12 +167,20 @@ export function VendorTestPage({
   const [requestBody, setRequestBody] = useState('')
   const [requestResult, setRequestResult] = useState(null)
   const [requestError, setRequestError] = useState('')
+  const [vendorSearchQuery, setVendorSearchQuery] = useState('')
 
   const modelIds = useMemo(() => extractModelIds(modelResult?.body), [modelResult?.body])
   const requestEndpointSuggestions = useMemo(
     () => uniqueStrings((meta?.request_presets || []).map((preset) => preset.endpoint)),
     [meta]
   )
+
+  const filteredVendorRows = useMemo(() => {
+    return (vendorRows || []).filter((r) => r.provider !== 'aggregate').filter(row => 
+      row.name.toLowerCase().includes(vendorSearchQuery.toLowerCase()) || 
+      (row.provider && row.provider.toLowerCase().includes(vendorSearchQuery.toLowerCase()))
+    )
+  }, [vendorRows, vendorSearchQuery])
 
   useEffect(() => {
     if (!selectedVendor) {
@@ -308,8 +316,18 @@ export function VendorTestPage({
           </button>
         </div>
 
-        <div className="space-y-2">
-          {vendorRows.map((row) => (
+        <div className="mb-3">
+          <input
+            type="text"
+            className="input-base w-full text-sm"
+            placeholder="搜索供应商..."
+            value={vendorSearchQuery}
+            onChange={(e) => setVendorSearchQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto pr-1 custom-scrollbar">
+          {filteredVendorRows.map((row) => (
             <button
               key={row.name}
               className={`vendor-item ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
@@ -319,6 +337,12 @@ export function VendorTestPage({
               <span>上游 {row.upstreamKeys} · 回退 {row.backoff}</span>
             </button>
           ))}
+          {!filteredVendorRows.length && vendorRows.filter((r) => r.provider !== 'aggregate').length > 0 && (
+            <div className="text-center text-xs text-[var(--text-muted)] py-4">未找到匹配的供应商</div>
+          )}
+          {!vendorRows.filter((r) => r.provider !== 'aggregate').length && (
+            <div className="text-sm text-[var(--text-faint)]">暂无常规供应商可供测试。</div>
+          )}
         </div>
 
         <section className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">

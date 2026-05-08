@@ -568,6 +568,16 @@ export function KeyHubPage({
                       </td>
                       <td>
                         <div className="flex justify-end gap-3">
+                          <button
+                            className="font-medium text-[var(--accent)] hover:text-blue-400 transition-colors"
+                            onClick={() => {
+                              if (navigator?.clipboard?.writeText) {
+                                navigator.clipboard.writeText(item.key).catch(() => {})
+                              }
+                            }}
+                          >
+                            复制
+                          </button>
                           {item.displayStatus === 'active' ? (
                             <button className="font-medium text-[var(--warning)] hover:text-amber-400 transition-colors" onClick={() => onDisableKey(item.key)}>禁用</button>
                           ) : (

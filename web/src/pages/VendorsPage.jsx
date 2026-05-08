@@ -117,11 +117,17 @@ export function VendorsPage({
   const presetPreviewHeaders = CLIENT_HEADER_PRESET_PREVIEWS[clientHeaderPreset] || []
   const [clientKeyInputText, setClientKeyInputText] = useState('')
   const [expandedSections, setExpandedSections] = useState(DEFAULT_EXPANDED_SECTIONS)
+  const [vendorSearchQuery, setVendorSearchQuery] = useState('')
   const allowlistCount = countTextItems(allowlistText)
   const dropHeadersCount = countTextItems(dropHeadersText)
   const responseRuleCount = countConfiguredResponseRules(responseRuleRows)
   const injectHeaderCount = countFilledRows(injectRows, ['key', 'value'])
   const rewriteRuleCount = countFilledRows(rewriteRows, ['key', 'value'])
+
+  const filteredVendorRows = (vendorRows || []).filter(row => 
+    row.name.toLowerCase().includes(vendorSearchQuery.toLowerCase()) || 
+    (row.provider && row.provider.toLowerCase().includes(vendorSearchQuery.toLowerCase()))
+  )
 
   useEffect(() => {
     setClientKeyInputText('')
@@ -248,8 +254,18 @@ export function VendorsPage({
           </button>
         </div>
 
-        <div className="space-y-2">
-          {vendorRows.map((row) => (
+        <div className="mb-3">
+          <input
+            type="text"
+            className="input-base w-full text-sm"
+            placeholder="搜索供应商..."
+            value={vendorSearchQuery}
+            onChange={(e) => setVendorSearchQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto pr-1 custom-scrollbar">
+          {filteredVendorRows.map((row) => (
             <button
               key={row.name}
               className={`vendor-item ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
@@ -263,6 +279,9 @@ export function VendorsPage({
               </span>
             </button>
           ))}
+          {filteredVendorRows.length === 0 && (
+            <div className="text-center text-xs text-[var(--text-muted)] py-4">未找到匹配的供应商</div>
+          )}
         </div>
 
         {/* Create Vendor */}
