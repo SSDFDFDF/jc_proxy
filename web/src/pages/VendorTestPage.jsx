@@ -201,8 +201,17 @@ export function VendorTestPage({
 
         setMeta(payload || null)
         setBaseURL(payload?.base_url || '')
-        setKeyMode('default')
-        setManualKey('')
+        
+        const testKey = sessionStorage.getItem('jc_proxy_test_key')
+        if (testKey) {
+          setKeyMode('manual')
+          setManualKey(testKey)
+          sessionStorage.removeItem('jc_proxy_test_key')
+        } else {
+          setKeyMode('default')
+          setManualKey('')
+        }
+        
         setSelectedModel('')
         setHeaderRows(EMPTY_ROWS)
 

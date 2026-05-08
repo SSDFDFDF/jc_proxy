@@ -65,6 +65,11 @@ function App() {
           onEnableKey={upstream.enableUpstreamKey}
           onDisableKey={upstream.disableUpstreamKey}
           onDeleteKey={upstream.deleteUpstreamKey}
+          onTestKey={(vendor, key) => {
+            sessionStorage.setItem('jc_proxy_test_key', key)
+            config.selectVendor(vendor)
+            shell.setNav('vendorTest')
+          }}
           vendorRows={overview.vendorRows}
           runtimeStats={statsView.stats}
           autoRefreshStats={statsView.autoRefreshStats}

@@ -191,6 +191,7 @@ export function KeyHubPage({
   onEnableKey,
   onDisableKey,
   onDeleteKey,
+  onTestKey,
   vendorRows,
   runtimeStats,
   autoRefreshStats,
@@ -502,7 +503,7 @@ export function KeyHubPage({
                 <col style={{ width: '168px' }} />
                 <col style={{ width: '156px' }} />
                 <col />
-                <col style={{ width: '124px' }} />
+                <col style={{ width: '156px' }} />
               </colgroup>
               <thead>
                 <tr>
@@ -578,7 +579,13 @@ export function KeyHubPage({
                           >
                             复制
                           </button>
-                          {item.displayStatus === 'active' ? (
+                          <button
+                            className="font-medium text-[var(--accent)] hover:text-blue-400 transition-colors"
+                            onClick={() => onTestKey?.(selectedKeyVendor, item.key)}
+                          >
+                            测试
+                          </button>
+                          {item.displayStatus === "active" ? (
                             <button className="font-medium text-[var(--warning)] hover:text-amber-400 transition-colors" onClick={() => onDisableKey(item.key)}>禁用</button>
                           ) : (
                             <button className="font-medium text-[var(--success)] hover:text-emerald-400 transition-colors" onClick={() => onEnableKey(item.key)}>启用</button>
