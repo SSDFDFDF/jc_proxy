@@ -189,8 +189,11 @@ export function KeyHubPage({
   onSelectVendor,
   onAddKeys,
   onEnableKey,
+  onEnableKeys,
   onDisableKey,
+  onDisableKeys,
   onDeleteKey,
+  onDeleteKeys,
   onTestKey,
   vendorRows,
   runtimeStats,
@@ -208,6 +211,7 @@ export function KeyHubPage({
   const [showAddModal, setShowAddModal] = useState(false)
   const [modalHint, setModalHint] = useState('')
   const [sortState, setSortState] = useState({ key: 'index', direction: 'asc' })
+  const [selectedKeys, setSelectedKeys] = useState(new Set())
 
   const allItems = upstreamKeysData.items?.[selectedKeyVendor] || []
   const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendor] || []
@@ -294,6 +298,29 @@ export function KeyHubPage({
   useEffect(() => {
     setPage((prev) => Math.min(prev, totalPages))
   }, [totalPages])
+
+  /* ── Selection Logic ── */
+  const handleToggleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedKeys(new Set(pageItems.map(item => item.key)))
+    } else {
+      setSelectedKeys(new Set())
+    }
+  }
+
+  const handleToggleSelect = (key) => {
+    const next = new Set(selectedKeys)
+    if (next.has(key)) {
+      next.delete(key)
+    } else {
+      next.add(key)
+    }
+    setSelectedKeys(next)
+  }
+
+  useEffect(() => {
+    setSelectedKeys(new Set())
+  }, [query, statusFilter, page, pageSize, selectedKeyVendor])
 
   /* ── Build unified vendor tabs ── */
   const vendorTabs = useMemo(() => {
@@ -492,6 +519,41 @@ export function KeyHubPage({
             </div>
           </div>
 
+          {selectedKeys.size > 0 && (
+            <div className="mb-4 flex items-center justify-between rounded bg-[var(--bg-elevated)] px-4 py-2 border border-[var(--accent)] border-opacity-30">
+              <span className="text-sm font-medium">已选择 {selectedKeys.size} 项</span>
+              <div className="flex items-center gap-2">
+                <button
+                  className={buttonClass('ghost') + ' text-[var(--success)] hover:bg-[rgba(16,185,129,0.1)]'}
+                  onClick={() => {
+                    onEnableKeys(Array.from(selectedKeys))
+                    setSelectedKeys(new Set())
+                  }}
+                >
+                  批量启用
+                </button>
+                <button
+                  className={buttonClass('ghost') + ' text-[var(--warning)] hover:bg-[rgba(245,158,11,0.1)]'}
+                  onClick={() => {
+                    onDisableKeys(Array.from(selectedKeys))
+                    setSelectedKeys(new Set())
+                  }}
+                >
+                  批量禁用
+                </button>
+                <button
+                  className={buttonClass('ghost') + ' text-[var(--danger)] hover:bg-[rgba(239,68,68,0.1)]'}
+                  onClick={() => {
+                    onDeleteKeys(Array.from(selectedKeys))
+                    setSelectedKeys(new Set())
+                  }}
+                >
+                  批量删除
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ═══ Unified Table ═══ */}
           <div className="table-shell text-xs">
             <table className="w-full min-w-[1080px] table-fixed">
@@ -507,7 +569,14 @@ export function KeyHubPage({
               </colgroup>
               <thead>
                 <tr>
-                  <th className="w-10 text-center">#</th>
+                  <th className="w-10 text-center">
+                    <input
+                      type="checkbox"
+                      className="rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
+                      checked={pageItems.length > 0 && selectedKeys.size === pageItems.length}
+                      onChange={handleToggleSelectAll}
+                    />
+                  </th>
                   <th>{renderSortableHeader('Key', 'key')}</th>
                   <th>{renderSortableHeader('状态', 'status')}</th>
                   <th>{renderSortableHeader('负载', 'load')}</th>
@@ -522,8 +591,15 @@ export function KeyHubPage({
                   const { inflight, backoff, totalRequests, successCount, failedCount, reason, err401, err403, err429, errOth, hasErrors, successRate, errRate, secondaryText } = item.metrics
 
                   return (
-                    <tr key={item.key} className="hover:bg-[var(--bg-hover)] transition-colors">
-                      <td className="text-center font-mono text-[10px] text-[var(--text-faint)]">{start + idx + 1}</td>
+                    <tr key={item.key} className={`transition-colors ${selectedKeys.has(item.key) ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}>
+                      <td className="text-center">
+                        <input
+                          type="checkbox"
+                          className="rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
+                          checked={selectedKeys.has(item.key)}
+                          onChange={() => handleToggleSelect(item.key)}
+                        />
+                      </td>
                       <td><div className="font-mono text-[var(--text-primary)] truncate">{showSecrets ? item.key : item.masked}</div></td>
                       <td>
                         <span className={`inline-flex rounded border px-1.5 py-[1px] text-[10px] font-semibold tracking-wide ${statusTone(item.displayStatus)}`}>

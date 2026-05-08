@@ -534,6 +534,26 @@ export function useAdminConsole() {
     }
   }
 
+  const disableUpstreamKeys = async (keys) => {
+    if (!selectedKeyVendor || !keys?.length) return
+    setBusy(true)
+    try {
+      await Promise.all(keys.map(key => 
+        api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/disable`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key, reason: 'manually disabled' })
+        })
+      ))
+      await refreshAll(selectedVendor, selectedKeyVendor)
+      setStatus('success', `已禁用 ${keys.length} 条密钥`)
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const enableUpstreamKey = async (key) => {
     if (!selectedKeyVendor || !key) return
     setBusy(true)
@@ -545,6 +565,26 @@ export function useAdminConsole() {
       })
       await refreshAll(selectedVendor, selectedKeyVendor)
       setStatus('success', `密钥已启用`)
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const enableUpstreamKeys = async (keys) => {
+    if (!selectedKeyVendor || !keys?.length) return
+    setBusy(true)
+    try {
+      await Promise.all(keys.map(key => 
+        api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/enable`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key })
+        })
+      ))
+      await refreshAll(selectedVendor, selectedKeyVendor)
+      setStatus('success', `已启用 ${keys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -564,6 +604,25 @@ export function useAdminConsole() {
       })
       await refreshAll(selectedVendor, selectedKeyVendor)
       setStatus('success', `密钥已删除`)
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteUpstreamKeys = async (keys) => {
+    if (!selectedKeyVendor || !keys?.length) return
+    if (!window.confirm(`确认删除这 ${keys.length} 个上游密钥吗？`)) return
+    setBusy(true)
+    try {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys })
+      })
+      await refreshAll(selectedVendor, selectedKeyVendor)
+      setStatus('success', `已删除 ${keys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -844,8 +903,11 @@ export function useAdminConsole() {
       selectKeyVendor,
       addUpstreamKeys,
       disableUpstreamKey,
+      disableUpstreamKeys,
       enableUpstreamKey,
-      deleteUpstreamKey
+      enableUpstreamKeys,
+      deleteUpstreamKey,
+      deleteUpstreamKeys
     },
     statsView: {
       stats,

@@ -63,8 +63,11 @@ function App() {
           onSelectVendor={upstream.selectKeyVendor}
           onAddKeys={upstream.addUpstreamKeys}
           onEnableKey={upstream.enableUpstreamKey}
+          onEnableKeys={upstream.enableUpstreamKeys}
           onDisableKey={upstream.disableUpstreamKey}
+          onDisableKeys={upstream.disableUpstreamKeys}
           onDeleteKey={upstream.deleteUpstreamKey}
+          onDeleteKeys={upstream.deleteUpstreamKeys}
           onTestKey={(vendor, key) => {
             sessionStorage.setItem('jc_proxy_test_key', key)
             config.selectVendor(vendor)
