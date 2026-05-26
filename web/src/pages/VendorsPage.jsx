@@ -532,7 +532,7 @@ export function VendorsPage({
                       </div>
                     )}
                     {aggregateChildren.map((child, index) => (
-                      <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[1fr_120px_120px_auto] xl:items-center">
+                      <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[minmax(160px,1fr)_130px_160px_auto] xl:items-end">
                         <label className="field-wrap mb-0">
                           <span className="field-label">子供应商名称</span>
                           <select
@@ -570,7 +570,7 @@ export function VendorsPage({
                             onChange={(e) => updateAggregateChild(index, 'priority', parseInt(e.target.value, 10) || 0)}
                           />
                         </label>
-                        <div className="flex xl:mt-6">
+                        <div className="flex xl:pb-0.5">
                           <button className={buttonClass('danger')} type="button" onClick={() => removeAggregateChild(index)}>移除</button>
                         </div>
                       </div>
