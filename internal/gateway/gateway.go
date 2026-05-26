@@ -53,6 +53,7 @@ type vendorGateway struct {
 	// Aggregate fields
 	isAggregate bool
 	aggPool     *aggregatePool
+	aggRetry    config.AggregateRetryConfig
 }
 
 // aggregateChildEntry holds a reference to a child vendor for aggregate routing.
@@ -185,25 +186,46 @@ func (p *aggregatePool) pickLeastInflightLocked() (*aggregateChildEntry, bool) {
 // PickAvailable selects a child vendor using the configured strategy,
 // then falls back to any other entry if the preferred pick is unavailable.
 // The available predicate is called under the pool lock.
+// exclude names child vendors to skip (used for aggregate retry).
 // Returns nil if no entry satisfies the predicate.
-func (p *aggregatePool) PickAvailable(available func(*aggregateChildEntry) bool) *aggregateChildEntry {
+func (p *aggregatePool) PickAvailable(available func(*aggregateChildEntry) bool, exclude map[string]struct{}) *aggregateChildEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.entries) == 0 {
 		return nil
 	}
 
+	return p.pickAvailableLocked(available, exclude, true)
+}
+
+func (p *aggregatePool) HasAvailable(available func(*aggregateChildEntry) bool, exclude map[string]struct{}) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pickAvailableLocked(available, exclude, false) != nil
+}
+
+func (p *aggregatePool) pickAvailableLocked(available func(*aggregateChildEntry) bool, exclude map[string]struct{}, useStrategy bool) *aggregateChildEntry {
+	isExcluded := func(e *aggregateChildEntry) bool {
+		if len(exclude) == 0 {
+			return false
+		}
+		_, ok := exclude[e.name]
+		return ok
+	}
+
 	// Use the configured strategy for the preferred pick.
 	var preferred *aggregateChildEntry
-	switch p.strategy {
-	case "random":
-		preferred, _ = p.pickRandomLocked()
-	case "least_used", "least_requests":
-		preferred, _ = p.pickLeastInflightLocked()
-	default:
-		preferred, _ = p.pickRoundRobinLocked()
+	if useStrategy {
+		switch p.strategy {
+		case "random":
+			preferred, _ = p.pickRandomLocked()
+		case "least_used", "least_requests":
+			preferred, _ = p.pickLeastInflightLocked()
+		default:
+			preferred, _ = p.pickRoundRobinLocked()
+		}
 	}
-	if preferred != nil && available(preferred) {
+	if preferred != nil && !isExcluded(preferred) && available(preferred) {
 		return preferred
 	}
 
@@ -211,6 +233,9 @@ func (p *aggregatePool) PickAvailable(available func(*aggregateChildEntry) bool)
 	for i := range p.entries {
 		e := &p.entries[i]
 		if e == preferred {
+			continue
+		}
+		if isExcluded(e) {
 			continue
 		}
 		if available(e) {
@@ -286,6 +311,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			isAggregate: true,
 			clientAuth:  clientAuthSet,
 			aggPool:     newAggregatePool(vendor.LoadBalance, entries),
+			aggRetry:    vendor.Aggregate.Retry,
 		}
 	}
 

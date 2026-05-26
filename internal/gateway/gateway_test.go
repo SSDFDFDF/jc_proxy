@@ -62,6 +62,9 @@ func (w *flushCountWriter) WriteHeader(statusCode int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.statuses = append(w.statuses, statusCode)
+	if statusCode >= 100 && statusCode < 200 {
+		return
+	}
 	w.statusCode = statusCode
 }
 
@@ -123,6 +126,12 @@ type stagedReadCloser struct {
 type delayedReadCloser struct {
 	release <-chan struct{}
 	data    []byte
+	sent    bool
+}
+
+type chunkThenBlockReadCloser struct {
+	chunk   []byte
+	release <-chan struct{}
 	sent    bool
 }
 
@@ -203,6 +212,19 @@ func (r *delayedReadCloser) Read(p []byte) (int, error) {
 }
 
 func (r *delayedReadCloser) Close() error {
+	return nil
+}
+
+func (r *chunkThenBlockReadCloser) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.chunk), nil
+	}
+	<-r.release
+	return 0, io.EOF
+}
+
+func (r *chunkThenBlockReadCloser) Close() error {
 	return nil
 }
 
@@ -1819,6 +1841,423 @@ func TestRouterFlushesStreamingResponses(t *testing.T) {
 	}
 }
 
+func TestRouterAggregateFlushesStreamingSuccessWithoutWaitingForEOF(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+	defer closeRelease()
+
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			header := make(http.Header)
+			header.Set("Content-Type", "text/event-stream")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header,
+				Body:       &chunkThenBlockReadCloser{chunk: []byte("data: first\n\n"), release: release},
+			}, nil
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			t.Fatal("aggregate should not retry a successful streaming response")
+			return nil, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/chat/completions?stream=true", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	w := &flushCountWriter{}
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	waitForTestCondition(t, 200*time.Millisecond, func() bool {
+		return w.bodyString() == "data: first\n\n" && w.flushCountSnapshot() > 0
+	})
+	statusCode, _ := w.statusSnapshot()
+	if statusCode != http.StatusOK {
+		t.Fatalf("expected streaming status 200 before EOF, got %d", statusCode)
+	}
+
+	closeRelease()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("aggregate streaming request did not finish after releasing body")
+	}
+}
+
+func TestRouterAggregateRetriesBufferedPostOnRateLimit(t *testing.T) {
+	var attempts []string
+	var bodies []string
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attempts = append(attempts, "child_a")
+			payload, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(payload))
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+			}, nil
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attempts = append(attempts, "child_b")
+			payload, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(payload))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("ok from child b")),
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agg/v1/chat/completions", strings.NewReader(`{"model":"gpt","stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected aggregate retry success, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "ok from child b" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+	if len(attempts) != 2 || attempts[0] != "child_a" || attempts[1] != "child_b" {
+		t.Fatalf("unexpected aggregate attempt order: %#v", attempts)
+	}
+	if len(bodies) != 2 || bodies[0] != `{"model":"gpt","stream":false}` || bodies[1] != bodies[0] {
+		t.Fatalf("request body should be replayed across child vendors, got %#v", bodies)
+	}
+}
+
+func TestRouterAggregateRetriesNextChildWhenVendorKeyFailoverLimitReached(t *testing.T) {
+	attemptsA := 0
+	attemptsB := 0
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	childA := cfg.Vendors["child_a"]
+	childA.Upstream.Keys = []string{"child-a-key-1", "child-a-key-2"}
+	childA.ErrorPolicy.Failover.MaxAttempts = 1
+	cfg.Vendors["child_a"] = childA
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsA++
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+			}, nil
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsB++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("ok from child b")),
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected aggregate retry success, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "ok from child b" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+	if attemptsA != 1 || attemptsB != 1 {
+		t.Fatalf("expected aggregate retry after child_a reaches key failover limit, got child_a=%d child_b=%d", attemptsA, attemptsB)
+	}
+}
+
+func TestRouterAggregateDoesNotRetryBufferedPostOnServerError(t *testing.T) {
+	attemptsA := 0
+	attemptsB := 0
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsA++
+			payload, _ := io.ReadAll(r.Body)
+			if string(payload) != `{"model":"gpt","stream":false}` {
+				t.Fatalf("unexpected request body: %q", payload)
+			}
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("server error")),
+			}, nil
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsB++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected")),
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agg/v1/chat/completions", strings.NewReader(`{"model":"gpt","stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected original upstream status without aggregate retry, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "server error" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+	if attemptsA != 1 || attemptsB != 0 {
+		t.Fatalf("non-idempotent aggregate request should not retry on server error, got child_a=%d child_b=%d", attemptsA, attemptsB)
+	}
+}
+
+func TestRouterAggregateDoesNotRetryBufferedPostOnNetworkError(t *testing.T) {
+	attemptsA := 0
+	attemptsB := 0
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsA++
+			payload, _ := io.ReadAll(r.Body)
+			if string(payload) != `{"model":"gpt","stream":false}` {
+				t.Fatalf("unexpected request body: %q", payload)
+			}
+			return nil, syscall.ECONNRESET
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsB++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected")),
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agg/v1/chat/completions", strings.NewReader(`{"model":"gpt","stream":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected original network failure response, got %d", w.Code)
+	}
+	if attemptsA != 1 || attemptsB != 0 {
+		t.Fatalf("non-idempotent aggregate request should not retry on network error, got child_a=%d child_b=%d", attemptsA, attemptsB)
+	}
+}
+
+func TestRouterAggregateDoesNotRetryMultipartPost(t *testing.T) {
+	attemptsA := 0
+	attemptsB := 0
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsA++
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("rate limited")),
+			}, nil
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsB++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected")),
+			}, nil
+		}),
+	}
+
+	body := "--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--abc--\r\n"
+	req := httptest.NewRequest(http.MethodPost, "/agg/v1/files", strings.NewReader(body))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=abc")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected original upstream status without aggregate retry, got %d", w.Code)
+	}
+	if attemptsA != 1 || attemptsB != 0 {
+		t.Fatalf("multipart aggregate request should not retry, got child_a=%d child_b=%d", attemptsA, attemptsB)
+	}
+}
+
+func TestRouterAggregateRespectsDisabledNetworkRetry(t *testing.T) {
+	attemptsA := 0
+	attemptsB := 0
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{
+		NetworkError: configBoolPtr(false),
+	})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsA++
+			return nil, syscall.ECONNRESET
+		}),
+	}
+	router.vendors["child_b"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attemptsB++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected")),
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected original network failure response, got %d", w.Code)
+	}
+	if attemptsA != 1 || attemptsB != 0 {
+		t.Fatalf("network_error=false should not aggregate retry, got child_a=%d child_b=%d", attemptsA, attemptsB)
+	}
+}
+
+func TestRouterAggregateInterimProcessingKeepsFinalStatus(t *testing.T) {
+	release := make(chan struct{})
+	interimInterval := 10 * time.Millisecond
+
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	childA := cfg.Vendors["child_a"]
+	childA.Upstream.InterimResponseInterval = &interimInterval
+	cfg.Vendors["child_a"] = childA
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+	router.vendors["child_a"].client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       &delayedReadCloser{release: release, data: []byte("ok")},
+			}, nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := &flushCountWriter{}
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(w, req)
+		close(done)
+	}()
+
+	waitForTestCondition(t, 200*time.Millisecond, func() bool {
+		_, statuses := w.statusSnapshot()
+		return len(statuses) > 0
+	})
+	_, statuses := w.statusSnapshot()
+	if got := statuses[0]; got != http.StatusProcessing {
+		t.Fatalf("first status = %d, want 102", got)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("aggregate request did not finish after releasing body")
+	}
+
+	statusCode, statuses := w.statusSnapshot()
+	if statusCode != http.StatusOK {
+		t.Fatalf("final status = %d, want 200", statusCode)
+	}
+	if len(statuses) < 2 || statuses[len(statuses)-1] != http.StatusOK {
+		t.Fatalf("statuses = %#v, want final 200 after interim", statuses)
+	}
+	if got := w.bodyString(); got != "ok" {
+		t.Fatalf("body = %q, want ok", got)
+	}
+}
+
 func TestRouterDoesNotCooldownHealthyKeyOnClientDisconnect(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -2501,4 +2940,39 @@ func TestRouterDoesNotFollowUpstreamRedirects(t *testing.T) {
 func configBoolPtr(v bool) *bool {
 	b := v
 	return &b
+}
+
+func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Config {
+	return &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"child_a": {
+				Provider: "generic",
+				Upstream: config.UpstreamConfig{
+					BaseURL: "https://child-a.test",
+					Keys:    []string{"child-a-key"},
+				},
+				LoadBalance: "round_robin",
+			},
+			"child_b": {
+				Provider: "generic",
+				Upstream: config.UpstreamConfig{
+					BaseURL: "https://child-b.test",
+					Keys:    []string{"child-b-key"},
+				},
+				LoadBalance: "round_robin",
+			},
+			"agg": {
+				Provider:    "aggregate",
+				LoadBalance: "round_robin",
+				Aggregate: config.AggregateConfig{
+					Children: []config.AggregateChild{
+						{Vendor: "child_a"},
+						{Vendor: "child_b"},
+					},
+					Retry: retry,
+				},
+			},
+		},
+	}
 }

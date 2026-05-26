@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"jc_proxy/internal/config"
 )
 
 const (
@@ -206,4 +208,24 @@ func commitFinalResponse(interim *interimResponseSender, fn func()) {
 		return
 	}
 	interim.commitFinal(fn)
+}
+
+// aggregateRetryable reports whether the given response status code or
+// request error should trigger a retry at the aggregate level (i.e. try
+// a different child vendor).
+func aggregateRetryable(statusCode int, err error, retry config.AggregateRetryConfig) bool {
+	if !boolOrDefault(retry.Enabled, true) {
+		return false
+	}
+	if err != nil {
+		return boolOrDefault(retry.NetworkError, true)
+	}
+	switch statusCode {
+	case http.StatusTooManyRequests:
+		return boolOrDefault(retry.RateLimit, true)
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusInternalServerError:
+		return boolOrDefault(retry.ServerError, true)
+	default:
+		return containsStatusCode(retry.StatusCodes, statusCode)
+	}
 }

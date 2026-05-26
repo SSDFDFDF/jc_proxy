@@ -50,6 +50,24 @@ func (s *requestBodySource) canRetryResponse(statusCode int, decision keyDecisio
 	}
 }
 
+func (s *requestBodySource) canRetryAggregate(statusCode int, err error) bool {
+	if err != nil {
+		return s != nil && s.replayable && s.safeRetry
+	}
+	if s == nil || !s.replayable {
+		return false
+	}
+	if s.safeRetry {
+		return true
+	}
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
 func prepareRequestBody(req *http.Request, allowReplay bool) (*requestBodySource, error) {
 	safeRetry := isSafeRetryMethod(req.Method)
 

@@ -179,13 +179,23 @@ type ResinConfig struct {
 }
 
 type AggregateConfig struct {
-	Children []AggregateChild `yaml:"children" json:"children"`
+	Children []AggregateChild     `yaml:"children" json:"children"`
+	Retry    AggregateRetryConfig `yaml:"retry,omitempty" json:"retry,omitempty"`
 }
 
 type AggregateChild struct {
 	Vendor   string `yaml:"vendor" json:"vendor"`
 	Weight   int    `yaml:"weight,omitempty" json:"weight,omitempty"`
 	Priority int    `yaml:"priority,omitempty" json:"priority,omitempty"`
+}
+
+type AggregateRetryConfig struct {
+	Enabled      *bool `yaml:"enabled" json:"enabled"`
+	MaxAttempts  int   `yaml:"max_attempts" json:"max_attempts"`
+	RateLimit    *bool `yaml:"rate_limit" json:"rate_limit"`
+	ServerError  *bool `yaml:"server_error" json:"server_error"`
+	NetworkError *bool `yaml:"network_error" json:"network_error"`
+	StatusCodes  []int `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
 }
 
 func boolValue(v *bool, fallback bool) bool {
@@ -640,6 +650,7 @@ func (c *Config) applyDefaults() {
 					v.Aggregate.Children[i].Weight = 1
 				}
 			}
+			applyAggregateRetryDefaults(&v.Aggregate.Retry)
 			c.Vendors[name] = v
 			continue
 		}
@@ -756,6 +767,9 @@ func (c *Config) validate(requireVendors bool) error {
 			if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
 				return fmt.Errorf("vendor %q client_auth enabled but keys empty", vendorName)
 			}
+			if err := validateAggregateRetry(vendor.Aggregate.Retry, vendorName); err != nil {
+				return err
+			}
 			continue
 		default:
 			return fmt.Errorf("vendor %q invalid provider: %s", vendorName, vendor.Provider)
@@ -864,6 +878,27 @@ func applyCooldownRuleDefaults(rule *ErrorCooldownRule, duration time.Duration) 
 	}
 }
 
+func applyAggregateRetryDefaults(retry *AggregateRetryConfig) {
+	if retry.Enabled == nil {
+		retry.Enabled = boolPtr(true)
+	}
+	if retry.MaxAttempts <= 0 {
+		retry.MaxAttempts = 2
+	}
+	if retry.RateLimit == nil {
+		retry.RateLimit = boolPtr(true)
+	}
+	if retry.ServerError == nil {
+		retry.ServerError = boolPtr(true)
+	}
+	if retry.NetworkError == nil {
+		retry.NetworkError = boolPtr(true)
+	}
+	if len(retry.StatusCodes) == 0 {
+		retry.StatusCodes = nil
+	}
+}
+
 func validateErrorPolicy(policy ErrorPolicyConfig) error {
 	if err := validateStatusCodes("auto_disable.invalid_key_status_codes", policy.AutoDisable.InvalidKeyStatusCodes); err != nil {
 		return err
@@ -904,6 +939,19 @@ func validateCooldownRule(name string, rule ErrorCooldownRule) error {
 	}
 	if rule.Duration < 0 {
 		return fmt.Errorf("cooldown.%s.duration must be >= 0", name)
+	}
+	return nil
+}
+
+func validateAggregateRetry(retry AggregateRetryConfig, vendorName string) error {
+	if !boolValue(retry.Enabled, true) {
+		return nil
+	}
+	if retry.MaxAttempts < 1 || retry.MaxAttempts > 5 {
+		return fmt.Errorf("vendor %q aggregate.retry.max_attempts must be between 1 and 5", vendorName)
+	}
+	if err := validateStatusCodes("aggregate.retry.status_codes", retry.StatusCodes); err != nil {
+		return err
 	}
 	return nil
 }
