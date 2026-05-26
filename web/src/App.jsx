@@ -93,6 +93,7 @@ function App() {
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}
           failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
+          aggregateRetryStatusCodesText={config.aggregateRetryStatusCodesText}
           upstreamResponseHeaderTimeoutText={config.upstreamResponseHeaderTimeoutText}
           upstreamBodyTimeoutText={config.upstreamBodyTimeoutText}
           upstreamInterimResponseIntervalText={config.upstreamInterimResponseIntervalText}
@@ -114,6 +115,7 @@ function App() {
           onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
           setResponseRuleRows={config.setResponseRuleRows}
           onFailoverResponseStatusCodesTextChange={config.setFailoverResponseStatusCodesText}
+          onAggregateRetryStatusCodesTextChange={config.setAggregateRetryStatusCodesText}
           onUpstreamResponseHeaderTimeoutTextChange={config.setUpstreamResponseHeaderTimeoutText}
           onUpstreamBodyTimeoutTextChange={config.setUpstreamBodyTimeoutText}
           onUpstreamInterimResponseIntervalTextChange={config.setUpstreamInterimResponseIntervalText}

@@ -160,6 +160,7 @@ export function useAdminConsole() {
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
   const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
+  const [aggregateRetryStatusCodesText, setAggregateRetryStatusCodesText] = useState('')
   const [upstreamResponseHeaderTimeoutText, setUpstreamResponseHeaderTimeoutText] = useState('300s')
   const [upstreamBodyTimeoutText, setUpstreamBodyTimeoutText] = useState('5m')
   const [upstreamInterimResponseIntervalText, setUpstreamInterimResponseIntervalText] = useState('30s')
@@ -244,6 +245,7 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
       setFailoverResponseStatusCodesText('')
+      setAggregateRetryStatusCodesText('')
       setUpstreamResponseHeaderTimeoutText('300s')
       setUpstreamBodyTimeoutText('5m')
       setUpstreamInterimResponseIntervalText('30s')
@@ -260,6 +262,7 @@ export function useAdminConsole() {
     setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
+    setAggregateRetryStatusCodesText(statusCodesToText(draft.aggregate?.retry?.status_codes || []))
     setUpstreamResponseHeaderTimeoutText(nsToText(draft.upstream?.response_header_timeout || 0))
     setUpstreamBodyTimeoutText(nsToText(draft.upstream?.body_timeout || 0))
     setUpstreamInterimResponseIntervalText(nsToText(draft.upstream?.interim_response_interval || 0))
@@ -417,6 +420,11 @@ export function useAdminConsole() {
       next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
       next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
       next.error_policy.failover.response_status_codes = parseStatusCodesText(failoverResponseStatusCodesText)
+      if (next.provider === 'aggregate') {
+        if (!next.aggregate) next.aggregate = { children: [] }
+        if (!next.aggregate.retry) next.aggregate.retry = {}
+        next.aggregate.retry.status_codes = parseStatusCodesText(aggregateRetryStatusCodesText)
+      }
       next.client_headers.preset = String(clientHeaderPreset || '').trim()
       next.client_headers.allowlist = textToList(allowlistText)
       next.client_headers.drop = textToList(dropHeadersText)
@@ -863,6 +871,7 @@ export function useAdminConsole() {
       invalidKeyKeywordsText,
       responseRuleRows,
       failoverResponseStatusCodesText,
+      aggregateRetryStatusCodesText,
       upstreamResponseHeaderTimeoutText,
       upstreamBodyTimeoutText,
       upstreamInterimResponseIntervalText,
@@ -877,6 +886,7 @@ export function useAdminConsole() {
       setInvalidKeyKeywordsText,
       setResponseRuleRows,
       setFailoverResponseStatusCodesText,
+      setAggregateRetryStatusCodesText,
       setUpstreamResponseHeaderTimeoutText,
       setUpstreamBodyTimeoutText,
       setUpstreamInterimResponseIntervalText,

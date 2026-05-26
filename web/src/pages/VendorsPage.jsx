@@ -81,6 +81,7 @@ export function VendorsPage({
   invalidKeyKeywordsText,
   responseRuleRows,
   failoverResponseStatusCodesText,
+  aggregateRetryStatusCodesText,
   upstreamResponseHeaderTimeoutText,
   upstreamBodyTimeoutText,
   upstreamInterimResponseIntervalText,
@@ -102,6 +103,7 @@ export function VendorsPage({
   onInvalidKeyKeywordsTextChange,
   setResponseRuleRows,
   onFailoverResponseStatusCodesTextChange,
+  onAggregateRetryStatusCodesTextChange,
   onUpstreamResponseHeaderTimeoutTextChange,
   onUpstreamBodyTimeoutTextChange,
   onUpstreamInterimResponseIntervalTextChange,
@@ -220,6 +222,7 @@ export function VendorsPage({
 
   const isAggregate = vendorDraft?.provider === 'aggregate'
   const aggregateChildren = vendorDraft?.aggregate?.children || []
+  const aggregateRetry = vendorDraft?.aggregate?.retry || {}
 
   const addAggregateChild = () => {
     onMutateVendorDraft((draft) => {
@@ -238,6 +241,14 @@ export function VendorsPage({
   const updateAggregateChild = (index, field, value) => {
     onMutateVendorDraft((draft) => {
       if (draft.aggregate?.children?.[index]) draft.aggregate.children[index][field] = value
+    })
+  }
+
+  const updateAggregateRetry = (field, value) => {
+    onMutateVendorDraft((draft) => {
+      if (!draft.aggregate) draft.aggregate = { children: [] }
+      if (!draft.aggregate.retry) draft.aggregate.retry = {}
+      draft.aggregate.retry[field] = value
     })
   }
 
@@ -512,71 +523,134 @@ export function VendorsPage({
               </div>
 
               {isAggregate && (
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-medium text-[var(--text-primary)]">子供应商列表</div>
-                      <div className="mt-1 text-xs text-[var(--text-muted)]">请求将被分发到以下子供应商，不支持嵌套聚合。</div>
+                <>
+                  <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium text-[var(--text-primary)]">子供应商列表</div>
+                        <div className="mt-1 text-xs text-[var(--text-muted)]">请求将被分发到以下子供应商，不支持嵌套聚合。</div>
+                      </div>
+                      <button className={buttonClass('ghost')} onClick={addAggregateChild}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        添加子项
+                      </button>
                     </div>
-                    <button className={buttonClass('ghost')} onClick={addAggregateChild}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                      </svg>
-                      添加子项
-                    </button>
-                  </div>
-                  <div className="space-y-3">
-                    {!aggregateChildren.length && (
-                      <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
-                        暂无子供应商，请添加。
-                      </div>
-                    )}
-                    {aggregateChildren.map((child, index) => (
-                      <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[minmax(160px,1fr)_130px_160px_auto] xl:items-end">
-                        <label className="field-wrap mb-0">
-                          <span className="field-label">子供应商名称</span>
-                          <select
-                            className="select-base"
-                            value={child.vendor || ''}
-                            onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
-                          >
-                            <option value="" disabled>-- 请选择已有供应商 --</option>
-                            {vendorRows
-                              .filter((v) => v.name !== selectedVendor && v.provider !== 'aggregate')
-                              .map((v) => (
-                                <option key={v.name} value={v.name}>
-                                  {v.name} ({v.provider})
-                                </option>
-                              ))}
-                          </select>
-                        </label>
-                        <label className="field-wrap mb-0">
-                          <span className="field-label">权重</span>
-                          <input
-                            className="input-base"
-                            type="number"
-                            min="1"
-                            value={child.weight || 1}
-                            onChange={(e) => updateAggregateChild(index, 'weight', parseInt(e.target.value, 10) || 1)}
-                          />
-                        </label>
-                        <label className="field-wrap mb-0">
-                          <span className="field-label">优先级 (越小越优先)</span>
-                          <input
-                            className="input-base"
-                            type="number"
-                            min="0"
-                            value={child.priority || 0}
-                            onChange={(e) => updateAggregateChild(index, 'priority', parseInt(e.target.value, 10) || 0)}
-                          />
-                        </label>
-                        <div className="flex xl:pb-0.5">
-                          <button className={buttonClass('danger')} type="button" onClick={() => removeAggregateChild(index)}>移除</button>
+                    <div className="space-y-3">
+                      {!aggregateChildren.length && (
+                        <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+                          暂无子供应商，请添加。
                         </div>
-                      </div>
-                    ))}
+                      )}
+                      {aggregateChildren.map((child, index) => (
+                        <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[minmax(160px,1fr)_130px_160px_auto] xl:items-end">
+                          <label className="field-wrap mb-0">
+                            <span className="field-label">子供应商名称</span>
+                            <select
+                              className="select-base"
+                              value={child.vendor || ''}
+                              onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
+                            >
+                              <option value="" disabled>-- 请选择已有供应商 --</option>
+                              {vendorRows
+                                .filter((v) => v.name !== selectedVendor && v.provider !== 'aggregate')
+                                .map((v) => (
+                                  <option key={v.name} value={v.name}>
+                                    {v.name} ({v.provider})
+                                  </option>
+                                ))}
+                            </select>
+                          </label>
+                          <label className="field-wrap mb-0">
+                            <span className="field-label">权重</span>
+                            <input
+                              className="input-base"
+                              type="number"
+                              min="1"
+                              value={child.weight || 1}
+                              onChange={(e) => updateAggregateChild(index, 'weight', parseInt(e.target.value, 10) || 1)}
+                            />
+                          </label>
+                          <label className="field-wrap mb-0">
+                            <span className="field-label">优先级 (越小越优先)</span>
+                            <input
+                              className="input-base"
+                              type="number"
+                              min="0"
+                              value={child.priority || 0}
+                              onChange={(e) => updateAggregateChild(index, 'priority', parseInt(e.target.value, 10) || 0)}
+                            />
+                          </label>
+                          <div className="flex xl:pb-0.5">
+                            <button className={buttonClass('danger')} type="button" onClick={() => removeAggregateChild(index)}>移除</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
+
+                  <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
+                    <div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">聚合错误重试</div>
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">子供应商请求失败时切换到其他子供应商。</div>
+                    </div>
+                    <div className="grid gap-4 xl:grid-cols-4">
+                      <label className="field-wrap">
+                        <span className="field-label">启用重试</span>
+                        <select
+                          className="select-base"
+                          value={aggregateRetry.enabled === false ? 'false' : 'true'}
+                          onChange={(e) => updateAggregateRetry('enabled', e.target.value === 'true')}
+                        >
+                          <option value="true">开启</option>
+                          <option value="false">关闭</option>
+                        </select>
+                      </label>
+                      <label className="field-wrap">
+                        <span className="field-label">最大尝试次数</span>
+                        <input
+                          className="input-base"
+                          type="number"
+                          min="1"
+                          max="5"
+                          placeholder="默认 2"
+                          value={aggregateRetry.max_attempts || ''}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value, 10)
+                            updateAggregateRetry('max_attempts', v > 0 ? v : 0)
+                          }}
+                        />
+                      </label>
+                      <label className="field-wrap xl:col-span-2">
+                        <span className="field-label">额外响应码</span>
+                        <input
+                          className="input-base"
+                          placeholder="逗号分隔，例如：408, 529"
+                          value={aggregateRetryStatusCodesText}
+                          onChange={(e) => onAggregateRetryStatusCodesTextChange(e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      {[
+                        ['rate_limit', '429 限流'],
+                        ['server_error', '5xx 服务错误'],
+                        ['network_error', '网络错误']
+                      ].map(([field, label]) => (
+                        <label key={field} className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                          <input
+                            type="checkbox"
+                            className="rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
+                            checked={aggregateRetry[field] !== false}
+                            onChange={(e) => updateAggregateRetry(field, e.target.checked)}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </>
               )}
 
               {!isAggregate && (

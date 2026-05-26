@@ -129,7 +129,17 @@ export function emptyVendorConfig() {
       body_timeout: 300_000_000_000,
       interim_response_interval: 30_000_000_000
     },
-    aggregate: { children: [] },
+    aggregate: {
+      children: [],
+      retry: {
+        enabled: true,
+        max_attempts: 2,
+        rate_limit: true,
+        server_error: true,
+        network_error: true,
+        status_codes: []
+      }
+    },
     load_balance: 'round_robin',
     upstream_auth: { mode: 'bearer', header: 'Authorization', prefix: 'Bearer ' },
     client_auth: { enabled: false, keys: [] },
@@ -168,7 +178,14 @@ export function withVendorDefaults(vendor) {
       ...(next.aggregate || {}),
       children: Array.isArray(next.aggregate?.children)
         ? next.aggregate.children.map(child => ({ ...child }))
-        : []
+        : [],
+      retry: {
+        ...base.aggregate.retry,
+        ...(next.aggregate?.retry || {}),
+        status_codes: Array.isArray(next.aggregate?.retry?.status_codes)
+          ? [...next.aggregate.retry.status_codes]
+          : [...base.aggregate.retry.status_codes]
+      }
     },
     load_balance: next.load_balance || base.load_balance,
     upstream_auth: { ...base.upstream_auth, ...(next.upstream_auth || {}) },
