@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"jc_proxy/internal/balancer"
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
 	"jc_proxy/internal/resin"
@@ -1896,6 +1897,80 @@ func TestRouterAggregateFlushesStreamingSuccessWithoutWaitingForEOF(t *testing.T
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("aggregate streaming request did not finish after releasing body")
+	}
+}
+
+func TestAggregatePoolFallsBackToLowerPriorityWhenHigherPriorityUnavailable(t *testing.T) {
+	pool := newAggregatePool("round_robin", []aggregateChildEntry{
+		{name: "high", weight: 1, priority: 0},
+		{name: "low", weight: 1, priority: 10},
+	})
+
+	got := pool.PickAvailable(func(entry *aggregateChildEntry) bool {
+		return entry.name != "high"
+	}, nil)
+	if got == nil || got.name != "low" {
+		t.Fatalf("PickAvailable() = %#v, want low-priority fallback", got)
+	}
+
+	pool = newAggregatePool("round_robin", []aggregateChildEntry{
+		{name: "high", weight: 1, priority: 0},
+		{name: "low", weight: 1, priority: 10},
+	})
+	got = pool.PickAvailable(func(*aggregateChildEntry) bool { return true }, nil)
+	if got == nil || got.name != "high" {
+		t.Fatalf("PickAvailable() = %#v, want highest-priority child", got)
+	}
+}
+
+func TestAggregatePoolDistributesWithinHighestAvailablePriorityTier(t *testing.T) {
+	pool := newAggregatePool("round_robin", []aggregateChildEntry{
+		{name: "high_a", weight: 2, priority: 0},
+		{name: "high_b", weight: 1, priority: 0},
+		{name: "low", weight: 100, priority: 10},
+	})
+
+	counts := map[string]int{}
+	for i := 0; i < 6; i++ {
+		got := pool.PickAvailable(func(*aggregateChildEntry) bool { return true }, nil)
+		if got == nil {
+			t.Fatal("PickAvailable() returned nil")
+		}
+		counts[got.name]++
+	}
+	if counts["low"] != 0 {
+		t.Fatalf("low-priority child received traffic while higher tier was available: %#v", counts)
+	}
+	if counts["high_a"] != 4 || counts["high_b"] != 2 {
+		t.Fatalf("highest priority tier was not distributed by weight: %#v", counts)
+	}
+}
+
+func TestAggregatePoolLeastRequestsUsesWeightWithinPriorityTier(t *testing.T) {
+	childA, err := balancer.NewPoolWithConfigs("round_robin", []balancer.KeyConfig{{
+		Key:          "a",
+		Status:       keystore.KeyStatusActive,
+		RuntimeStats: keystore.RuntimeStats{TotalRequests: 10},
+	}})
+	if err != nil {
+		t.Fatalf("init child A pool: %v", err)
+	}
+	childB, err := balancer.NewPoolWithConfigs("round_robin", []balancer.KeyConfig{{
+		Key:          "b",
+		Status:       keystore.KeyStatusActive,
+		RuntimeStats: keystore.RuntimeStats{TotalRequests: 20},
+	}})
+	if err != nil {
+		t.Fatalf("init child B pool: %v", err)
+	}
+	pool := newAggregatePool("least_requests", []aggregateChildEntry{
+		{name: "child_a", vendor: &vendorGateway{pool: childA}, weight: 1, priority: 0},
+		{name: "child_b", vendor: &vendorGateway{pool: childB}, weight: 10, priority: 0},
+	})
+
+	got := pool.PickAvailable(func(*aggregateChildEntry) bool { return true }, nil)
+	if got == nil || got.name != "child_b" {
+		t.Fatalf("PickAvailable() = %#v, want weighted least-requests child_b", got)
 	}
 }
 

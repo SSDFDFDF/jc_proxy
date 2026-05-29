@@ -7,9 +7,8 @@ import { buttonClass, panelClass, parseKeysText } from '../app/utils'
 function statusTone(status) {
   switch (status) {
     case 'disabled_manual':
-      return 'border-[rgba(245,158,11,0.3)] bg-[var(--warning-soft)] text-[var(--warning)]'
     case 'disabled_auto':
-      return 'border-[rgba(239,68,68,0.3)] bg-[var(--danger-soft)] text-[var(--danger)]'
+      return 'border-[var(--border-strong)] bg-[rgba(113,113,122,0.1)] text-[var(--text-muted)]'
     default:
       return 'border-[rgba(34,197,94,0.3)] bg-[var(--success-soft)] text-[var(--success)]'
   }
@@ -435,7 +434,7 @@ export function KeyHubPage({
             <small className="inline-flex items-center gap-1.5 font-mono tabular-nums whitespace-nowrap">
               <span className="text-[var(--success)]" title="启用">◉</span><span>{item.activeCount}</span>
               <span className="text-[var(--text-faint)]">·</span>
-              <span className="text-[var(--danger)]" title="禁用">◎</span><span>{item.disabledCount}</span>
+              <span className="text-[var(--text-faint)]" title="禁用">◎</span><span>{item.disabledCount}</span>
               <span className="text-[var(--text-faint)]">·</span>
               <span className={item.backoff > 0 ? 'text-[var(--warning)]' : 'text-[var(--text-faint)]'} title="退避">⏱</span><span>{item.backoff}</span>
               <span className="text-[var(--text-faint)]">·</span>
@@ -587,11 +586,12 @@ export function KeyHubPage({
                 </tr>
               </thead>
               <tbody>
-                {pageItems.map((item, idx) => {
+                {pageItems.map((item) => {
                   const { inflight, backoff, totalRequests, successCount, failedCount, reason, err401, err403, err429, errOth, hasErrors, successRate, errRate, secondaryText } = item.metrics
+                  const isDisabled = item.displayStatus !== 'active'
 
                   return (
-                    <tr key={item.key} className={`transition-colors ${selectedKeys.has(item.key) ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}>
+                    <tr key={item.key} className={`transition-colors ${isDisabled ? 'key-row-disabled' : ''} ${selectedKeys.has(item.key) ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}>
                       <td className="text-center">
                         <input
                           type="checkbox"
@@ -600,7 +600,7 @@ export function KeyHubPage({
                           onChange={() => handleToggleSelect(item.key)}
                         />
                       </td>
-                      <td><div className="font-mono text-[var(--text-primary)] truncate">{showSecrets ? item.key : item.masked}</div></td>
+                      <td><div className={`font-mono truncate ${isDisabled ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>{showSecrets ? item.key : item.masked}</div></td>
                       <td>
                         <span className={`inline-flex rounded border px-1.5 py-[1px] text-[10px] font-semibold tracking-wide ${statusTone(item.displayStatus)}`}>
                           {statusLabel(item.displayStatus)}

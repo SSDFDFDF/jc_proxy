@@ -223,6 +223,24 @@ export function VendorsPage({
   const isAggregate = vendorDraft?.provider === 'aggregate'
   const aggregateChildren = vendorDraft?.aggregate?.children || []
   const aggregateRetry = vendorDraft?.aggregate?.retry || {}
+  const vendorRowByName = new Map((vendorRows || []).map((row) => [row.name, row]))
+
+  const aggregateChildHealth = (child) => {
+    const row = vendorRowByName.get(child?.vendor)
+    if (!child?.vendor || !row) {
+      return { tone: 'muted', label: '未选择' }
+    }
+    if (Number(row.upstreamKeys || 0) === 0) {
+      return { tone: 'warn', label: '无密钥' }
+    }
+    if (Number(row.activeUpstreamKeys || 0) === 0 && Number(row.disabledUpstreamKeys || 0) > 0) {
+      return { tone: 'disabled', label: '已禁用' }
+    }
+    if (Number(row.backoff || 0) > 0) {
+      return { tone: 'warn', label: `退避 ${row.backoff}` }
+    }
+    return { tone: 'ok', label: `启用 ${row.activeUpstreamKeys || 0}` }
+  }
 
   const addAggregateChild = () => {
     onMutateVendorDraft((draft) => {
@@ -286,7 +304,7 @@ export function VendorsPage({
               <span>
                 {row.provider === 'aggregate'
                   ? `聚合 · 子节点 ${row.aggregateChildCount}`
-                  : `上游 ${row.upstreamKeys} · 客户端 ${row.clientKeys}`}
+                  : `上游 ${row.upstreamKeys} · 启用 ${row.activeUpstreamKeys || 0} / 禁用 ${row.disabledUpstreamKeys || 0} · 客户端 ${row.clientKeys}`}
               </span>
             </button>
           ))}
@@ -582,10 +600,10 @@ export function VendorsPage({
 
               {isAggregate && (
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-medium text-[var(--text-primary)]">子供应商列表</div>
-                      <div className="mt-1 text-xs text-[var(--text-muted)]">请求将被分发到以下子供应商，不支持嵌套聚合。</div>
+                      <div className="mt-1 text-xs text-[var(--text-muted)]">优先级越小越先用；同优先级按权重分配，高优先级不可用时切到下一层。</div>
                     </div>
                     <button className={buttonClass('ghost')} onClick={addAggregateChild}>
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -600,50 +618,61 @@ export function VendorsPage({
                         暂无子供应商，请添加。
                       </div>
                     )}
-                    {aggregateChildren.map((child, index) => (
-                      <div key={index} className="grid gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-3 xl:grid-cols-[minmax(160px,1fr)_130px_160px_auto] xl:items-end">
-                        <label className="field-wrap mb-0">
-                          <span className="field-label">子供应商名称</span>
-                          <select
-                            className="select-base"
-                            value={child.vendor || ''}
-                            onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
-                          >
-                            <option value="" disabled>-- 请选择已有供应商 --</option>
-                            {vendorRows
-                              .filter((v) => v.name !== selectedVendor && v.provider !== 'aggregate')
-                              .map((v) => (
-                                <option key={v.name} value={v.name}>
-                                  {v.name} ({v.provider})
-                                </option>
-                              ))}
-                          </select>
-                        </label>
-                        <label className="field-wrap mb-0">
-                          <span className="field-label">权重</span>
-                          <input
-                            className="input-base"
-                            type="number"
-                            min="1"
-                            value={child.weight || 1}
-                            onChange={(e) => updateAggregateChild(index, 'weight', parseInt(e.target.value, 10) || 1)}
-                          />
-                        </label>
-                        <label className="field-wrap mb-0">
-                          <span className="field-label">优先级 (越小越优先)</span>
-                          <input
-                            className="input-base"
-                            type="number"
-                            min="0"
-                            value={child.priority || 0}
-                            onChange={(e) => updateAggregateChild(index, 'priority', parseInt(e.target.value, 10) || 0)}
-                          />
-                        </label>
-                        <div className="flex xl:pb-0.5">
-                          <button className={buttonClass('danger')} type="button" onClick={() => removeAggregateChild(index)}>移除</button>
+                    {aggregateChildren.map((child, index) => {
+                      const health = aggregateChildHealth(child)
+                      return (
+                        <div key={index} className={`aggregate-child-row ${health.tone === 'disabled' ? 'aggregate-child-row-disabled' : ''}`}>
+                          <div className="aggregate-child-row-header">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="font-mono text-xs text-[var(--text-faint)]">#{index + 1}</span>
+                              <span className={`aggregate-child-badge aggregate-child-badge-${health.tone}`}>
+                                {health.label}
+                              </span>
+                            </div>
+                            <button className={buttonClass('danger')} type="button" onClick={() => removeAggregateChild(index)}>移除</button>
+                          </div>
+                          <div className="aggregate-child-fields">
+                            <label className="field-wrap mb-0">
+                              <span className="field-label">子供应商名称</span>
+                              <select
+                                className="select-base w-full"
+                                value={child.vendor || ''}
+                                onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
+                              >
+                                <option value="" disabled>-- 请选择已有供应商 --</option>
+                                {vendorRows
+                                  .filter((v) => v.name !== selectedVendor && v.provider !== 'aggregate')
+                                  .map((v) => (
+                                    <option key={v.name} value={v.name}>
+                                      {v.name} ({v.provider})
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                            <label className="field-wrap mb-0">
+                              <span className="field-label">权重</span>
+                              <input
+                                className="input-base w-full"
+                                type="number"
+                                min="1"
+                                value={child.weight || 1}
+                                onChange={(e) => updateAggregateChild(index, 'weight', parseInt(e.target.value, 10) || 1)}
+                              />
+                            </label>
+                            <label className="field-wrap mb-0">
+                              <span className="field-label">优先级</span>
+                              <input
+                                className="input-base w-full"
+                                type="number"
+                                min="0"
+                                value={child.priority || 0}
+                                onChange={(e) => updateAggregateChild(index, 'priority', parseInt(e.target.value, 10) || 0)}
+                              />
+                            </label>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}

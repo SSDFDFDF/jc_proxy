@@ -779,16 +779,19 @@ export function useAdminConsole() {
   }, [isAuthed, nav, autoRefreshStats, refreshEverySec])
 
   const vendorRows = useMemo(() => {
-    const keyCountMap = Object.fromEntries((upstreamKeysData.vendors || []).map((item) => [item.vendor, item.count]))
+    const keySummaryMap = Object.fromEntries((upstreamKeysData.vendors || []).map((item) => [item.vendor, item]))
     return Object.keys(rawConfig.vendors || {})
       .sort()
       .map((name) => {
         const vendor = rawConfig.vendors[name] || {}
         const runtimeKeys = stats.vendors?.[name] || []
+        const keySummary = keySummaryMap[name] || {}
         return {
           name,
           provider: vendor.provider || 'generic',
-          upstreamKeys: keyCountMap[name] || 0,
+          upstreamKeys: keySummary.count || 0,
+          activeUpstreamKeys: keySummary.active_count || 0,
+          disabledUpstreamKeys: keySummary.disabled_count || 0,
           clientKeys: vendor.client_auth?.keys?.length || 0,
           clientAuthEnabled: !!vendor.client_auth?.enabled,
           resinEnabled: !!vendor.resin?.enabled,

@@ -27,7 +27,7 @@ export function RuntimeKeyStatCard({ item }) {
   const status = String(item.status || 'active')
   const disableReason = String(item.disable_reason || '').trim()
   const lastError = String(item.last_error || '').trim()
-  const statusTone = status === 'disabled_auto' ? 'err' : status === 'disabled_manual' ? 'warn' : 'ok'
+  const statusTone = status === 'disabled_auto' || status === 'disabled_manual' ? 'default' : 'ok'
   const statusLabel = status === 'disabled_auto' ? 'auto-off' : status === 'disabled_manual' ? 'manual-off' : 'active'
 
   return (

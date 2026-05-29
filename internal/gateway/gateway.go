@@ -65,41 +65,34 @@ type aggregateChildEntry struct {
 }
 
 // aggregatePool implements vendor-level load balancing for aggregate providers.
-// Entries are filtered to the highest-priority tier (lowest priority number)
-// during construction. Within that tier, weight controls traffic distribution.
+// Lower priority numbers are preferred. Selection is made within the highest
+// priority tier that currently has an available child, so lower tiers can take
+// over when all higher-priority children are disabled or cooling down.
 type aggregatePool struct {
 	mu             sync.Mutex
 	strategy       string
 	entries        []aggregateChildEntry
-	totalWeight    int
 	currentWeights []int // smooth weighted round-robin state
 	rng            *rand.Rand
 }
 
 func newAggregatePool(strategy string, entries []aggregateChildEntry) *aggregatePool {
+	entries = append([]aggregateChildEntry(nil), entries...)
+	for i := range entries {
+		if entries[i].weight <= 0 {
+			entries[i].weight = 1
+		}
+	}
 	if len(entries) > 0 {
 		// Sort by priority ascending (lower number = higher priority).
-		sort.Slice(entries, func(i, j int) bool {
+		sort.SliceStable(entries, func(i, j int) bool {
 			return entries[i].priority < entries[j].priority
 		})
-		// Keep only the highest-priority group.
-		minPriority := entries[0].priority
-		cut := 0
-		for cut < len(entries) && entries[cut].priority == minPriority {
-			cut++
-		}
-		entries = entries[:cut]
-	}
-
-	totalWeight := 0
-	for _, e := range entries {
-		totalWeight += e.weight
 	}
 
 	return &aggregatePool{
 		strategy:       strategy,
 		entries:        entries,
-		totalWeight:    totalWeight,
 		currentWeights: make([]int, len(entries)),
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
@@ -111,80 +104,126 @@ func (p *aggregatePool) Pick() (*aggregateChildEntry, bool) {
 	if len(p.entries) == 0 {
 		return nil, false
 	}
-	switch p.strategy {
-	case "random":
-		return p.pickRandomLocked()
-	case "least_used", "least_requests":
-		return p.pickLeastInflightLocked()
-	default:
-		return p.pickRoundRobinLocked()
-	}
+	entry := p.pickAvailableLocked(func(*aggregateChildEntry) bool { return true }, nil, true)
+	return entry, entry != nil
 }
 
 // pickRoundRobinLocked uses smooth weighted round-robin.
 // With weights [5, 1], the pattern distributes 5:1 over every 6 picks
 // instead of bursting 5 consecutive picks to the heavier entry.
-func (p *aggregatePool) pickRoundRobinLocked() (*aggregateChildEntry, bool) {
-	if p.totalWeight <= 0 {
-		idx := p.currentWeights[0] % len(p.entries)
-		p.currentWeights[0]++
-		return &p.entries[idx], true
+func (p *aggregatePool) pickRoundRobinLocked(indexes []int) (*aggregateChildEntry, bool) {
+	if len(indexes) == 0 {
+		return nil, false
 	}
-	best := 0
-	for i := range p.entries {
+	totalWeight := 0
+	for _, i := range indexes {
+		totalWeight += p.entries[i].weight
+	}
+	if totalWeight <= 0 {
+		return &p.entries[indexes[0]], true
+	}
+
+	best := indexes[0]
+	for _, i := range indexes {
 		p.currentWeights[i] += p.entries[i].weight
 		if p.currentWeights[i] > p.currentWeights[best] {
 			best = i
 		}
 	}
-	p.currentWeights[best] -= p.totalWeight
+	p.currentWeights[best] -= totalWeight
 	return &p.entries[best], true
 }
 
 // pickRandomLocked uses weighted random selection.
-func (p *aggregatePool) pickRandomLocked() (*aggregateChildEntry, bool) {
-	if p.totalWeight <= 0 {
-		return &p.entries[p.rng.Intn(len(p.entries))], true
+func (p *aggregatePool) pickRandomLocked(indexes []int) (*aggregateChildEntry, bool) {
+	if len(indexes) == 0 {
+		return nil, false
 	}
-	r := p.rng.Intn(p.totalWeight)
-	for i := range p.entries {
+	totalWeight := 0
+	for _, i := range indexes {
+		totalWeight += p.entries[i].weight
+	}
+	if totalWeight <= 0 {
+		return &p.entries[indexes[p.rng.Intn(len(indexes))]], true
+	}
+	r := p.rng.Intn(totalWeight)
+	for _, i := range indexes {
 		r -= p.entries[i].weight
 		if r < 0 {
 			return &p.entries[i], true
 		}
 	}
-	return &p.entries[len(p.entries)-1], true
+	return &p.entries[indexes[len(indexes)-1]], true
 }
 
-func (p *aggregatePool) pickLeastInflightLocked() (*aggregateChildEntry, bool) {
-	best := -1
-	bestInflight := int64(-1)
-	for i, entry := range p.entries {
-		if entry.vendor == nil || entry.vendor.pool == nil {
-			if best < 0 {
-				best = i
-				bestInflight = 0
-			}
+func (p *aggregatePool) pickLeastLocked(indexes []int, includeRequests bool) (*aggregateChildEntry, bool) {
+	if len(indexes) == 0 {
+		return nil, false
+	}
+	best := indexes[0]
+	bestPrimary, bestSecondary := aggregateChildLoadScore(p.entries[best], includeRequests)
+	for _, i := range indexes[1:] {
+		primary, secondary := aggregateChildLoadScore(p.entries[i], includeRequests)
+		switch compareWeightedScore(primary, p.entries[i].weight, bestPrimary, p.entries[best].weight) {
+		case -1:
+			best = i
+			bestPrimary, bestSecondary = primary, secondary
+			continue
+		case 1:
 			continue
 		}
-		snap := entry.vendor.pool.Snapshot()
-		var inflight int64
-		for _, ks := range snap {
-			inflight += int64(ks.Inflight)
-		}
-		if best < 0 || inflight < bestInflight {
+		switch compareWeightedScore(secondary, p.entries[i].weight, bestSecondary, p.entries[best].weight) {
+		case -1:
 			best = i
-			bestInflight = inflight
+			bestPrimary, bestSecondary = primary, secondary
+		case 0:
+			if p.entries[i].weight > p.entries[best].weight || (p.entries[i].weight == p.entries[best].weight && p.entries[i].name < p.entries[best].name) {
+				best = i
+				bestPrimary, bestSecondary = primary, secondary
+			}
 		}
-	}
-	if best < 0 {
-		return nil, false
 	}
 	return &p.entries[best], true
 }
 
-// PickAvailable selects a child vendor using the configured strategy,
-// then falls back to any other entry if the preferred pick is unavailable.
+func aggregateChildLoadScore(entry aggregateChildEntry, includeRequests bool) (primary int64, secondary int64) {
+	if entry.vendor == nil || entry.vendor.pool == nil {
+		return 0, 0
+	}
+	snap := entry.vendor.pool.Snapshot()
+	var inflight int64
+	var totalRequests int64
+	for _, ks := range snap {
+		inflight += int64(ks.Inflight)
+		totalRequests += int64(ks.TotalRequests)
+	}
+	if includeRequests {
+		return totalRequests + inflight, inflight
+	}
+	return inflight, totalRequests
+}
+
+func compareWeightedScore(leftScore int64, leftWeight int, rightScore int64, rightWeight int) int {
+	if leftWeight <= 0 {
+		leftWeight = 1
+	}
+	if rightWeight <= 0 {
+		rightWeight = 1
+	}
+	left := leftScore * int64(rightWeight)
+	right := rightScore * int64(leftWeight)
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// PickAvailable selects a child vendor from the highest-priority available tier
+// using the configured strategy.
 // The available predicate is called under the pool lock.
 // exclude names child vendors to skip (used for aggregate retry).
 // Returns nil if no entry satisfies the predicate.
@@ -212,37 +251,49 @@ func (p *aggregatePool) pickAvailableLocked(available func(*aggregateChildEntry)
 		_, ok := exclude[e.name]
 		return ok
 	}
-
-	// Use the configured strategy for the preferred pick.
-	var preferred *aggregateChildEntry
-	if useStrategy {
-		switch p.strategy {
-		case "random":
-			preferred, _ = p.pickRandomLocked()
-		case "least_used", "least_requests":
-			preferred, _ = p.pickLeastInflightLocked()
-		default:
-			preferred, _ = p.pickRoundRobinLocked()
-		}
-	}
-	if preferred != nil && !isExcluded(preferred) && available(preferred) {
-		return preferred
+	if available == nil {
+		available = func(*aggregateChildEntry) bool { return true }
 	}
 
-	// Preferred unavailable — try remaining entries.
+	candidates := make([]int, 0, len(p.entries))
+	minPrioritySet := false
+	minPriority := 0
 	for i := range p.entries {
 		e := &p.entries[i]
-		if e == preferred {
+		if isExcluded(e) || !available(e) {
 			continue
 		}
-		if isExcluded(e) {
-			continue
+		if !minPrioritySet {
+			minPriority = e.priority
+			minPrioritySet = true
 		}
-		if available(e) {
-			return e
+		if e.priority > minPriority {
+			break
 		}
+		candidates = append(candidates, i)
 	}
-	return nil
+	if len(candidates) == 0 {
+		return nil
+	}
+	if !useStrategy {
+		return &p.entries[candidates[0]]
+	}
+
+	var picked *aggregateChildEntry
+	switch p.strategy {
+	case "random":
+		picked, _ = p.pickRandomLocked(candidates)
+	case "least_used":
+		picked, _ = p.pickLeastLocked(candidates, false)
+	case "least_requests":
+		picked, _ = p.pickLeastLocked(candidates, true)
+	default:
+		picked, _ = p.pickRoundRobinLocked(candidates)
+	}
+	if picked != nil {
+		return picked
+	}
+	return &p.entries[candidates[0]]
 }
 
 func New(cfg *config.Config) (*Router, error) {
