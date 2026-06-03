@@ -47,12 +47,14 @@ type UpstreamKeysDeleteRequest struct {
 }
 
 type UpstreamKeyStatusRequest struct {
-	Key    string `json:"key"`
-	Reason string `json:"reason,omitempty"`
+	Key    string   `json:"key"`
+	Keys   []string `json:"keys,omitempty"`
+	Reason string   `json:"reason,omitempty"`
 }
 
 type UpstreamKeyRecordResponse struct {
 	Key           string `json:"key"`
+	KeyID         string `json:"key_id"`
 	Masked        string `json:"masked"`
 	Status        string `json:"status"`
 	DisableReason string `json:"disable_reason,omitempty"`

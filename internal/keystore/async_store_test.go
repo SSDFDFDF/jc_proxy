@@ -51,15 +51,108 @@ func (s *controlledConditionalStore) KeyMap() (map[string][]string, error) {
 }
 
 func (s *controlledConditionalStore) Replace(vendor string, keys []string) error {
+	vendor = normalizeVendor(vendor)
+	keys = NormalizeKeys(keys)
+	now := time.Now().UTC()
+	selected := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		selected[key] = struct{}{}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := make(map[string]Record, len(s.records[vendor]))
+	for _, record := range s.records[vendor] {
+		existing[record.Key] = record
+	}
+
+	next := make([]Record, 0, len(keys))
+	for _, key := range keys {
+		record, ok := existing[key]
+		if !ok {
+			record = Record{Key: key, Status: KeyStatusActive, Version: 1, CreatedAt: now, UpdatedAt: now}
+		} else {
+			record.Version = nextRecordVersion(record.Version)
+			record.UpdatedAt = now
+		}
+		next = append(next, NormalizeRecord(record))
+	}
+	for _, record := range s.records[vendor] {
+		if _, ok := selected[record.Key]; ok {
+			continue
+		}
+		record = NormalizeRecord(record)
+		if !IsActiveStatus(record.Status) {
+			next = append(next, record)
+		}
+	}
+	if len(next) == 0 {
+		delete(s.records, vendor)
+		return nil
+	}
+	sortRecords(next)
+	s.records[vendor] = next
 	return nil
 }
 
 func (s *controlledConditionalStore) Append(vendor string, keys []string) (int, error) {
-	return 0, nil
+	vendor = normalizeVendor(vendor)
+	keys = NormalizeKeys(keys)
+	now := time.Now().UTC()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := make(map[string]struct{}, len(s.records[vendor]))
+	for _, record := range s.records[vendor] {
+		existing[record.Key] = struct{}{}
+	}
+	added := 0
+	for _, key := range keys {
+		if _, ok := existing[key]; ok {
+			continue
+		}
+		s.records[vendor] = append(s.records[vendor], Record{
+			Key:       key,
+			Status:    KeyStatusActive,
+			Version:   1,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+		added++
+	}
+	sortRecords(s.records[vendor])
+	return added, nil
 }
 
 func (s *controlledConditionalStore) Delete(vendor string, keys []string) (int, error) {
-	return 0, nil
+	vendor = normalizeVendor(vendor)
+	keys = NormalizeKeys(keys)
+	remove := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		remove[key] = struct{}{}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.records[vendor]
+	next := make([]Record, 0, len(current))
+	removed := 0
+	for _, record := range current {
+		if _, ok := remove[record.Key]; ok {
+			removed++
+			continue
+		}
+		next = append(next, record)
+	}
+	if len(next) == 0 {
+		delete(s.records, vendor)
+	} else {
+		s.records[vendor] = next
+	}
+	return removed, nil
 }
 
 func (s *controlledConditionalStore) SetStatus(vendor, key, status, reason, actor string) error {
@@ -157,6 +250,48 @@ func TestAsyncStatusStoreListsPendingAutoDisable(t *testing.T) {
 	}
 	if record.Version != 2 {
 		t.Fatalf("pending version = %d, want 2", record.Version)
+	}
+}
+
+func TestAsyncStatusStoreReplacePreservesPendingAutoDisable(t *testing.T) {
+	base := newControlledConditionalStore()
+	var releaseOnce sync.Once
+	store, err := NewAsyncStatusStore(base, AsyncStatusStoreOptions{
+		SetStatusTimeout: time.Second,
+		ErrorHandler:     func(error) {},
+	})
+	if err != nil {
+		t.Fatalf("init async status store failed: %v", err)
+	}
+	defer func() {
+		releaseOnce.Do(func() { close(base.release) })
+		_ = store.Close()
+	}()
+
+	if err := store.SetStatusIfVersion("openai", "k1", 1, KeyStatusDisabledAuto, "quota", "system:auto"); err != nil {
+		t.Fatalf("enqueue async disable failed: %v", err)
+	}
+
+	select {
+	case <-base.started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected async worker to start")
+	}
+
+	if err := store.Replace("openai", []string{"k1"}); err != nil {
+		t.Fatalf("replace failed: %v", err)
+	}
+
+	all, err := store.ListAll()
+	if err != nil {
+		t.Fatalf("list all failed: %v", err)
+	}
+	record := all["openai"][0]
+	if record.Status != KeyStatusDisabledAuto {
+		t.Fatalf("pending status after replace = %q, want %q", record.Status, KeyStatusDisabledAuto)
+	}
+	if record.Version != 3 {
+		t.Fatalf("pending version after replace = %d, want 3", record.Version)
 	}
 }
 

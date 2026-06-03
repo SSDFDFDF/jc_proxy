@@ -129,11 +129,15 @@ func (s *AsyncStatusStore) KeyMap() (map[string][]string, error) {
 }
 
 func (s *AsyncStatusStore) Replace(vendor string, keys []string) error {
+	vendor = normalizeVendor(vendor)
+	carried, err := s.effectivePendingForVendor(vendor)
+	if err != nil {
+		return err
+	}
 	if err := s.base.Replace(vendor, keys); err != nil {
 		return err
 	}
-	s.clearVendorPending(vendor)
-	return nil
+	return s.reconcilePendingAfterReplace(vendor, carried)
 }
 
 func (s *AsyncStatusStore) Append(vendor string, keys []string) (int, error) {
@@ -326,6 +330,102 @@ func (s *AsyncStatusStore) pendingSnapshot() []pendingStatusUpdate {
 		out = append(out, update)
 	}
 	return out
+}
+
+func (s *AsyncStatusStore) effectivePendingForVendor(vendor string) ([]pendingStatusUpdate, error) {
+	records, err := s.base.List(vendor)
+	if err != nil {
+		return nil, err
+	}
+	versions := make(map[string]int64, len(records))
+	for _, record := range records {
+		record = NormalizeRecord(record)
+		versions[record.Key] = record.Version
+	}
+
+	updates := s.pendingSnapshot()
+	out := make([]pendingStatusUpdate, 0, len(updates))
+	for _, update := range updates {
+		if update.vendor != vendor {
+			continue
+		}
+		version, ok := versions[update.key]
+		if !ok || version > update.expectedVersion {
+			continue
+		}
+		out = append(out, update)
+	}
+	return out, nil
+}
+
+func (s *AsyncStatusStore) reconcilePendingAfterReplace(vendor string, carried []pendingStatusUpdate) error {
+	records, err := s.base.List(vendor)
+	if err != nil {
+		return err
+	}
+	current := make(map[string]Record, len(records))
+	for _, record := range records {
+		record = NormalizeRecord(record)
+		current[record.Key] = record
+	}
+
+	var missingDisabled []string
+	for _, update := range carried {
+		if IsActiveStatus(update.status) {
+			continue
+		}
+		if _, ok := current[update.key]; !ok {
+			missingDisabled = append(missingDisabled, update.key)
+		}
+	}
+	if len(missingDisabled) > 0 {
+		if _, err := s.base.Append(vendor, missingDisabled); err != nil {
+			return err
+		}
+		records, err = s.base.List(vendor)
+		if err != nil {
+			return err
+		}
+		current = make(map[string]Record, len(records))
+		for _, record := range records {
+			record = NormalizeRecord(record)
+			current[record.Key] = record
+		}
+	}
+
+	requeued := 0
+	s.mu.Lock()
+	for key, update := range s.pending {
+		if update.vendor == vendor {
+			delete(s.pending, key)
+		}
+	}
+	for _, update := range carried {
+		record, ok := current[update.key]
+		if !ok || pendingUpdateReflected(record, update) {
+			continue
+		}
+		update.expectedVersion = record.Version
+		s.nextID++
+		update.id = s.nextID
+		s.pending[pendingStatusKey(update.vendor, update.key)] = update
+		requeued++
+	}
+	s.mu.Unlock()
+
+	if requeued > 0 {
+		s.signalFlush()
+	}
+	return nil
+}
+
+func pendingUpdateReflected(record Record, update pendingStatusUpdate) bool {
+	record = NormalizeRecord(record)
+	updateStatus := NormalizeStatus(update.status)
+	if record.Status == updateStatus {
+		return true
+	}
+	return !IsActiveStatus(record.Status) && !IsActiveStatus(updateStatus)
 }
 
 func (s *AsyncStatusStore) deletePendingIfMatch(update pendingStatusUpdate) {

@@ -277,14 +277,22 @@ func (s *Service) DeleteVendor(actor, vendor string) error {
 }
 
 func (s *Service) AddUpstreamKey(actor, vendor, key string) error {
-	if err := s.requireVendor(vendor); err != nil {
-		return err
-	}
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return errors.New("key is empty")
 	}
-	added, err := s.keyStore.Append(vendor, []string{key})
+	return s.AddUpstreamKeys(actor, vendor, []string{key})
+}
+
+func (s *Service) AddUpstreamKeys(actor, vendor string, keys []string) error {
+	if err := s.requireVendor(vendor); err != nil {
+		return err
+	}
+	keys = keystore.NormalizeKeys(keys)
+	if len(keys) == 0 {
+		return errors.New("key is empty")
+	}
+	added, err := s.keyStore.Append(vendor, keys)
 	if err != nil {
 		return err
 	}
@@ -294,19 +302,27 @@ func (s *Service) AddUpstreamKey(actor, vendor, key string) error {
 	if err := s.runtime.RefreshKeys(); err != nil {
 		return err
 	}
-	s.audit.Log(actor, "upstream_key.add", map[string]any{"vendor": vendor})
+	s.audit.Log(actor, "upstream_key.add", map[string]any{"vendor": vendor, "count": added})
 	return nil
 }
 
 func (s *Service) DeleteUpstreamKey(actor, vendor, key string) error {
-	if err := s.requireVendor(vendor); err != nil {
-		return err
-	}
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return errors.New("key is empty")
 	}
-	removed, err := s.keyStore.Delete(vendor, []string{key})
+	return s.DeleteUpstreamKeys(actor, vendor, []string{key})
+}
+
+func (s *Service) DeleteUpstreamKeys(actor, vendor string, keys []string) error {
+	if err := s.requireVendor(vendor); err != nil {
+		return err
+	}
+	keys = keystore.NormalizeKeys(keys)
+	if len(keys) == 0 {
+		return errors.New("key is empty")
+	}
+	removed, err := s.keyStore.Delete(vendor, keys)
 	if err != nil {
 		return err
 	}
@@ -316,7 +332,7 @@ func (s *Service) DeleteUpstreamKey(actor, vendor, key string) error {
 	if err := s.runtime.RefreshKeys(); err != nil {
 		return err
 	}
-	s.audit.Log(actor, "upstream_key.delete", map[string]any{"vendor": vendor})
+	s.audit.Log(actor, "upstream_key.delete", map[string]any{"vendor": vendor, "count": removed})
 	return nil
 }
 
@@ -336,38 +352,46 @@ func (s *Service) ReplaceUpstreamKeys(actor, vendor string, keys []string) error
 }
 
 func (s *Service) DisableUpstreamKey(actor, vendor, key, reason string, status string) error {
-	if err := s.requireVendor(vendor); err != nil {
-		return err
-	}
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return errors.New("key is empty")
 	}
-	if err := s.keyStore.SetStatus(vendor, key, status, reason, actor); err != nil {
-		return err
-	}
-	if err := s.runtime.RefreshKeys(); err != nil {
-		return err
-	}
-	s.audit.Log(actor, "upstream_key.disable", map[string]any{"vendor": vendor, "status": status})
-	return nil
+	return s.SetUpstreamKeyStatus(actor, vendor, []string{key}, status, reason)
 }
 
 func (s *Service) EnableUpstreamKey(actor, vendor, key string) error {
-	if err := s.requireVendor(vendor); err != nil {
-		return err
-	}
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return errors.New("key is empty")
 	}
-	if err := s.keyStore.SetStatus(vendor, key, keystore.KeyStatusActive, "", actor); err != nil {
+	return s.SetUpstreamKeyStatus(actor, vendor, []string{key}, keystore.KeyStatusActive, "")
+}
+
+func (s *Service) SetUpstreamKeyStatus(actor, vendor string, keys []string, status, reason string) error {
+	if err := s.requireVendor(vendor); err != nil {
 		return err
+	}
+	keys = keystore.NormalizeKeys(keys)
+	if len(keys) == 0 {
+		return errors.New("key is empty")
+	}
+	status = keystore.NormalizeStatus(status)
+	if status == keystore.KeyStatusActive {
+		reason = ""
+	}
+	for _, key := range keys {
+		if err := s.keyStore.SetStatus(vendor, key, status, reason, actor); err != nil {
+			return err
+		}
 	}
 	if err := s.runtime.RefreshKeys(); err != nil {
 		return err
 	}
-	s.audit.Log(actor, "upstream_key.enable", map[string]any{"vendor": vendor})
+	action := "upstream_key.enable"
+	if !keystore.IsActiveStatus(status) {
+		action = "upstream_key.disable"
+	}
+	s.audit.Log(actor, action, map[string]any{"vendor": vendor, "status": status, "count": len(keys)})
 	return nil
 }
 
@@ -420,6 +444,7 @@ func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 			}
 			items = append(items, UpstreamKeyRecordResponse{
 				Key:           record.Key,
+				KeyID:         keystore.KeyID(record.Key),
 				Masked:        mask(record.Key),
 				Status:        record.Status,
 				DisableReason: record.DisableReason,

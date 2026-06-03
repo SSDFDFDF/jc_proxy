@@ -344,6 +344,7 @@ func (p *Pool) Stats() []map[string]any {
 			disabledAt = ks.DisabledAt.UTC().Format(time.RFC3339)
 		}
 		out = append(out, map[string]any{
+			"key_id":                     keystore.KeyID(ks.Key),
 			"key_masked":                 maskKey(ks.Key),
 			"status":                     ks.Status,
 			"disable_reason":             ks.DisableReason,

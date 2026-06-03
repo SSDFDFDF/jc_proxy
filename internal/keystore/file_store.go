@@ -104,12 +104,9 @@ func (s *FileStore) Replace(vendor string, keys []string) error {
 	next := make([]Record, 0, len(keys))
 	for _, key := range keys {
 		if record, ok := existingIndex[key]; ok {
-			record.Status = KeyStatusActive
-			record.DisableReason = ""
-			record.DisabledAt = nil
-			record.DisabledBy = ""
 			record.Version = nextRecordVersion(record.Version)
 			record.UpdatedAt = now
+			record = NormalizeRecord(record)
 			next = append(next, record)
 			continue
 		}

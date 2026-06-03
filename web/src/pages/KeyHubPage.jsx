@@ -215,11 +215,12 @@ export function KeyHubPage({
   const allItems = upstreamKeysData.items?.[selectedKeyVendor] || []
   const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendor] || []
 
-  /* ── Build runtime lookup by masked key ── */
+  /* ── Build runtime lookup by stable key id ── */
   const runtimeMap = useMemo(() => {
     const map = new Map()
     for (const item of runtimeKeys) {
-      if (item.key_masked) map.set(item.key_masked, item)
+      if (item.key_id) map.set(item.key_id, item)
+      else if (item.key_masked) map.set(item.key_masked, item)
     }
     return map
   }, [runtimeKeys])
@@ -227,7 +228,7 @@ export function KeyHubPage({
   /* ── Merge upstream + runtime into unified rows ── */
   const mergedItems = useMemo(() => {
     return allItems.map((item, index) => {
-      const rt = runtimeMap.get(item.masked) || {}
+      const rt = runtimeMap.get(item.key_id) || runtimeMap.get(item.masked) || {}
       const displayState = resolveDisplayState(item, rt)
       const mergedItem = {
         ...item,
@@ -337,12 +338,13 @@ export function KeyHubPage({
       }
       const vendorRuntimeMap = new Map()
       for (const item of runtimeVendors[vendor] || []) {
-        if (item.key_masked) vendorRuntimeMap.set(item.key_masked, item)
+        if (item.key_id) vendorRuntimeMap.set(item.key_id, item)
+        else if (item.key_masked) vendorRuntimeMap.set(item.key_masked, item)
       }
       let activeCount = 0
       let disabledCount = 0
       for (const item of vendorItems) {
-        const rt = vendorRuntimeMap.get(item.masked) || {}
+        const rt = vendorRuntimeMap.get(item.key_id) || vendorRuntimeMap.get(item.masked) || {}
         const { displayStatus } = resolveDisplayState(item, rt)
         if (displayStatus === 'active') activeCount += 1
         else disabledCount += 1

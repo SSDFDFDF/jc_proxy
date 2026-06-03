@@ -543,18 +543,17 @@ export function useAdminConsole() {
   }
 
   const disableUpstreamKeys = async (keys) => {
-    if (!selectedKeyVendor || !keys?.length) return
+    const nextKeys = normalizeKeys(Array.isArray(keys) ? keys : [])
+    if (!selectedKeyVendor || !nextKeys.length) return
     setBusy(true)
     try {
-      await Promise.all(keys.map(key => 
-        api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/disable`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key, reason: 'manually disabled' })
-        })
-      ))
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/disable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: nextKeys, reason: 'manually disabled' })
+      })
       await refreshAll(selectedVendor, selectedKeyVendor)
-      setStatus('success', `已禁用 ${keys.length} 条密钥`)
+      setStatus('success', `已禁用 ${nextKeys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -581,18 +580,17 @@ export function useAdminConsole() {
   }
 
   const enableUpstreamKeys = async (keys) => {
-    if (!selectedKeyVendor || !keys?.length) return
+    const nextKeys = normalizeKeys(Array.isArray(keys) ? keys : [])
+    if (!selectedKeyVendor || !nextKeys.length) return
     setBusy(true)
     try {
-      await Promise.all(keys.map(key => 
-        api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/enable`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key })
-        })
-      ))
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/enable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: nextKeys })
+      })
       await refreshAll(selectedVendor, selectedKeyVendor)
-      setStatus('success', `已启用 ${keys.length} 条密钥`)
+      setStatus('success', `已启用 ${nextKeys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {

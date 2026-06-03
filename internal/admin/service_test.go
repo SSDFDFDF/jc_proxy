@@ -267,6 +267,32 @@ func TestEnableDisableUpstreamKey(t *testing.T) {
 	}
 }
 
+func TestReplaceUpstreamKeysPreservesDisabledStatusAndKeyID(t *testing.T) {
+	s := newTestService(t)
+	if err := s.DisableUpstreamKey("admin", "openai", "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ReplaceUpstreamKeys("admin", "openai", []string{"k1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := s.ListUpstreamKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := list.Items["openai"]
+	if len(items) != 1 {
+		t.Fatalf("expected one key, got %d", len(items))
+	}
+	if got := items[0].Status; got != keystore.KeyStatusDisabledAuto {
+		t.Fatalf("unexpected key status after replace: %q", got)
+	}
+	if got := items[0].KeyID; got == "" || got != keystore.KeyID("k1") {
+		t.Fatalf("unexpected key id after replace: %q", got)
+	}
+}
+
 func TestBuildRuntimeStatsResponse(t *testing.T) {
 	vendors := map[string][]map[string]any{
 		"openai": {

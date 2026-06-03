@@ -1,6 +1,8 @@
 package keystore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -141,6 +143,15 @@ func NormalizeKeys(keys []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func KeyID(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:16])
 }
 
 func NormalizeStatus(status string) string {

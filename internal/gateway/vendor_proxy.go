@@ -177,6 +177,10 @@ func (v *vendorGateway) persistDisabledKeyAsync(key string, version int64, reaso
 	if v.keyCtrl == nil {
 		return
 	}
+	if asyncStore, ok := v.keyCtrl.(*keystore.AsyncStatusStore); ok {
+		_ = asyncStore.SetStatusIfVersion(v.name, key, version, keystore.KeyStatusDisabledAuto, reason, "system:auto")
+		return
+	}
 	go func(ctrl UpstreamKeyController, vendor, key string, version int64, reason string) {
 		if versioned, ok := ctrl.(keystore.ConditionalStatusStore); ok {
 			_ = versioned.SetStatusIfVersion(vendor, key, version, keystore.KeyStatusDisabledAuto, reason, "system:auto")

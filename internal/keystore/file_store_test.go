@@ -43,7 +43,7 @@ func TestFileStoreReplacePreservesDisabledKeysWhenActiveListCleared(t *testing.T
 	}
 }
 
-func TestFileStoreReplaceReactivatesDisabledKeyWithoutDuplicates(t *testing.T) {
+func TestFileStoreReplacePreservesSelectedDisabledKeyWithoutDuplicates(t *testing.T) {
 	store := newTestFileStore(t)
 	if _, err := store.Append("openai", []string{"k1", "k2"}); err != nil {
 		t.Fatal(err)
@@ -61,13 +61,13 @@ func TestFileStoreReplaceReactivatesDisabledKeyWithoutDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(records) != 1 {
-		t.Fatalf("expected one active key after replace, got %d", len(records))
+		t.Fatalf("expected one disabled key after replace, got %d", len(records))
 	}
 	if records[0].Key != "k2" {
 		t.Fatalf("expected k2 to be retained, got %q", records[0].Key)
 	}
-	if records[0].Status != KeyStatusActive {
-		t.Fatalf("expected k2 to be reactivated, got %q", records[0].Status)
+	if records[0].Status != KeyStatusDisabledAuto {
+		t.Fatalf("expected k2 to stay disabled, got %q", records[0].Status)
 	}
 }
 

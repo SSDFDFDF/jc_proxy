@@ -178,10 +178,6 @@ func (s *PGStore) Replace(vendor string, keys []string) error {
 				record.Version = nextRecordVersion(record.Version)
 				record.UpdatedAt = now
 			}
-			record.Status = KeyStatusActive
-			record.DisableReason = ""
-			record.DisabledAt = nil
-			record.DisabledBy = ""
 			record = NormalizeRecord(record)
 			if _, err := tx.Exec(insertQuery, vendor, key, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
 				return fmt.Errorf("insert upstream key: %w", err)

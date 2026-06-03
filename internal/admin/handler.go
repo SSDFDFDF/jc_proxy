@@ -250,11 +250,9 @@ func (h *Handler) handleUpstreamKeyVendor(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		for _, key := range keys {
-			if err := h.service.AddUpstreamKey(r.Header.Get("X-Admin-User"), vendor, key); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := h.service.AddUpstreamKeys(r.Header.Get("X-Admin-User"), vendor, keys); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case http.MethodDelete:
@@ -263,11 +261,9 @@ func (h *Handler) handleUpstreamKeyVendor(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		for _, key := range keys {
-			if err := h.service.DeleteUpstreamKey(r.Header.Get("X-Admin-User"), vendor, key); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := h.service.DeleteUpstreamKeys(r.Header.Get("X-Admin-User"), vendor, keys); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
@@ -286,15 +282,19 @@ func (h *Handler) handleUpstreamKeyStatusAction(w http.ResponseWriter, r *http.R
 		return
 	}
 	actor := r.Header.Get("X-Admin-User")
+	keys := req.Keys
+	if len(keys) == 0 && strings.TrimSpace(req.Key) != "" {
+		keys = []string{req.Key}
+	}
 
 	switch action {
 	case "enable":
-		if err := h.service.EnableUpstreamKey(actor, vendor, req.Key); err != nil {
+		if err := h.service.SetUpstreamKeyStatus(actor, vendor, keys, keystore.KeyStatusActive, ""); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	case "disable":
-		if err := h.service.DisableUpstreamKey(actor, vendor, req.Key, req.Reason, keystore.KeyStatusDisabledManual); err != nil {
+		if err := h.service.SetUpstreamKeyStatus(actor, vendor, keys, keystore.KeyStatusDisabledManual, req.Reason); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
