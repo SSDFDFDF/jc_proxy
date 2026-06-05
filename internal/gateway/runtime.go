@@ -62,6 +62,14 @@ func (rt *Runtime) Update(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("rebuild router: %w", err)
 	}
+	// The new router rebuilds every vendor pool from scratch, which would
+	// otherwise drop in-memory runtime state (cooldown, backoff level,
+	// consecutive failures) for every key. Carry it over from the router we
+	// are replacing so a key add/delete/status change does not reset unrelated
+	// keys across all vendors.
+	if prev := rt.router.Load(); prev != nil {
+		r.MergeRuntimeStatsFrom(prev)
+	}
 	rt.router.Store(r)
 	rt.cfg.Store(cloned)
 	return nil

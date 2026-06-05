@@ -6,6 +6,23 @@ import { MapRowsEditor } from '../components/MapRowsEditor'
 const CUSTOM_OPTION = '__custom__'
 const EMPTY_ROWS = [{ key: '', value: '' }]
 
+// 始终可用的接口预置，便于针对同一供应商测试不同的 API 格式。
+// 后端 executeTest 会原样转发任意端点，因此这些预置无需后端改动即可生效。
+const BUILTIN_REQUEST_PRESETS = [
+  {
+    label: 'Responses',
+    method: 'POST',
+    endpoint: '/v1/responses',
+    body: '{\n  "model": "{model}",\n  "input": "ping"\n}'
+  },
+  {
+    label: 'Messages',
+    method: 'POST',
+    endpoint: '/v1/messages',
+    body: '{\n  "model": "{model}",\n  "max_tokens": 64,\n  "messages": [\n    {\n      "role": "user",\n      "content": "ping"\n    }\n  ]\n}'
+  }
+]
+
 function uniqueStrings(values) {
   return [...new Set((values || []).map((item) => String(item || '').trim()).filter(Boolean))]
 }
@@ -170,9 +187,15 @@ export function VendorTestPage({
   const [vendorSearchQuery, setVendorSearchQuery] = useState('')
 
   const modelIds = useMemo(() => extractModelIds(modelResult?.body), [modelResult?.body])
+  const requestPresets = useMemo(() => {
+    const backend = meta?.request_presets || []
+    const seen = new Set(backend.map((preset) => String(preset?.endpoint || '').trim()))
+    const extras = BUILTIN_REQUEST_PRESETS.filter((preset) => !seen.has(preset.endpoint))
+    return [...backend, ...extras]
+  }, [meta])
   const requestEndpointSuggestions = useMemo(
-    () => uniqueStrings((meta?.request_presets || []).map((preset) => preset.endpoint)),
-    [meta]
+    () => uniqueStrings(requestPresets.map((preset) => preset.endpoint)),
+    [requestPresets]
   )
 
   const filteredVendorRows = useMemo(() => {
@@ -249,7 +272,7 @@ export function VendorTestPage({
   }, [selectedVendor, refreshStamp])
 
   const applyRequestPreset = (presetIndex) => {
-    const preset = meta?.request_presets?.[presetIndex]
+    const preset = requestPresets[presetIndex]
     if (!preset) return
     setRequestPresetChoice(String(presetIndex))
     setRequestMethod(preset.method || 'POST')
@@ -526,7 +549,7 @@ export function VendorTestPage({
                         applyRequestPreset(Number(value))
                       }}
                     >
-                      {(meta?.request_presets || []).map((preset, index) => (
+                      {requestPresets.map((preset, index) => (
                         <option key={`${preset.label}-${index}`} value={String(index)}>
                           {preset.label}
                         </option>

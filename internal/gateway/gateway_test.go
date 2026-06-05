@@ -1464,6 +1464,73 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 	t.Fatal("async persistence did not update underlying store")
 }
 
+func TestRuntimeRefreshKeysPreservesCooldownState(t *testing.T) {
+	store, err := keystore.NewFileStore(filepath.Join(t.TempDir(), "upstream_keys.json"))
+	if err != nil {
+		t.Fatalf("init file store failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+		t.Fatalf("append key failed: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream:    config.UpstreamConfig{BaseURL: "http://upstream.invalid"},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	rt, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+
+	// Simulate a transient failure cooling k1 down in the live pool.
+	pool := rt.Snapshot().vendors["openai"].pool
+	idx, _, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("acquire failed")
+	}
+	pool.Cooldown(idx, http.StatusTooManyRequests, "rate limited", time.Hour)
+	if pool.HasAvailable(nil) {
+		t.Fatal("k1 should be cooling down before refresh")
+	}
+
+	// Adding an unrelated key triggers a full router rebuild.
+	if _, err := store.Append("openai", []string{"k2"}); err != nil {
+		t.Fatalf("append second key failed: %v", err)
+	}
+	if err := rt.RefreshKeys(); err != nil {
+		t.Fatalf("refresh keys failed: %v", err)
+	}
+
+	var k1, k2 *balancer.KeyState
+	for _, ks := range rt.Snapshot().vendors["openai"].pool.Snapshot() {
+		switch ks.Key {
+		case "k1":
+			k1 = &ks
+		case "k2":
+			k2 = &ks
+		}
+	}
+	if k1 == nil || k2 == nil {
+		t.Fatalf("expected k1 and k2 after refresh")
+	}
+	if !k1.CooldownUntil.After(time.Now()) {
+		t.Fatal("k1 cooldown was reset by router rebuild")
+	}
+	if k1.CooldownLevel != 1 {
+		t.Fatalf("k1 cooldown_level = %d, want 1 after rebuild", k1.CooldownLevel)
+	}
+	if !k2.CooldownUntil.IsZero() {
+		t.Fatal("newly added k2 should not be cooling down")
+	}
+}
+
 func TestRuntimeRefreshKeysPreservesRuntimeStats(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

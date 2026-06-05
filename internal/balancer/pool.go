@@ -301,6 +301,17 @@ func (p *Pool) MergeRuntimeStats(states []KeyState) {
 		if !ok {
 			continue
 		}
+
+		// Carry over in-memory runtime state that is not persisted in the
+		// keystore, so a router rebuild (triggered by adding/deleting/disabling
+		// any key) does not reset cooldown and backoff for keys that still
+		// exist. Inflight is intentionally NOT carried: requests in flight when
+		// the rebuild happened release against the previous pool, so copying it
+		// here would leak a permanently-elevated count on the new pool.
+		current.CooldownUntil = prev.CooldownUntil
+		current.CooldownLevel = prev.CooldownLevel
+		current.Failures = prev.Failures
+
 		if current.stats != nil {
 			current.stats.MergeBaseline(prev.RuntimeStats)
 			continue

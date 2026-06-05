@@ -353,3 +353,58 @@ func TestLastErrorIsTruncated(t *testing.T) {
 		t.Fatalf("expected truncated last error to end with ellipsis, got %q", ks.LastError)
 	}
 }
+
+func TestMergeRuntimeStatsCarriesCooldownButNotInflight(t *testing.T) {
+	prev, err := NewPool("round_robin", []string{"k1", "k2", "stale"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	prev.nowf = func() time.Time { return now }
+
+	// k1: cooled down with an escalated backoff level and a failure recorded.
+	idx, _, ok := prev.Acquire() // k1
+	if !ok {
+		t.Fatal("acquire k1 failed")
+	}
+	prev.Cooldown(idx, http.StatusTooManyRequests, "rate limited", 2*time.Second)
+
+	// k2: leave a request in flight; this must NOT be carried to the new pool.
+	if _, _, ok := prev.Acquire(); !ok { // k2
+		t.Fatal("acquire k2 failed")
+	}
+
+	snap := prev.Snapshot()
+
+	// Rebuilt pool: k1/k2 retained, "stale" removed, "fresh" added.
+	next, err := NewPool("round_robin", []string{"k1", "k2", "fresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.MergeRuntimeStats(snap)
+
+	states := make(map[string]KeyState)
+	for _, ks := range next.Snapshot() {
+		states[ks.Key] = ks
+	}
+
+	k1 := states["k1"]
+	if want := now.Add(2 * time.Second); !k1.CooldownUntil.Equal(want) {
+		t.Fatalf("k1 cooldown_until = %v, want %v (cooldown must survive rebuild)", k1.CooldownUntil, want)
+	}
+	if k1.CooldownLevel != 1 {
+		t.Fatalf("k1 cooldown_level = %d, want 1", k1.CooldownLevel)
+	}
+	if k1.Failures != 1 {
+		t.Fatalf("k1 failures = %d, want 1", k1.Failures)
+	}
+
+	if k2 := states["k2"]; k2.Inflight != 0 {
+		t.Fatalf("k2 inflight = %d, want 0 (inflight must not be carried over)", k2.Inflight)
+	}
+
+	fresh := states["fresh"]
+	if !fresh.CooldownUntil.IsZero() || fresh.CooldownLevel != 0 || fresh.Failures != 0 {
+		t.Fatalf("freshly added key should start clean, got cooldown=%v level=%d failures=%d", fresh.CooldownUntil, fresh.CooldownLevel, fresh.Failures)
+	}
+}
