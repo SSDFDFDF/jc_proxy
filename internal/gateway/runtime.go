@@ -87,6 +87,14 @@ func (rt *Runtime) Snapshot() *Router {
 	return rt.router.Load()
 }
 
+func (rt *Runtime) RecoverUpstreamKey(vendor, key string) bool {
+	r := rt.router.Load()
+	if r == nil {
+		return false
+	}
+	return r.RecoverUpstreamKey(vendor, key)
+}
+
 func (rt *Runtime) buildRouter(cfg *config.Config) (*Router, error) {
 	if rt.keySource == nil {
 		return newRouterWithUpstreamKeyRecords(cfg, nil, rt.keyCtrl, rt.stats)

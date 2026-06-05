@@ -408,3 +408,36 @@ func TestMergeRuntimeStatsCarriesCooldownButNotInflight(t *testing.T) {
 		t.Fatalf("freshly added key should start clean, got cooldown=%v level=%d failures=%d", fresh.CooldownUntil, fresh.CooldownLevel, fresh.Failures)
 	}
 }
+
+func TestRecoverKeyClearsCooldownAndEnablesKey(t *testing.T) {
+	p, err := NewPool("round_robin", []string{"k1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	p.nowf = func() time.Time { return now }
+
+	idx, _, ok := p.Acquire()
+	if !ok {
+		t.Fatal("acquire failed")
+	}
+	p.Cooldown(idx, http.StatusTooManyRequests, "rate limited", time.Minute)
+	if p.HasAvailable(nil) {
+		t.Fatal("key should be unavailable while cooling down")
+	}
+
+	if ok := p.RecoverKey("k1"); !ok {
+		t.Fatal("recover failed")
+	}
+	if !p.HasAvailable(nil) {
+		t.Fatal("key should be available after recover")
+	}
+
+	ks := p.Snapshot()[0]
+	if ks.Status != keystore.KeyStatusActive {
+		t.Fatalf("status = %q, want active", ks.Status)
+	}
+	if !ks.CooldownUntil.IsZero() || ks.CooldownLevel != 0 || ks.Failures != 0 {
+		t.Fatalf("cooldown state was not cleared: until=%v level=%d failures=%d", ks.CooldownUntil, ks.CooldownLevel, ks.Failures)
+	}
+}

@@ -1531,6 +1531,54 @@ func TestRuntimeRefreshKeysPreservesCooldownState(t *testing.T) {
 	}
 }
 
+func TestRuntimeRecoverUpstreamKeyClearsCooldownState(t *testing.T) {
+	store, err := keystore.NewFileStore(filepath.Join(t.TempDir(), "upstream_keys.json"))
+	if err != nil {
+		t.Fatalf("init file store failed: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+		t.Fatalf("append key failed: %v", err)
+	}
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream:    config.UpstreamConfig{BaseURL: "http://upstream.invalid"},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+
+	rt, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+
+	pool := rt.Snapshot().vendors["openai"].pool
+	idx, _, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("acquire failed")
+	}
+	pool.Cooldown(idx, http.StatusTooManyRequests, "rate limited", time.Hour)
+	if pool.HasAvailable(nil) {
+		t.Fatal("k1 should be cooling down before recover")
+	}
+
+	if ok := rt.RecoverUpstreamKey("openai", "k1"); !ok {
+		t.Fatal("recover failed")
+	}
+	if !pool.HasAvailable(nil) {
+		t.Fatal("k1 should be available after recover")
+	}
+
+	ks := pool.Snapshot()[0]
+	if !ks.CooldownUntil.IsZero() || ks.CooldownLevel != 0 || ks.Failures != 0 {
+		t.Fatalf("cooldown state was not cleared: until=%v level=%d failures=%d", ks.CooldownUntil, ks.CooldownLevel, ks.Failures)
+	}
+}
+
 func TestRuntimeRefreshKeysPreservesRuntimeStats(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

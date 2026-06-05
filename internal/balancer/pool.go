@@ -239,18 +239,18 @@ func (p *Pool) EnableKey(key string) bool {
 	if idx < 0 {
 		return false
 	}
-	p.keys[idx].Status = keystore.KeyStatusActive
-	p.keys[idx].DisableReason = ""
-	p.keys[idx].DisabledAt = nil
-	p.keys[idx].DisabledBy = ""
-	p.keys[idx].CooldownUntil = time.Time{}
-	p.keys[idx].CooldownLevel = 0
-	p.keys[idx].Failures = 0
-	if p.keys[idx].stats != nil {
-		p.keys[idx].stats.ClearLastError()
-	} else {
-		p.keys[idx].LastError = ""
+	p.enableLocked(idx)
+	return true
+}
+
+func (p *Pool) RecoverKey(key string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idx := p.findIndexLocked(key)
+	if idx < 0 {
+		return false
 	}
+	p.enableLocked(idx)
 	return true
 }
 
@@ -549,6 +549,21 @@ func (p *Pool) disableLocked(idx int, status, reason, by string) {
 	p.keys[idx].CooldownUntil = time.Time{}
 	p.keys[idx].CooldownLevel = 0
 	p.keys[idx].Failures = 0
+}
+
+func (p *Pool) enableLocked(idx int) {
+	p.keys[idx].Status = keystore.KeyStatusActive
+	p.keys[idx].DisableReason = ""
+	p.keys[idx].DisabledAt = nil
+	p.keys[idx].DisabledBy = ""
+	p.keys[idx].CooldownUntil = time.Time{}
+	p.keys[idx].CooldownLevel = 0
+	p.keys[idx].Failures = 0
+	if p.keys[idx].stats != nil {
+		p.keys[idx].stats.ClearLastError()
+	} else {
+		p.keys[idx].LastError = ""
+	}
 }
 
 func (p *Pool) findIndexLocked(key string) int {

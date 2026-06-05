@@ -367,6 +367,29 @@ func (s *Service) EnableUpstreamKey(actor, vendor, key string) error {
 	return s.SetUpstreamKeyStatus(actor, vendor, []string{key}, keystore.KeyStatusActive, "")
 }
 
+func (s *Service) RecoverUpstreamKeys(actor, vendor string, keys []string) error {
+	if err := s.requireVendor(vendor); err != nil {
+		return err
+	}
+	keys = keystore.NormalizeKeys(keys)
+	if len(keys) == 0 {
+		return errors.New("key is empty")
+	}
+	for _, key := range keys {
+		if err := s.keyStore.SetStatus(vendor, key, keystore.KeyStatusActive, "", actor); err != nil {
+			return err
+		}
+	}
+	if err := s.runtime.RefreshKeys(); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		s.runtime.RecoverUpstreamKey(vendor, key)
+	}
+	s.audit.Log(actor, "upstream_key.recover", map[string]any{"vendor": vendor, "count": len(keys)})
+	return nil
+}
+
 func (s *Service) SetUpstreamKeyStatus(actor, vendor string, keys []string, status, reason string) error {
 	if err := s.requireVendor(vendor); err != nil {
 		return err

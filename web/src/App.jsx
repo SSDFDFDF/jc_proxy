@@ -64,6 +64,8 @@ function App() {
           onAddKeys={upstream.addUpstreamKeys}
           onEnableKey={upstream.enableUpstreamKey}
           onEnableKeys={upstream.enableUpstreamKeys}
+          onRecoverKey={upstream.recoverUpstreamKey}
+          onRecoverKeys={upstream.recoverUpstreamKeys}
           onDisableKey={upstream.disableUpstreamKey}
           onDisableKeys={upstream.disableUpstreamKeys}
           onDeleteKey={upstream.deleteUpstreamKey}

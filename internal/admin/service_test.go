@@ -267,6 +267,27 @@ func TestEnableDisableUpstreamKey(t *testing.T) {
 	}
 }
 
+func TestRecoverUpstreamKeysSetsStatusActive(t *testing.T) {
+	s := newTestService(t)
+	if err := s.DisableUpstreamKey("admin", "openai", "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RecoverUpstreamKeys("admin", "openai", []string{"k1"}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListUpstreamKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := list.Items["openai"][0].Status; got != keystore.KeyStatusActive {
+		t.Fatalf("unexpected key status after recover: %q", got)
+	}
+	if got := list.Items["openai"][0].DisableReason; got != "" {
+		t.Fatalf("disable reason should be cleared after recover, got %q", got)
+	}
+}
+
 func TestReplaceUpstreamKeysPreservesDisabledStatusAndKeyID(t *testing.T) {
 	s := newTestService(t)
 	if err := s.DisableUpstreamKey("admin", "openai", "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {

@@ -598,6 +598,43 @@ export function useAdminConsole() {
     }
   }
 
+  const recoverUpstreamKey = async (key) => {
+    if (!selectedKeyVendor || !key) return
+    setBusy(true)
+    try {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/recover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key })
+      })
+      await refreshAll(selectedVendor, selectedKeyVendor)
+      setStatus('success', `密钥已恢复`)
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const recoverUpstreamKeys = async (keys) => {
+    const nextKeys = normalizeKeys(Array.isArray(keys) ? keys : [])
+    if (!selectedKeyVendor || !nextKeys.length) return
+    setBusy(true)
+    try {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/recover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: nextKeys })
+      })
+      await refreshAll(selectedVendor, selectedKeyVendor)
+      setStatus('success', `已恢复 ${nextKeys.length} 条密钥`)
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const deleteUpstreamKey = async (key) => {
     if (!selectedKeyVendor || !key) return
     if (!window.confirm('确认删除这个上游密钥吗？')) return
@@ -917,6 +954,8 @@ export function useAdminConsole() {
       disableUpstreamKeys,
       enableUpstreamKey,
       enableUpstreamKeys,
+      recoverUpstreamKey,
+      recoverUpstreamKeys,
       deleteUpstreamKey,
       deleteUpstreamKeys
     },

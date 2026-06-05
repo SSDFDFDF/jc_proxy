@@ -420,6 +420,17 @@ func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
 	}
 }
 
+func (r *Router) RecoverUpstreamKey(vendor, key string) bool {
+	if r == nil {
+		return false
+	}
+	v := r.vendors[strings.TrimSpace(vendor)]
+	if v == nil || v.pool == nil {
+		return false
+	}
+	return v.pool.RecoverKey(key)
+}
+
 func upstreamInterimInterval(cfg config.UpstreamConfig) time.Duration {
 	if cfg.InterimResponseInterval == nil {
 		return 0

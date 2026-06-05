@@ -189,6 +189,8 @@ export function KeyHubPage({
   onAddKeys,
   onEnableKey,
   onEnableKeys,
+  onRecoverKey,
+  onRecoverKeys,
   onDisableKey,
   onDisableKeys,
   onDeleteKey,
@@ -239,6 +241,12 @@ export function KeyHubPage({
       return { ...mergedItem, metrics: buildKeyMetrics(mergedItem) }
     })
   }, [allItems, runtimeMap])
+
+  const selectedBackoffKeys = useMemo(() => {
+    return mergedItems
+      .filter((item) => selectedKeys.has(item.key) && item.metrics.backoff > 0)
+      .map((item) => item.key)
+  }, [mergedItems, selectedKeys])
 
   /* ── Filter ── */
   const filteredItems = useMemo(() => {
@@ -534,6 +542,16 @@ export function KeyHubPage({
                   批量启用
                 </button>
                 <button
+                  className={buttonClass('ghost') + ' text-[var(--accent)] hover:bg-[rgba(99,102,241,0.1)]'}
+                  disabled={busy || selectedBackoffKeys.length === 0}
+                  onClick={() => {
+                    onRecoverKeys(selectedBackoffKeys)
+                    setSelectedKeys(new Set())
+                  }}
+                >
+                  批量恢复
+                </button>
+                <button
                   className={buttonClass('ghost') + ' text-[var(--warning)] hover:bg-[rgba(245,158,11,0.1)]'}
                   onClick={() => {
                     onDisableKeys(Array.from(selectedKeys))
@@ -591,6 +609,7 @@ export function KeyHubPage({
                 {pageItems.map((item) => {
                   const { inflight, backoff, totalRequests, successCount, failedCount, reason, err401, err403, err429, errOth, hasErrors, successRate, errRate, secondaryText } = item.metrics
                   const isDisabled = item.displayStatus !== 'active'
+                  const canRecover = backoff > 0
 
                   return (
                     <tr key={item.key} className={`transition-colors ${isDisabled ? 'key-row-disabled' : ''} ${selectedKeys.has(item.key) ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}>
@@ -663,6 +682,9 @@ export function KeyHubPage({
                           >
                             测试
                           </button>
+                          {canRecover && (
+                            <button className="font-medium text-[var(--accent)] hover:text-blue-400 transition-colors" onClick={() => onRecoverKey(item.key)}>恢复</button>
+                          )}
                           {item.displayStatus === "active" ? (
                             <button className="font-medium text-[var(--warning)] hover:text-amber-400 transition-colors" onClick={() => onDisableKey(item.key)}>禁用</button>
                           ) : (

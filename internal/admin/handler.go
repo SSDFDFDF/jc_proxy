@@ -293,6 +293,11 @@ func (h *Handler) handleUpstreamKeyStatusAction(w http.ResponseWriter, r *http.R
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	case "recover":
+		if err := h.service.RecoverUpstreamKeys(actor, vendor, keys); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	case "disable":
 		if err := h.service.SetUpstreamKeyStatus(actor, vendor, keys, keystore.KeyStatusDisabledManual, req.Reason); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
