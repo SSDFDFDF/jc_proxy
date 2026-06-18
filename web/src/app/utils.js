@@ -153,6 +153,7 @@ export function emptyVendorConfig() {
         invalid_key_keywords: []
       },
       cooldown: {
+        no_default_backoff: false,
         response_rules: []
       },
       failover: {
@@ -213,6 +214,9 @@ export function withVendorDefaults(vendor) {
           : [...base.error_policy.auto_disable.invalid_key_keywords]
       },
       cooldown: {
+        ...base.error_policy.cooldown,
+        ...(next.error_policy?.cooldown || {}),
+        no_default_backoff: next.error_policy?.cooldown?.no_default_backoff ?? base.error_policy.cooldown.no_default_backoff,
         response_rules: Array.isArray(next.error_policy?.cooldown?.response_rules)
           ? next.error_policy.cooldown.response_rules.map((rule) => ({
               ...rule,

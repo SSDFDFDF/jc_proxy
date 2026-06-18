@@ -145,6 +145,7 @@ type ErrorCooldownConfig struct {
 	RateLimit       ErrorCooldownRule           `yaml:"rate_limit" json:"rate_limit"`
 	ServerError     ErrorCooldownRule           `yaml:"server_error" json:"server_error"`
 	OpenAISlowDown  ErrorCooldownRule           `yaml:"openai_slow_down" json:"openai_slow_down"`
+	NoDefaultBackoff bool                      `yaml:"no_default_backoff" json:"no_default_backoff"`
 	ResponseRules   []ErrorResponseCooldownRule `yaml:"response_rules,omitempty" json:"response_rules,omitempty"`
 }
 

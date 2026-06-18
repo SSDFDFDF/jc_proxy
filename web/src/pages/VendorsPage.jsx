@@ -771,6 +771,17 @@ export function VendorsPage({
                     <h4>退避规则</h4>
                     <p>按顺序匹配响应码 / 关键字，并设置基础退避时长与 Retry-After 策略。连续命中会按该时长指数放大。</p>
                   </div>
+                  <div className="field-inline">
+                    <span className="field-label">无默认退避</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft?.error_policy?.cooldown?.no_default_backoff ? 'true' : 'false'}
+                      onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.cooldown.no_default_backoff = e.target.value === 'true' })}
+                    >
+                      <option value="false">关闭</option>
+                      <option value="true">开启</option>
+                    </select>
+                  </div>
                   <button className={buttonClass('ghost')} onClick={addResponseRuleRow}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />

@@ -60,7 +60,12 @@ func (p *responsePreview) Bytes() []byte {
 
 func classifyRequestError(provider string, policy config.ErrorPolicyConfig, message string) keyDecision {
 	reason := compactReason("request error", message)
-	return cooldownDecision(0, reason, policy.Cooldown.RequestError, boolOrDefault(policy.Failover.RequestError, true), 0, false)
+	rule := policy.Cooldown.RequestError
+	if policy.Cooldown.NoDefaultBackoff {
+		disabled := false
+		rule.Enabled = &disabled
+	}
+	return cooldownDecision(0, reason, rule, boolOrDefault(policy.Failover.RequestError, true), 0, false)
 }
 
 func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte) keyDecision {
