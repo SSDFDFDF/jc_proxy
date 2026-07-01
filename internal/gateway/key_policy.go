@@ -60,11 +60,7 @@ func (p *responsePreview) Bytes() []byte {
 
 func classifyRequestError(provider string, policy config.ErrorPolicyConfig, message string) keyDecision {
 	reason := compactReason("request error", message)
-	rule := policy.Cooldown.RequestError
-	if policy.Cooldown.NoDefaultBackoff {
-		disabled := false
-		rule.Enabled = &disabled
-	}
+	rule := applyNoDefaultBackoff(policy, policy.Cooldown.RequestError)
 	return cooldownDecision(0, reason, rule, boolOrDefault(policy.Failover.RequestError, true), 0, false)
 }
 
@@ -99,18 +95,18 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 
 	switch statusCode {
 	case http.StatusUnauthorized:
-		return cooldownDecision(statusCode, reason, policy.Cooldown.Unauthorized, responseFailover, 0, false)
+		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.Unauthorized), responseFailover, 0, false)
 	case http.StatusPaymentRequired:
-		return cooldownDecision(statusCode, reason, policy.Cooldown.PaymentRequired, responseFailover, 0, false)
+		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.PaymentRequired), responseFailover, 0, false)
 	case http.StatusForbidden:
-		return cooldownDecision(statusCode, reason, policy.Cooldown.Forbidden, responseFailover, 0, false)
+		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.Forbidden), responseFailover, 0, false)
 	case http.StatusTooManyRequests:
-		return cooldownDecision(statusCode, reason, policy.Cooldown.RateLimit, responseFailover, retryAfter, false)
+		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.RateLimit), responseFailover, retryAfter, false)
 	case 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		if provider == "openai" && strings.Contains(body, "slow down") {
-			return cooldownDecision(statusCode, reason, policy.Cooldown.OpenAISlowDown, responseFailover, retryAfter, true)
+			return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.OpenAISlowDown), responseFailover, retryAfter, true)
 		}
-		return cooldownDecision(statusCode, reason, policy.Cooldown.ServerError, responseFailover, retryAfter, false)
+		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.ServerError), responseFailover, retryAfter, false)
 	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
 		if responseFailover {
 			return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason, failover: true}
@@ -122,6 +118,15 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 		}
 		return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason}
 	}
+}
+
+func applyNoDefaultBackoff(policy config.ErrorPolicyConfig, rule config.ErrorCooldownRule) config.ErrorCooldownRule {
+	if !policy.Cooldown.NoDefaultBackoff {
+		return rule
+	}
+	disabled := false
+	rule.Enabled = &disabled
+	return rule
 }
 
 func disableDecision(statusCode int, reason string, failover bool) keyDecision {
@@ -139,6 +144,7 @@ func cooldownDecision(statusCode int, reason string, rule config.ErrorCooldownRu
 			action:     keyActionObserve,
 			statusCode: statusCode,
 			reason:     reason,
+			failover:   failover,
 		}
 	}
 

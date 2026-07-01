@@ -2775,6 +2775,75 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 	}
 }
 
+func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testing.T) {
+	attempts := make([]string, 0, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		attempts = append(attempts, auth)
+		if auth == "Bearer k1" {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte("ok after no-backoff retry"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Provider: "openai",
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+					Keys:    []string{"k1", "k2"},
+				},
+				LoadBalance: "round_robin",
+				ErrorPolicy: config.ErrorPolicyConfig{
+					Cooldown: config.ErrorCooldownConfig{
+						NoDefaultBackoff: true,
+					},
+					Failover: config.ErrorFailoverConfig{
+						RateLimit: configBoolPtr(true),
+					},
+				},
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected failover success, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "ok after no-backoff retry" {
+		t.Fatalf("unexpected body: %q", got)
+	}
+	if len(attempts) != 2 || attempts[0] != "Bearer k1" || attempts[1] != "Bearer k2" {
+		t.Fatalf("unexpected attempt order: %#v", attempts)
+	}
+
+	stats := router.VendorStats()["openai"]
+	if got := stats[0]["last_status"]; got != http.StatusTooManyRequests {
+		t.Fatalf("first key last_status = %#v, want %d", got, http.StatusTooManyRequests)
+	}
+	if got := stats[0]["failures"]; got != 0 {
+		t.Fatalf("no_default_backoff should not record cooldown failures, got %#v", got)
+	}
+	if got := stats[0]["backoff_remaining_seconds"]; got != 0 {
+		t.Fatalf("no_default_backoff should not back off key, got %#v", got)
+	}
+}
+
 func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
