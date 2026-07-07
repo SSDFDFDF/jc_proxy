@@ -1264,6 +1264,90 @@ func TestRouterSkipsClientAuthWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRouterDoesNotAddDefaultUserAgent(t *testing.T) {
+	uaCh := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uaCh <- r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+					Keys:    []string{"k1"},
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	req.Header.Del("User-Agent")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected request to pass, got %d", w.Code)
+	}
+	if got := <-uaCh; got != "" {
+		t.Fatalf("user-agent should remain absent, got %q", got)
+	}
+}
+
+func TestRouterForwardsClientUserAgent(t *testing.T) {
+	uaCh := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uaCh <- r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL: upstream.URL,
+					Keys:    []string{"k1"},
+				},
+				LoadBalance: "round_robin",
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatalf("prepare config failed: %v", err)
+	}
+
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatalf("init router failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/openai/v1/models", nil)
+	req.Header.Set("User-Agent", "client-ua/1.0")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected request to pass, got %d", w.Code)
+	}
+	if got := <-uaCh; got != "client-ua/1.0" {
+		t.Fatalf("user-agent should be forwarded, got %q", got)
+	}
+}
+
 func TestRouterTracksUpstreamStatusStats(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)

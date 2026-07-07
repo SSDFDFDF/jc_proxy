@@ -97,6 +97,9 @@ func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetUR
 		return nil, err
 	}
 	upReq.Header = v.forwardHeaders(headers, selectedKey)
+	if upReq.Header.Get("User-Agent") == "" {
+		upReq.Header["User-Agent"] = []string{""}
+	}
 	upReq.Host = upReq.URL.Host
 	if bodySource != nil {
 		upReq.ContentLength = bodySource.contentLength
