@@ -78,6 +78,7 @@ export function VendorsPage({
   selectedVendor,
   vendorDraft,
   upstreamKeysData,
+  runtimeStats,
   invalidKeyStatusCodesText,
   invalidKeyKeywordsText,
   responseRuleRows,
@@ -121,6 +122,7 @@ export function VendorsPage({
   const [clientKeyInputText, setClientKeyInputText] = useState('')
   const [expandedSections, setExpandedSections] = useState(DEFAULT_EXPANDED_SECTIONS)
   const [vendorSearchQuery, setVendorSearchQuery] = useState('')
+  const [keyPicker, setKeyPicker] = useState(null)
   const allowlistCount = countTextItems(allowlistText)
   const dropHeadersCount = countTextItems(dropHeadersText)
   const responseRuleCount = countConfiguredResponseRules(responseRuleRows)
@@ -138,6 +140,7 @@ export function VendorsPage({
 
   useEffect(() => {
     setClientKeyInputText('')
+    setKeyPicker(null)
   }, [selectedVendor])
 
   const toggleSection = (sectionKey) => {
@@ -229,11 +232,43 @@ export function VendorsPage({
   const aggregateChildren = vendorDraft?.aggregate?.children || []
   const aggregateRetry = vendorDraft?.aggregate?.retry || {}
   const vendorRowByName = new Map((vendorRows || []).map((row) => [row.name, row]))
+  const runtimeKeyByVendor = new Map(Object.entries(runtimeStats?.vendors || {}).map(([vendor, items]) => {
+    const keys = new Map()
+    for (const item of items || []) {
+      if (item.key_id) keys.set(item.key_id, item)
+      if (item.key_masked) keys.set(item.key_masked, item)
+    }
+    return [vendor, keys]
+  }))
+
+  const aggregateKeyState = (vendor, item) => {
+    const runtime = runtimeKeyByVendor.get(vendor)?.get(item.key_id) || runtimeKeyByVendor.get(vendor)?.get(item.masked) || {}
+    const status = String(runtime.status || item.status || 'active')
+    const backoff = Number(runtime.backoff_remaining_seconds || 0)
+    return {
+      available: status === 'active' && backoff <= 0,
+      status,
+      backoff
+    }
+  }
 
   const aggregateChildHealth = (child) => {
     const row = vendorRowByName.get(child?.vendor)
     if (!child?.vendor || !row) {
       return { tone: 'muted', label: '未选择' }
+    }
+    const selectedIDs = Array.isArray(child.key_ids) ? child.key_ids : []
+    if (selectedIDs.length > 0) {
+      const selectedSet = new Set(selectedIDs)
+      const selectedStates = (upstreamKeysData?.items?.[child.vendor] || [])
+        .filter((item) => selectedSet.has(item.key_id))
+        .map((item) => aggregateKeyState(child.vendor, item))
+      const available = selectedStates.filter((state) => state.available).length
+      const backingOff = selectedStates.some((state) => state.status === 'active' && state.backoff > 0)
+      return {
+        tone: available === 0 ? (backingOff ? 'warn' : 'disabled') : (available < selectedIDs.length ? 'warn' : 'ok'),
+        label: `可用 ${available}/${selectedIDs.length}`
+      }
     }
     if (Number(row.upstreamKeys || 0) === 0) {
       return { tone: 'warn', label: '无密钥' }
@@ -267,15 +302,56 @@ export function VendorsPage({
     })
   }
 
-  const toggleAggregateChildKey = (index, keyID) => {
-    onMutateVendorDraft((draft) => {
-      const child = draft.aggregate?.children?.[index]
-      if (!child) return
-      const keyIDs = new Set(Array.isArray(child.key_ids) ? child.key_ids : [])
-      if (keyIDs.has(keyID)) keyIDs.delete(keyID)
-      else keyIDs.add(keyID)
-      child.key_ids = Array.from(keyIDs)
+  const openAggregateKeyPicker = (childIndex, child) => {
+    setKeyPicker({
+      childIndex,
+      vendor: child.vendor,
+      query: '',
+      page: 1,
+      selected: Array.isArray(child.key_ids) ? [...child.key_ids] : []
     })
+  }
+
+  const togglePickerKey = (keyID) => {
+    setKeyPicker((current) => {
+      if (!current) return current
+      const selected = new Set(current.selected)
+      if (selected.has(keyID)) selected.delete(keyID)
+      else selected.add(keyID)
+      return { ...current, selected: Array.from(selected) }
+    })
+  }
+
+  const pickerAllItems = keyPicker ? (upstreamKeysData?.items?.[keyPicker.vendor] || []) : []
+  const pickerQuery = keyPicker?.query.trim().toLowerCase() || ''
+  const pickerFilteredItems = pickerAllItems.filter((item) => !pickerQuery || [item.masked, item.remark, item.key_id, item.status]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(pickerQuery))
+  const pickerPageSize = 40
+  const pickerTotalPages = Math.max(1, Math.ceil(pickerFilteredItems.length / pickerPageSize))
+  const pickerCurrentPage = Math.min(keyPicker?.page || 1, pickerTotalPages)
+  const pickerPageItems = pickerFilteredItems.slice((pickerCurrentPage - 1) * pickerPageSize, pickerCurrentPage * pickerPageSize)
+  const pickerKnownIDs = new Set(pickerAllItems.map((item) => item.key_id))
+  const pickerMissingSelectedCount = (keyPicker?.selected || []).filter((keyID) => !pickerKnownIDs.has(keyID)).length
+
+  const selectPickerResults = () => {
+    setKeyPicker((current) => {
+      if (!current) return current
+      const selected = new Set(current.selected)
+      for (const item of pickerFilteredItems) selected.add(item.key_id)
+      return { ...current, selected: Array.from(selected) }
+    })
+  }
+
+  const saveAggregateKeyPicker = () => {
+    if (!keyPicker) return
+    const child = aggregateChildren[keyPicker.childIndex]
+    if (child?.vendor === keyPicker.vendor) {
+      updateAggregateChild(keyPicker.childIndex, 'key_ids', keyPicker.selected)
+    }
+    setKeyPicker(null)
   }
 
   const updateAggregateRetry = (field, value) => {
@@ -757,30 +833,13 @@ export function VendorsPage({
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div>
                                   <div className="text-xs font-medium text-[var(--text-secondary)]">指定 Key 清单</div>
-                                  <div className="mt-1 text-[10px] text-[var(--text-muted)]">不勾选表示使用该子供应商全部可用 key；勾选后仅在所选 key 内轮询和故障切换。</div>
+                                  <div className="mt-1 text-[10px] text-[var(--text-muted)]">
+                                    {child.key_ids?.length ? `已指定 ${child.key_ids.length} 个 Key` : '全部可用 Key'}
+                                  </div>
                                 </div>
-                                {!!child.key_ids?.length && (
-                                  <button className={buttonClass('ghost')} type="button" onClick={() => updateAggregateChild(index, 'key_ids', [])}>清除限制</button>
-                                )}
-                              </div>
-                              <div className="mt-3 grid max-h-52 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
-                                {(upstreamKeysData?.items?.[child.vendor] || []).map((item) => (
-                                  <label key={item.key_id || item.key} className="flex cursor-pointer items-start gap-2 rounded border border-[var(--border)] px-2.5 py-2 hover:bg-[var(--bg-hover)]">
-                                    <input
-                                      type="checkbox"
-                                      className="mt-0.5 rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
-                                      checked={(child.key_ids || []).includes(item.key_id)}
-                                      onChange={() => toggleAggregateChildKey(index, item.key_id)}
-                                    />
-                                    <span className="min-w-0">
-                                      <span className="block truncate font-mono text-[11px] text-[var(--text-secondary)]">{item.masked}</span>
-                                      <span className="block truncate text-[10px] text-[var(--text-muted)]">{item.remark || '无备注'}</span>
-                                    </span>
-                                  </label>
-                                ))}
-                                {!(upstreamKeysData?.items?.[child.vendor] || []).length && (
-                                  <div className="text-xs text-[var(--text-muted)]">该供应商暂无可选 key。</div>
-                                )}
+                                <button className={buttonClass('ghost')} type="button" onClick={() => openAggregateKeyPicker(index, child)}>
+                                  选择 Key
+                                </button>
                               </div>
                             </div>
                           )}
@@ -1143,6 +1202,75 @@ export function VendorsPage({
           </div>
         )}
       </article>
+      {keyPicker && (
+        <div className="modal-overlay animate-fade-in">
+          <div className="modal-panel animate-slide-in max-w-2xl">
+            <div className="modal-header">
+              <div>
+                <h3>选择 {keyPicker.vendor} 的 Key</h3>
+                <p>保存后，该子供应商只会在所选 Key 内进行轮询和故障切换。</p>
+              </div>
+              <button className="modal-close" type="button" aria-label="关闭" onClick={() => setKeyPicker(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  className="input-base min-w-[220px] flex-1"
+                  value={keyPicker.query}
+                  autoFocus
+                  placeholder="搜索 Key、备注或状态"
+                  onChange={(e) => setKeyPicker((current) => ({ ...current, query: e.target.value, page: 1 }))}
+                />
+                <button className={buttonClass('ghost')} type="button" disabled={!pickerFilteredItems.length} onClick={selectPickerResults}>全选当前结果</button>
+                <button className={buttonClass('ghost')} type="button" disabled={!keyPicker.selected.length} onClick={() => setKeyPicker((current) => ({ ...current, selected: [] }))}>清除限制</button>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
+                <span>已选 {keyPicker.selected.length} 个；未选择表示使用全部可用 Key。</span>
+                {pickerMissingSelectedCount > 0 && <span className="text-[var(--warning)]">{pickerMissingSelectedCount} 个已选 Key 不存在</span>}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {pickerPageItems.map((item) => {
+                  const state = aggregateKeyState(keyPicker.vendor, item)
+                  const stateLabel = state.backoff > 0
+                    ? `退避 ${state.backoff}s`
+                    : (state.status === 'active' ? '可用' : (state.status === 'disabled_manual' ? '手动禁用' : '自动禁用'))
+                  return (
+                    <label key={item.key_id || item.key} className={`flex cursor-pointer items-start gap-2 rounded border px-2.5 py-2 ${state.available ? 'border-[var(--border)] hover:bg-[var(--bg-hover)]' : 'border-[var(--border-strong)] bg-[var(--bg-elevated)] opacity-75'}`}>
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
+                        checked={keyPicker.selected.includes(item.key_id)}
+                        onChange={() => togglePickerKey(item.key_id)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="truncate font-mono text-[11px] text-[var(--text-secondary)]">{item.masked}</span>
+                          <span className={`shrink-0 text-[10px] ${state.available ? 'text-[var(--success)]' : 'text-[var(--warning)]'}`}>{stateLabel}</span>
+                        </span>
+                        <span className="mt-0.5 block truncate text-[10px] text-[var(--text-muted)]">{item.remark || '无备注'}</span>
+                      </span>
+                    </label>
+                  )
+                })}
+                {!pickerPageItems.length && (
+                  <div className="py-8 text-center text-xs text-[var(--text-muted)] sm:col-span-2">没有匹配的 Key。</div>
+                )}
+              </div>
+              {pickerTotalPages > 1 && (
+                <div className="flex items-center justify-center gap-2">
+                  <button className="pagination-btn" type="button" disabled={pickerCurrentPage <= 1} onClick={() => setKeyPicker((current) => ({ ...current, page: current.page - 1 }))}>上一页</button>
+                  <span className="text-xs text-[var(--text-muted)]">{pickerCurrentPage} / {pickerTotalPages}</span>
+                  <button className="pagination-btn" type="button" disabled={pickerCurrentPage >= pickerTotalPages} onClick={() => setKeyPicker((current) => ({ ...current, page: current.page + 1 }))}>下一页</button>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className={buttonClass()} type="button" onClick={() => setKeyPicker(null)}>取消</button>
+              <button className={buttonClass('primary')} type="button" onClick={saveAggregateKeyPicker}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

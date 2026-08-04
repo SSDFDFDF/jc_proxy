@@ -122,37 +122,33 @@ func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok
 	return p.AcquireExceptAllowed(excluded, nil)
 }
 
-// AcquireExceptAllowed selects an available key that is present in allowed.
-// A nil allowed set means all keys are eligible; a non-nil empty set means none.
-func (p *Pool) AcquireExceptAllowed(excluded map[int]struct{}, allowed map[string]struct{}) (idx int, key string, ok bool) {
+// AcquireExceptAllowed selects an available key index from allowed.
+// A nil allowed slice means all keys are eligible; a non-nil empty slice means none.
+func (p *Pool) AcquireExceptAllowed(excluded map[int]struct{}, allowed []int) (idx int, key string, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if allowed != nil {
-		excluded = p.mergeDisallowedLocked(excluded, allowed)
-	}
 
 	now := p.nowf()
 	pick := -1
 	switch p.strategy {
 	case "random":
-		pick, ok = p.pickRandomLocked(now, excluded)
+		pick, ok = p.pickRandomLocked(now, excluded, allowed)
 	case "least_used":
-		pick, ok = p.pickByScoreLocked(now, excluded, func(i int) loadScore {
+		pick, ok = p.pickByScoreLocked(now, excluded, allowed, func(i int) loadScore {
 			return loadScore{
 				primary:   p.keys[i].Inflight,
 				secondary: p.totalRequestsLocked(i),
 			}
 		})
 	case "least_requests":
-		pick, ok = p.pickByScoreLocked(now, excluded, func(i int) loadScore {
+		pick, ok = p.pickByScoreLocked(now, excluded, allowed, func(i int) loadScore {
 			return loadScore{
 				primary:   p.totalRequestsLocked(i) + p.keys[i].Inflight,
 				secondary: p.keys[i].Inflight,
 			}
 		})
 	default:
-		pick, ok = p.pickRoundRobinLocked(now, excluded)
+		pick, ok = p.pickRoundRobinLocked(now, excluded, allowed)
 	}
 
 	if !ok || pick < 0 {
@@ -284,34 +280,24 @@ func (p *Pool) HasAvailable(excluded map[int]struct{}) bool {
 	return p.HasAvailableAllowed(excluded, nil)
 }
 
-func (p *Pool) HasAvailableAllowed(excluded map[int]struct{}, allowed map[string]struct{}) bool {
+func (p *Pool) HasAvailableAllowed(excluded map[int]struct{}, allowed []int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.nowf()
-	for i := range p.keys {
-		if allowed != nil {
-			if _, ok := allowed[p.keys[i].Key]; !ok {
-				continue
+	if allowed != nil {
+		for _, idx := range allowed {
+			if p.isAvailableLocked(idx, now, excluded) {
+				return true
 			}
 		}
+		return false
+	}
+	for i := range p.keys {
 		if p.isAvailableLocked(i, now, excluded) {
 			return true
 		}
 	}
 	return false
-}
-
-func (p *Pool) mergeDisallowedLocked(excluded map[int]struct{}, allowed map[string]struct{}) map[int]struct{} {
-	merged := make(map[int]struct{}, len(excluded)+len(p.keys))
-	for idx := range excluded {
-		merged[idx] = struct{}{}
-	}
-	for idx := range p.keys {
-		if _, ok := allowed[p.keys[idx].Key]; !ok {
-			merged[idx] = struct{}{}
-		}
-	}
-	return merged
 }
 
 func (p *Pool) MergeRuntimeStats(states []KeyState) {
@@ -421,37 +407,69 @@ func (p *Pool) releaseInflightLocked(idx int) bool {
 	return true
 }
 
-func (p *Pool) pickRoundRobinLocked(now time.Time, excluded map[int]struct{}) (int, bool) {
-	if len(p.keys) == 0 {
+func (p *Pool) pickRoundRobinLocked(now time.Time, excluded map[int]struct{}, allowed []int) (int, bool) {
+	if len(p.keys) == 0 || (allowed != nil && len(allowed) == 0) {
 		return 0, false
 	}
-	for try := 0; try < len(p.keys); try++ {
-		candidate := p.rrIdx % len(p.keys)
-		p.rrIdx = (p.rrIdx + 1) % len(p.keys)
+	if allowed == nil {
+		for try := 0; try < len(p.keys); try++ {
+			candidate := (p.rrIdx + try) % len(p.keys)
+			if !p.isAvailableLocked(candidate, now, excluded) {
+				continue
+			}
+			p.rrIdx = (candidate + 1) % len(p.keys)
+			return candidate, true
+		}
+		return 0, false
+	}
+
+	best := -1
+	bestDistance := len(p.keys) + 1
+	for _, candidate := range allowed {
 		if !p.isAvailableLocked(candidate, now, excluded) {
 			continue
 		}
-		return candidate, true
+		distance := (candidate - p.rrIdx + len(p.keys)) % len(p.keys)
+		if distance < bestDistance {
+			best = candidate
+			bestDistance = distance
+		}
+	}
+	if best >= 0 {
+		p.rrIdx = (best + 1) % len(p.keys)
+		return best, true
 	}
 	return 0, false
 }
 
-func (p *Pool) pickRandomLocked(now time.Time, excluded map[int]struct{}) (int, bool) {
+func (p *Pool) pickRandomLocked(now time.Time, excluded map[int]struct{}, allowed []int) (int, bool) {
 	if len(p.keys) == 0 {
 		return 0, false
 	}
 	scratch := p.pickerScratch[:0]
-	for i := range p.keys {
+	appendIfAvailable := func(i int) {
 		if _, skip := excluded[i]; skip {
-			continue
+			return
+		}
+		if i < 0 || i >= len(p.keys) {
+			return
 		}
 		if !keystore.IsActiveStatus(p.keys[i].Status) {
-			continue
+			return
 		}
 		if p.keys[i].CooldownUntil.After(now) {
-			continue
+			return
 		}
 		scratch = append(scratch, i)
+	}
+	if allowed == nil {
+		for i := range p.keys {
+			appendIfAvailable(i)
+		}
+	} else {
+		for _, i := range allowed {
+			appendIfAvailable(i)
+		}
 	}
 	p.pickerScratch = scratch
 	if len(scratch) == 0 {
@@ -460,23 +478,34 @@ func (p *Pool) pickRandomLocked(now time.Time, excluded map[int]struct{}) (int, 
 	return scratch[p.rng.Intn(len(scratch))], true
 }
 
-func (p *Pool) pickByScoreLocked(now time.Time, excluded map[int]struct{}, scoref func(int) loadScore) (int, bool) {
+func (p *Pool) pickByScoreLocked(now time.Time, excluded map[int]struct{}, allowed []int, scoref func(int) loadScore) (int, bool) {
 	if len(p.keys) == 0 {
 		return 0, false
 	}
 
-	start := p.rrIdx % len(p.keys)
 	best := -1
 	bestScore := loadScore{}
-	for offset := 0; offset < len(p.keys); offset++ {
-		candidate := (start + offset) % len(p.keys)
+	bestDistance := len(p.keys) + 1
+	consider := func(candidate int) {
 		if !p.isAvailableLocked(candidate, now, excluded) {
-			continue
+			return
 		}
 		score := scoref(candidate)
-		if best < 0 || score.less(bestScore) {
+		distance := (candidate - p.rrIdx + len(p.keys)) % len(p.keys)
+		if best < 0 || score.less(bestScore) || (score == bestScore && distance < bestDistance) {
 			best = candidate
 			bestScore = score
+			bestDistance = distance
+		}
+	}
+	if allowed == nil {
+		start := p.rrIdx % len(p.keys)
+		for offset := 0; offset < len(p.keys); offset++ {
+			consider((start + offset) % len(p.keys))
+		}
+	} else {
+		for _, candidate := range allowed {
+			consider(candidate)
 		}
 	}
 	if best < 0 {

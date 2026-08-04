@@ -2221,6 +2221,58 @@ func TestRouterAggregateChildUsesOnlySelectedKeys(t *testing.T) {
 	}
 }
 
+func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization := r.Header.Get("Authorization")
+		seen = append(seen, authorization)
+		if authorization == "Bearer k1" {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"child": {
+				Provider:    "generic",
+				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL, Keys: []string{"k1", "k2"}},
+				LoadBalance: "round_robin",
+				ErrorPolicy: config.ErrorPolicyConfig{Failover: config.ErrorFailoverConfig{MaxAttempts: 1}},
+			},
+			"agg": {
+				Provider:    "aggregate",
+				LoadBalance: "round_robin",
+				Aggregate: config.AggregateConfig{Children: []config.AggregateChild{
+					{Vendor: "child", KeyIDs: []string{keystore.KeyID("k1")}},
+					{Vendor: "child", KeyIDs: []string{keystore.KeyID("k2")}},
+				}},
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected retry through duplicate child entry, got %d: %s", w.Code, w.Body.String())
+	}
+	want := []string{"Bearer k1", "Bearer k2"}
+	if len(seen) != len(want) || seen[0] != want[0] || seen[1] != want[1] {
+		t.Fatalf("duplicate child retry attempts = %#v, want %#v", seen, want)
+	}
+}
+
 func TestRouterAggregateSkipsChildWhenSelectedKeysUnavailable(t *testing.T) {
 	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
 	childA := cfg.Vendors["child_a"]

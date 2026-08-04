@@ -54,6 +54,24 @@ func BenchmarkPool_Acquire_LeastRequests(b *testing.B) {
 	benchAcquireRelease(b, "least_requests", 100)
 }
 
+func BenchmarkPool_AcquireAllowed_RoundRobin(b *testing.B) {
+	pool, err := NewPoolWithConfigs("round_robin", benchPoolKeys(10_000))
+	if err != nil {
+		b.Fatalf("init pool: %v", err)
+	}
+	allowed := []int{101, 2_003, 7_007}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		idx, _, ok := pool.AcquireExceptAllowed(nil, allowed)
+		if !ok {
+			b.Fatal("acquire failed")
+		}
+		pool.ReleaseSuccess(idx)
+	}
+}
+
 func BenchmarkPool_Snapshot(b *testing.B) {
 	pool, err := NewPoolWithConfigs("round_robin", benchPoolKeys(100))
 	if err != nil {

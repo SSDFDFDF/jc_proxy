@@ -93,6 +93,7 @@ function App() {
           selectedVendor={config.selectedVendor}
           vendorDraft={config.vendorDraft}
           upstreamKeysData={upstream.upstreamKeysData}
+          runtimeStats={statsView.stats}
           invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}

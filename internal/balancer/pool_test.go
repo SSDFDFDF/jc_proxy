@@ -47,6 +47,83 @@ func TestRoundRobinAcquire(t *testing.T) {
 	}
 }
 
+func TestAcquireExceptAllowed(t *testing.T) {
+	t.Run("round robin stays within allowed indexes", func(t *testing.T) {
+		p, err := NewPool("round_robin", []string{"k1", "k2", "k3", "k4"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		allowed := []int{3, 1}
+		want := []string{"k2", "k4", "k2"}
+		for i, wantKey := range want {
+			idx, key, ok := p.AcquireExceptAllowed(nil, allowed)
+			if !ok || key != wantKey {
+				t.Fatalf("acquire %d = (%d, %q, %v), want key %q", i, idx, key, ok, wantKey)
+			}
+			p.ReleaseSuccess(idx)
+		}
+	})
+
+	t.Run("exclusions and invalid indexes are ignored", func(t *testing.T) {
+		p, err := NewPool("round_robin", []string{"k1", "k2", "k3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idx, key, ok := p.AcquireExceptAllowed(map[int]struct{}{1: {}}, []int{-1, 1, 2, 99})
+		if !ok || idx != 2 || key != "k3" {
+			t.Fatalf("AcquireExceptAllowed() = (%d, %q, %v), want (2, k3, true)", idx, key, ok)
+		}
+		p.ReleaseSuccess(idx)
+		if !p.HasAvailableAllowed(map[int]struct{}{2: {}}, []int{-1, 1, 2, 99}) {
+			t.Fatal("expected allowed index 1 to remain available")
+		}
+	})
+
+	t.Run("empty restriction fails closed", func(t *testing.T) {
+		p, err := NewPool("round_robin", []string{"k1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if idx, key, ok := p.AcquireExceptAllowed(nil, []int{}); ok {
+			t.Fatalf("AcquireExceptAllowed() = (%d, %q, true), want no key", idx, key)
+		}
+		if p.HasAvailableAllowed(nil, []int{}) {
+			t.Fatal("empty allowed list should have no available key")
+		}
+	})
+
+	t.Run("least requests scores only allowed indexes", func(t *testing.T) {
+		p, err := NewPoolWithConfigs("least_requests", []KeyConfig{
+			{Key: "k1", Status: keystore.KeyStatusActive, RuntimeStats: keystore.RuntimeStats{TotalRequests: 0}},
+			{Key: "k2", Status: keystore.KeyStatusActive, RuntimeStats: keystore.RuntimeStats{TotalRequests: 10}},
+			{Key: "k3", Status: keystore.KeyStatusActive, RuntimeStats: keystore.RuntimeStats{TotalRequests: 20}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idx, key, ok := p.AcquireExceptAllowed(nil, []int{1, 2})
+		if !ok || idx != 1 || key != "k2" {
+			t.Fatalf("AcquireExceptAllowed() = (%d, %q, %v), want (1, k2, true)", idx, key, ok)
+		}
+		p.ReleaseSuccess(idx)
+	})
+
+	t.Run("random stays within allowed indexes", func(t *testing.T) {
+		p, err := NewPool("random", []string{"k1", "k2", "k3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 10 {
+			idx, key, ok := p.AcquireExceptAllowed(nil, []int{2})
+			if !ok || idx != 2 || key != "k3" {
+				t.Fatalf("AcquireExceptAllowed() = (%d, %q, %v), want (2, k3, true)", idx, key, ok)
+			}
+			p.ReleaseSuccess(idx)
+		}
+	})
+}
+
 func TestLeastUsedPrefersLowerInflightThenLowerUsage(t *testing.T) {
 	p, err := NewPoolWithConfigs("least_used", []KeyConfig{
 		{

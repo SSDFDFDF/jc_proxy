@@ -58,11 +58,12 @@ type vendorGateway struct {
 
 // aggregateChildEntry holds a reference to a child vendor for aggregate routing.
 type aggregateChildEntry struct {
+	id       string
 	name     string
 	vendor   *vendorGateway
 	weight   int
 	priority int
-	keys     map[string]struct{}
+	keyIdxs  []int
 }
 
 // aggregatePool implements vendor-level load balancing for aggregate providers.
@@ -80,6 +81,9 @@ type aggregatePool struct {
 func newAggregatePool(strategy string, entries []aggregateChildEntry) *aggregatePool {
 	entries = append([]aggregateChildEntry(nil), entries...)
 	for i := range entries {
+		if entries[i].id == "" {
+			entries[i].id = fmt.Sprintf("%s#%d", entries[i].name, i)
+		}
 		if entries[i].weight <= 0 {
 			entries[i].weight = 1
 		}
@@ -194,14 +198,19 @@ func aggregateChildLoadScore(entry aggregateChildEntry, includeRequests bool) (p
 	snap := entry.vendor.pool.Snapshot()
 	var inflight int64
 	var totalRequests int64
-	for _, ks := range snap {
-		if entry.keys != nil {
-			if _, ok := entry.keys[ks.Key]; !ok {
+	if entry.keyIdxs != nil {
+		for _, idx := range entry.keyIdxs {
+			if idx < 0 || idx >= len(snap) {
 				continue
 			}
+			inflight += int64(snap[idx].Inflight)
+			totalRequests += int64(snap[idx].TotalRequests)
 		}
-		inflight += int64(ks.Inflight)
-		totalRequests += int64(ks.TotalRequests)
+	} else {
+		for _, ks := range snap {
+			inflight += int64(ks.Inflight)
+			totalRequests += int64(ks.TotalRequests)
+		}
 	}
 	if includeRequests {
 		return totalRequests + inflight, inflight
@@ -254,7 +263,7 @@ func (p *aggregatePool) pickAvailableLocked(available func(*aggregateChildEntry)
 		if len(exclude) == 0 {
 			return false
 		}
-		_, ok := exclude[e.name]
+		_, ok := exclude[e.id]
 		return ok
 	}
 	if available == nil {
@@ -342,30 +351,31 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			continue
 		}
 		entries := make([]aggregateChildEntry, 0, len(vendor.Aggregate.Children))
-		for _, child := range vendor.Aggregate.Children {
+		for childIndex, child := range vendor.Aggregate.Children {
 			childVG, ok := vendors[child.Vendor]
 			if !ok {
 				return nil, fmt.Errorf("vendor %s aggregate child %q not found", name, child.Vendor)
 			}
-			var allowedKeys map[string]struct{}
+			var allowedKeyIndexes []int
 			if len(child.KeyIDs) > 0 {
 				allowedIDs := make(map[string]struct{}, len(child.KeyIDs))
 				for _, keyID := range child.KeyIDs {
 					allowedIDs[keyID] = struct{}{}
 				}
-				allowedKeys = make(map[string]struct{}, len(child.KeyIDs))
-				for _, state := range childVG.pool.Snapshot() {
+				allowedKeyIndexes = make([]int, 0, len(child.KeyIDs))
+				for idx, state := range childVG.pool.Snapshot() {
 					if _, ok := allowedIDs[keystore.KeyID(state.Key)]; ok {
-						allowedKeys[state.Key] = struct{}{}
+						allowedKeyIndexes = append(allowedKeyIndexes, idx)
 					}
 				}
 			}
 			entries = append(entries, aggregateChildEntry{
+				id:       fmt.Sprintf("%s#%d", child.Vendor, childIndex),
 				name:     child.Vendor,
 				vendor:   childVG,
 				weight:   child.Weight,
 				priority: child.Priority,
-				keys:     allowedKeys,
+				keyIdxs:  allowedKeyIndexes,
 			})
 		}
 
