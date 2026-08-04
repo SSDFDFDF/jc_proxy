@@ -195,6 +195,7 @@ export function KeyHubPage({
   onDisableKeys,
   onDeleteKey,
   onDeleteKeys,
+  onSetRemark,
   onTestKey,
   vendorRows,
   runtimeStats,
@@ -213,6 +214,7 @@ export function KeyHubPage({
   const [modalHint, setModalHint] = useState('')
   const [sortState, setSortState] = useState({ key: 'index', direction: 'asc' })
   const [selectedKeys, setSelectedKeys] = useState(new Set())
+  const [remarkEditor, setRemarkEditor] = useState(null)
 
   const allItems = upstreamKeysData.items?.[selectedKeyVendor] || []
   const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendor] || []
@@ -269,7 +271,7 @@ export function KeyHubPage({
       )) return false
       if (statusFilter === 'inflight' && !(inflight > 0)) return false
       if (!q) return true
-      const haystack = [item.key, item.masked, item.displayStatus, item.displayDisableReason, item.displayDisabledBy, rt.last_error]
+      const haystack = [item.key, item.masked, item.remark, item.displayStatus, item.displayDisableReason, item.displayDisabledBy, rt.last_error]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
@@ -301,6 +303,7 @@ export function KeyHubPage({
     setDraftText('')
     setShowAddModal(false)
     setModalHint('')
+    setRemarkEditor(null)
   }, [selectedKeyVendor])
 
   useEffect(() => {
@@ -575,10 +578,11 @@ export function KeyHubPage({
 
           {/* ═══ Unified Table ═══ */}
           <div className="table-shell text-xs">
-            <table className="w-full min-w-[1080px] table-fixed">
+            <table className="w-full min-w-[1200px] table-fixed">
               <colgroup>
                 <col style={{ width: '56px' }} />
                 <col style={{ width: '260px' }} />
+                <col style={{ width: '180px' }} />
                 <col style={{ width: '112px' }} />
                 <col style={{ width: '104px' }} />
                 <col style={{ width: '168px' }} />
@@ -597,6 +601,7 @@ export function KeyHubPage({
                     />
                   </th>
                   <th>{renderSortableHeader('Key', 'key')}</th>
+                  <th>备注</th>
                   <th>{renderSortableHeader('状态', 'status')}</th>
                   <th>{renderSortableHeader('负载', 'load')}</th>
                   <th>{renderSortableHeader('请求', 'requests')}</th>
@@ -622,6 +627,16 @@ export function KeyHubPage({
                         />
                       </td>
                       <td><div className={`font-mono truncate ${isDisabled ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>{showSecrets ? item.key : item.masked}</div></td>
+                      <td>
+                        <button
+                          type="button"
+                          className={`block w-full truncate text-left ${item.remark ? 'text-[var(--text-secondary)]' : 'text-[var(--text-faint)]'}`}
+                          title={item.remark || '点击添加备注'}
+                          onClick={() => setRemarkEditor({ key: item.key, value: item.remark || '' })}
+                        >
+                          {item.remark || '添加备注'}
+                        </button>
+                      </td>
                       <td>
                         <span className={`inline-flex rounded border px-1.5 py-[1px] text-[10px] font-semibold tracking-wide ${statusTone(item.displayStatus)}`}>
                           {statusLabel(item.displayStatus)}
@@ -698,7 +713,7 @@ export function KeyHubPage({
                 })}
                 {!pageItems.length && (
                   <tr>
-                    <td colSpan={8} className="px-3 py-12 text-center text-[var(--text-faint)]">暂无匹配密钥</td>
+                    <td colSpan={9} className="px-3 py-12 text-center text-[var(--text-faint)]">暂无匹配密钥</td>
                   </tr>
                 )}
               </tbody>
@@ -761,6 +776,34 @@ export function KeyHubPage({
             <div className="modal-footer">
               <button className={buttonClass()} onClick={() => setShowAddModal(false)}>取消</button>
               <button className={buttonClass('primary')} disabled={busy} onClick={submitAddKeys}>添加</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {remarkEditor && (
+        <div className="modal-overlay animate-fade-in">
+          <div className="modal-panel animate-slide-in max-w-lg">
+            <div className="modal-header">
+              <div><h3>编辑 Key 备注</h3><p>用于记录用途、项目、额度或其他说明。</p></div>
+              <button className="modal-close" onClick={() => setRemarkEditor(null)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <textarea
+                className="textarea-base min-h-[140px] w-full"
+                maxLength={500}
+                value={remarkEditor.value}
+                autoFocus
+                placeholder="例如：生产环境对话接口 / 财务组额度"
+                onChange={(e) => setRemarkEditor((current) => ({ ...current, value: e.target.value }))}
+              />
+              <div className="text-right text-xs text-[var(--text-muted)]">{remarkEditor.value.length}/500</div>
+            </div>
+            <div className="modal-footer">
+              <button className={buttonClass()} onClick={() => setRemarkEditor(null)}>取消</button>
+              <button className={buttonClass('primary')} disabled={busy} onClick={async () => {
+                const ok = await onSetRemark?.(remarkEditor.key, remarkEditor.value)
+                if (ok) setRemarkEditor(null)
+              }}>保存</button>
             </div>
           </div>
         </div>

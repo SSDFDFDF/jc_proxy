@@ -170,6 +170,14 @@ func (s *AsyncStatusStore) SetStatus(vendor, key, status, reason, actor string) 
 	return nil
 }
 
+func (s *AsyncStatusStore) SetRemark(vendor, key, remark string) error {
+	store, ok := s.base.(RemarkStore)
+	if !ok {
+		return errors.New("base store does not support key remarks")
+	}
+	return store.SetRemark(vendor, key, remark)
+}
+
 func (s *AsyncStatusStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error {
 	update, err := newPendingStatusUpdate(vendor, key, expectedVersion, status, reason, actor)
 	if err != nil {

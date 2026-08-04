@@ -98,3 +98,33 @@ func TestFileStoreReplacePreservesDisabledKeysAlongsideActiveSelection(t *testin
 		t.Fatalf("unexpected second record: %+v", records[1])
 	}
 }
+
+func TestFileStoreSetRemarkPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "upstream_keys.json")
+	store, err := NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRemark("openai", "k1", "production chat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	records, err := reopened.List("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Remark != "production chat" {
+		t.Fatalf("unexpected records after reopen: %+v", records)
+	}
+}

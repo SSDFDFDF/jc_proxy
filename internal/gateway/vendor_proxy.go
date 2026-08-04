@@ -38,13 +38,13 @@ func (v *vendorGateway) authorizeClient(req *http.Request) error {
 	return nil
 }
 
-func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path string, bodySource *requestBodySource, excluded map[int]struct{}) (*upstreamAttempt, *proxyError) {
+func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path string, bodySource *requestBodySource, excluded map[int]struct{}, allowedKeys map[string]struct{}) (*upstreamAttempt, *proxyError) {
 	idx := -1
 	selectedVersion := int64(0)
 	selectedKey := v.passthroughUpstreamKey(req)
 	if v.usesManagedUpstreamKeys() {
 		var keyOK bool
-		idx, selectedKey, keyOK = v.pool.AcquireExcept(excluded)
+		idx, selectedKey, keyOK = v.pool.AcquireExceptAllowed(excluded, allowedKeys)
 		if !keyOK {
 			return nil, &proxyError{statusCode: http.StatusServiceUnavailable, message: "all vendor keys in cooldown or disabled"}
 		}
@@ -107,11 +107,11 @@ func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetUR
 	return upReq, nil
 }
 
-func (v *vendorGateway) hasAvailableKey(excluded map[int]struct{}) bool {
+func (v *vendorGateway) hasAvailableKey(excluded map[int]struct{}, allowedKeys map[string]struct{}) bool {
 	if !v.usesManagedUpstreamKeys() || v.pool == nil {
 		return false
 	}
-	return v.pool.HasAvailable(excluded)
+	return v.pool.HasAvailableAllowed(excluded, allowedKeys)
 }
 
 func (v *vendorGateway) shouldBufferRequestBody(method string) bool {

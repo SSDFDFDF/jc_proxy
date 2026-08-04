@@ -220,6 +220,32 @@ func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
 	return s.setStatus(vendor, key, -1, false, status, reason, actor)
 }
 
+func (s *FileStore) SetRemark(vendor, key, remark string) error {
+	vendor = normalizeVendor(vendor)
+	key = strings.TrimSpace(key)
+	if vendor == "" {
+		return errors.New("vendor is required")
+	}
+	if key == "" {
+		return errors.New("key is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.data[vendor]
+	for i := range current {
+		if current[i].Key != key {
+			continue
+		}
+		current[i].Remark = strings.TrimSpace(remark)
+		current[i].UpdatedAt = time.Now().UTC()
+		current[i] = NormalizeRecord(current[i])
+		s.data[vendor] = current
+		return s.saveLocked()
+	}
+	return ErrKeyNotFound
+}
+
 func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelta) error {
 	if len(deltas) == 0 {
 		return nil

@@ -314,6 +314,21 @@ func TestReplaceUpstreamKeysPreservesDisabledStatusAndKeyID(t *testing.T) {
 	}
 }
 
+func TestSetUpstreamKeyRemarkIsReturnedByList(t *testing.T) {
+	s := newTestService(t)
+	if err := s.SetUpstreamKeyRemark("admin", "openai", "k1", "生产对话接口"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListUpstreamKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := list.Items["openai"]
+	if len(items) != 1 || items[0].Remark != "生产对话接口" {
+		t.Fatalf("unexpected key remark response: %+v", items)
+	}
+}
+
 func TestBuildRuntimeStatsResponse(t *testing.T) {
 	vendors := map[string][]map[string]any{
 		"openai": {

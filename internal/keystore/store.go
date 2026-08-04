@@ -53,8 +53,13 @@ type RuntimeStatsStore interface {
 	ApplyRuntimeStatsDeltas(map[string][]RuntimeStatsDelta) error
 }
 
+type RemarkStore interface {
+	SetRemark(vendor, key, remark string) error
+}
+
 type Record struct {
 	Key           string     `json:"key"`
+	Remark        string     `json:"remark,omitempty"`
 	Status        string     `json:"status"`
 	DisableReason string     `json:"disable_reason,omitempty"`
 	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
@@ -173,6 +178,7 @@ func IsActiveStatus(status string) bool {
 
 func NormalizeRecord(record Record) Record {
 	record.Key = strings.TrimSpace(record.Key)
+	record.Remark = strings.TrimSpace(record.Remark)
 	record.Status = NormalizeStatus(record.Status)
 	if record.Version < 0 {
 		record.Version = 0

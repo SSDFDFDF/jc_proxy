@@ -50,12 +50,14 @@ type UpstreamKeyStatusRequest struct {
 	Key    string   `json:"key"`
 	Keys   []string `json:"keys,omitempty"`
 	Reason string   `json:"reason,omitempty"`
+	Remark string   `json:"remark,omitempty"`
 }
 
 type UpstreamKeyRecordResponse struct {
 	Key           string `json:"key"`
 	KeyID         string `json:"key_id"`
 	Masked        string `json:"masked"`
+	Remark        string `json:"remark,omitempty"`
 	Status        string `json:"status"`
 	DisableReason string `json:"disable_reason,omitempty"`
 	DisabledAt    string `json:"disabled_at,omitempty"`

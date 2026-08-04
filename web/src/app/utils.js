@@ -178,7 +178,10 @@ export function withVendorDefaults(vendor) {
       ...base.aggregate,
       ...(next.aggregate || {}),
       children: Array.isArray(next.aggregate?.children)
-        ? next.aggregate.children.map(child => ({ ...child }))
+        ? next.aggregate.children.map(child => ({
+            ...child,
+            key_ids: Array.isArray(child?.key_ids) ? [...child.key_ids] : []
+          }))
         : [],
       retry: {
         ...base.aggregate.retry,

@@ -77,6 +77,7 @@ export function VendorsPage({
   vendorRows,
   selectedVendor,
   vendorDraft,
+  upstreamKeysData,
   invalidKeyStatusCodesText,
   invalidKeyKeywordsText,
   responseRuleRows,
@@ -246,7 +247,7 @@ export function VendorsPage({
     onMutateVendorDraft((draft) => {
       if (!draft.aggregate) draft.aggregate = { children: [] }
       if (!draft.aggregate.children) draft.aggregate.children = []
-      draft.aggregate.children.push({ vendor: '', weight: 1, priority: 0 })
+      draft.aggregate.children.push({ vendor: '', weight: 1, priority: 0, key_ids: [] })
     })
   }
 
@@ -259,6 +260,17 @@ export function VendorsPage({
   const updateAggregateChild = (index, field, value) => {
     onMutateVendorDraft((draft) => {
       if (draft.aggregate?.children?.[index]) draft.aggregate.children[index][field] = value
+    })
+  }
+
+  const toggleAggregateChildKey = (index, keyID) => {
+    onMutateVendorDraft((draft) => {
+      const child = draft.aggregate?.children?.[index]
+      if (!child) return
+      const keyIDs = new Set(Array.isArray(child.key_ids) ? child.key_ids : [])
+      if (keyIDs.has(keyID)) keyIDs.delete(keyID)
+      else keyIDs.add(keyID)
+      child.key_ids = Array.from(keyIDs)
     })
   }
 
@@ -637,7 +649,10 @@ export function VendorsPage({
                               <select
                                 className="select-base w-full"
                                 value={child.vendor || ''}
-                                onChange={(e) => updateAggregateChild(index, 'vendor', e.target.value)}
+                                onChange={(e) => {
+                                  updateAggregateChild(index, 'vendor', e.target.value)
+                                  updateAggregateChild(index, 'key_ids', [])
+                                }}
                               >
                                 <option value="" disabled>-- 请选择已有供应商 --</option>
                                 {vendorRows
@@ -670,6 +685,38 @@ export function VendorsPage({
                               />
                             </label>
                           </div>
+                          {child.vendor && (
+                            <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <div className="text-xs font-medium text-[var(--text-secondary)]">指定 Key 清单</div>
+                                  <div className="mt-1 text-[10px] text-[var(--text-muted)]">不勾选表示使用该子供应商全部可用 key；勾选后仅在所选 key 内轮询和故障切换。</div>
+                                </div>
+                                {!!child.key_ids?.length && (
+                                  <button className={buttonClass('ghost')} type="button" onClick={() => updateAggregateChild(index, 'key_ids', [])}>清除限制</button>
+                                )}
+                              </div>
+                              <div className="mt-3 grid max-h-52 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3">
+                                {(upstreamKeysData?.items?.[child.vendor] || []).map((item) => (
+                                  <label key={item.key_id || item.key} className="flex cursor-pointer items-start gap-2 rounded border border-[var(--border)] px-2.5 py-2 hover:bg-[var(--bg-hover)]">
+                                    <input
+                                      type="checkbox"
+                                      className="mt-0.5 rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
+                                      checked={(child.key_ids || []).includes(item.key_id)}
+                                      onChange={() => toggleAggregateChildKey(index, item.key_id)}
+                                    />
+                                    <span className="min-w-0">
+                                      <span className="block truncate font-mono text-[11px] text-[var(--text-secondary)]">{item.masked}</span>
+                                      <span className="block truncate text-[10px] text-[var(--text-muted)]">{item.remark || '无备注'}</span>
+                                    </span>
+                                  </label>
+                                ))}
+                                {!(upstreamKeysData?.items?.[child.vendor] || []).length && (
+                                  <div className="text-xs text-[var(--text-muted)]">该供应商暂无可选 key。</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )
                     })}

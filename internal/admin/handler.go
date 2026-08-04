@@ -288,6 +288,11 @@ func (h *Handler) handleUpstreamKeyStatusAction(w http.ResponseWriter, r *http.R
 	}
 
 	switch action {
+	case "remark":
+		if err := h.service.SetUpstreamKeyRemark(actor, vendor, req.Key, req.Remark); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	case "enable":
 		if err := h.service.SetUpstreamKeyStatus(actor, vendor, keys, keystore.KeyStatusActive, ""); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

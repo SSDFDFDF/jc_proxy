@@ -62,6 +62,7 @@ type aggregateChildEntry struct {
 	vendor   *vendorGateway
 	weight   int
 	priority int
+	keys     map[string]struct{}
 }
 
 // aggregatePool implements vendor-level load balancing for aggregate providers.
@@ -194,6 +195,11 @@ func aggregateChildLoadScore(entry aggregateChildEntry, includeRequests bool) (p
 	var inflight int64
 	var totalRequests int64
 	for _, ks := range snap {
+		if entry.keys != nil {
+			if _, ok := entry.keys[ks.Key]; !ok {
+				continue
+			}
+		}
 		inflight += int64(ks.Inflight)
 		totalRequests += int64(ks.TotalRequests)
 	}
@@ -341,11 +347,25 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			if !ok {
 				return nil, fmt.Errorf("vendor %s aggregate child %q not found", name, child.Vendor)
 			}
+			var allowedKeys map[string]struct{}
+			if len(child.KeyIDs) > 0 {
+				allowedIDs := make(map[string]struct{}, len(child.KeyIDs))
+				for _, keyID := range child.KeyIDs {
+					allowedIDs[keyID] = struct{}{}
+				}
+				allowedKeys = make(map[string]struct{}, len(child.KeyIDs))
+				for _, state := range childVG.pool.Snapshot() {
+					if _, ok := allowedIDs[keystore.KeyID(state.Key)]; ok {
+						allowedKeys[state.Key] = struct{}{}
+					}
+				}
+			}
 			entries = append(entries, aggregateChildEntry{
 				name:     child.Vendor,
 				vendor:   childVG,
 				weight:   child.Weight,
 				priority: child.Priority,
+				keys:     allowedKeys,
 			})
 		}
 

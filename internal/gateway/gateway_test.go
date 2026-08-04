@@ -2173,6 +2173,84 @@ func TestAggregatePoolLeastRequestsUsesWeightWithinPriorityTier(t *testing.T) {
 	}
 }
 
+func TestRouterAggregateChildUsesOnlySelectedKeys(t *testing.T) {
+	seen := make([]string, 0, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") == "Bearer k2" {
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: map[string]config.VendorConfig{
+			"child": {
+				Provider:    "generic",
+				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL, Keys: []string{"k1", "k2", "k3"}},
+				LoadBalance: "round_robin",
+			},
+			"agg": {
+				Provider:    "aggregate",
+				LoadBalance: "round_robin",
+				Aggregate: config.AggregateConfig{Children: []config.AggregateChild{{
+					Vendor: "child",
+					KeyIDs: []string{keystore.KeyID("k2"), keystore.KeyID("k3")},
+				}}},
+			},
+		},
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected failover within selected keys, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(seen) != 2 || seen[0] != "Bearer k2" || seen[1] != "Bearer k3" {
+		t.Fatalf("aggregate used keys outside selection or wrong order: %#v", seen)
+	}
+}
+
+func TestRouterAggregateSkipsChildWhenSelectedKeysUnavailable(t *testing.T) {
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	childA := cfg.Vendors["child_a"]
+	childA.Upstream.Keys = []string{"child-a-key", "child-a-other"}
+	cfg.Vendors["child_a"] = childA
+	agg := cfg.Vendors["agg"]
+	agg.Aggregate.Children[0].KeyIDs = []string{keystore.KeyID("missing-key")}
+	cfg.Vendors["agg"] = agg
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	router, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.vendors["child_a"].client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		t.Fatal("child_a should be unavailable because its selected key list has no usable key")
+		return nil, nil
+	})}
+	router.vendors["child_b"].client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("child b"))}, nil
+	})}
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != "child b" {
+		t.Fatalf("expected fallback to child_b, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRouterAggregateRetriesBufferedPostOnRateLimit(t *testing.T) {
 	var attempts []string
 	var bodies []string

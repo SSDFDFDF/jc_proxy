@@ -119,8 +119,18 @@ func (p *Pool) Acquire() (idx int, key string, ok bool) {
 }
 
 func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok bool) {
+	return p.AcquireExceptAllowed(excluded, nil)
+}
+
+// AcquireExceptAllowed selects an available key that is present in allowed.
+// A nil allowed set means all keys are eligible; a non-nil empty set means none.
+func (p *Pool) AcquireExceptAllowed(excluded map[int]struct{}, allowed map[string]struct{}) (idx int, key string, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if allowed != nil {
+		excluded = p.mergeDisallowedLocked(excluded, allowed)
+	}
 
 	now := p.nowf()
 	pick := -1
@@ -271,15 +281,37 @@ func (p *Pool) Snapshot() []KeyState {
 // and out of cooldown. It avoids the full Snapshot copy used on the hot
 // failover-retry path.
 func (p *Pool) HasAvailable(excluded map[int]struct{}) bool {
+	return p.HasAvailableAllowed(excluded, nil)
+}
+
+func (p *Pool) HasAvailableAllowed(excluded map[int]struct{}, allowed map[string]struct{}) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.nowf()
 	for i := range p.keys {
+		if allowed != nil {
+			if _, ok := allowed[p.keys[i].Key]; !ok {
+				continue
+			}
+		}
 		if p.isAvailableLocked(i, now, excluded) {
 			return true
 		}
 	}
 	return false
+}
+
+func (p *Pool) mergeDisallowedLocked(excluded map[int]struct{}, allowed map[string]struct{}) map[int]struct{} {
+	merged := make(map[int]struct{}, len(excluded)+len(p.keys))
+	for idx := range excluded {
+		merged[idx] = struct{}{}
+	}
+	for idx := range p.keys {
+		if _, ok := allowed[p.keys[idx].Key]; !ok {
+			merged[idx] = struct{}{}
+		}
+	}
+	return merged
 }
 
 func (p *Pool) MergeRuntimeStats(states []KeyState) {

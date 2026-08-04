@@ -673,6 +673,26 @@ export function useAdminConsole() {
     }
   }
 
+  const setUpstreamKeyRemark = async (key, remark) => {
+    if (!selectedKeyVendor || !key) return false
+    setBusy(true)
+    try {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/remark`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, remark: String(remark || '').trim() })
+      })
+      await refreshAll(selectedVendor, selectedKeyVendor)
+      setStatus('success', '密钥备注已保存')
+      return true
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const saveSystem = async () => {
     setBusy(true)
     try {
@@ -957,7 +977,8 @@ export function useAdminConsole() {
       recoverUpstreamKey,
       recoverUpstreamKeys,
       deleteUpstreamKey,
-      deleteUpstreamKeys
+      deleteUpstreamKeys,
+      setUpstreamKeyRemark
     },
     statsView: {
       stats,

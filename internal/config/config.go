@@ -138,15 +138,15 @@ type ErrorAutoDisableConfig struct {
 }
 
 type ErrorCooldownConfig struct {
-	RequestError    ErrorCooldownRule           `yaml:"request_error" json:"request_error"`
-	Unauthorized    ErrorCooldownRule           `yaml:"unauthorized" json:"unauthorized"`
-	PaymentRequired ErrorCooldownRule           `yaml:"payment_required" json:"payment_required"`
-	Forbidden       ErrorCooldownRule           `yaml:"forbidden" json:"forbidden"`
-	RateLimit       ErrorCooldownRule           `yaml:"rate_limit" json:"rate_limit"`
-	ServerError     ErrorCooldownRule           `yaml:"server_error" json:"server_error"`
-	OpenAISlowDown  ErrorCooldownRule           `yaml:"openai_slow_down" json:"openai_slow_down"`
-	NoDefaultBackoff bool                      `yaml:"no_default_backoff" json:"no_default_backoff"`
-	ResponseRules   []ErrorResponseCooldownRule `yaml:"response_rules,omitempty" json:"response_rules,omitempty"`
+	RequestError     ErrorCooldownRule           `yaml:"request_error" json:"request_error"`
+	Unauthorized     ErrorCooldownRule           `yaml:"unauthorized" json:"unauthorized"`
+	PaymentRequired  ErrorCooldownRule           `yaml:"payment_required" json:"payment_required"`
+	Forbidden        ErrorCooldownRule           `yaml:"forbidden" json:"forbidden"`
+	RateLimit        ErrorCooldownRule           `yaml:"rate_limit" json:"rate_limit"`
+	ServerError      ErrorCooldownRule           `yaml:"server_error" json:"server_error"`
+	OpenAISlowDown   ErrorCooldownRule           `yaml:"openai_slow_down" json:"openai_slow_down"`
+	NoDefaultBackoff bool                        `yaml:"no_default_backoff" json:"no_default_backoff"`
+	ResponseRules    []ErrorResponseCooldownRule `yaml:"response_rules,omitempty" json:"response_rules,omitempty"`
 }
 
 type ErrorCooldownRule struct {
@@ -185,9 +185,10 @@ type AggregateConfig struct {
 }
 
 type AggregateChild struct {
-	Vendor   string `yaml:"vendor" json:"vendor"`
-	Weight   int    `yaml:"weight,omitempty" json:"weight,omitempty"`
-	Priority int    `yaml:"priority,omitempty" json:"priority,omitempty"`
+	Vendor   string   `yaml:"vendor" json:"vendor"`
+	Weight   int      `yaml:"weight,omitempty" json:"weight,omitempty"`
+	Priority int      `yaml:"priority,omitempty" json:"priority,omitempty"`
+	KeyIDs   []string `yaml:"key_ids,omitempty" json:"key_ids,omitempty"`
 }
 
 type AggregateRetryConfig struct {
@@ -650,6 +651,7 @@ func (c *Config) applyDefaults() {
 				if v.Aggregate.Children[i].Weight <= 0 {
 					v.Aggregate.Children[i].Weight = 1
 				}
+				v.Aggregate.Children[i].KeyIDs = normalizeStringList(v.Aggregate.Children[i].KeyIDs)
 			}
 			applyAggregateRetryDefaults(&v.Aggregate.Retry)
 			c.Vendors[name] = v
@@ -763,6 +765,9 @@ func (c *Config) validate(requireVendors bool) error {
 				}
 				if NormalizeProvider(childVendor.Provider, child.Vendor) == "aggregate" {
 					return fmt.Errorf("vendor %q aggregate child %q cannot be aggregate (nesting not allowed)", vendorName, child.Vendor)
+				}
+				if len(child.KeyIDs) > 0 && childVendor.UpstreamAuth.Mode == "passthrough" {
+					return fmt.Errorf("vendor %q aggregate child %q cannot select keys in passthrough mode", vendorName, child.Vendor)
 				}
 			}
 			if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
@@ -1016,6 +1021,27 @@ func (c *Config) HasLegacyUpstreamKeys() bool {
 		}
 	}
 	return false
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func VendorNames(vendors map[string]VendorConfig) []string {

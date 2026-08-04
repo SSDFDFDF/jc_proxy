@@ -70,6 +70,7 @@ function App() {
           onDisableKeys={upstream.disableUpstreamKeys}
           onDeleteKey={upstream.deleteUpstreamKey}
           onDeleteKeys={upstream.deleteUpstreamKeys}
+          onSetRemark={upstream.setUpstreamKeyRemark}
           onTestKey={(vendor, key) => {
             sessionStorage.setItem('jc_proxy_test_key', key)
             config.selectVendor(vendor)
@@ -91,6 +92,7 @@ function App() {
           vendorRows={overview.vendorRows}
           selectedVendor={config.selectedVendor}
           vendorDraft={config.vendorDraft}
+          upstreamKeysData={upstream.upstreamKeysData}
           invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}

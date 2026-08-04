@@ -418,6 +418,30 @@ func (s *Service) SetUpstreamKeyStatus(actor, vendor string, keys []string, stat
 	return nil
 }
 
+func (s *Service) SetUpstreamKeyRemark(actor, vendor, key, remark string) error {
+	vendor = strings.TrimSpace(vendor)
+	key = strings.TrimSpace(key)
+	remark = strings.TrimSpace(remark)
+	if err := s.requireVendor(vendor); err != nil {
+		return err
+	}
+	if key == "" {
+		return errors.New("key is required")
+	}
+	if len([]rune(remark)) > 500 {
+		return errors.New("remark must not exceed 500 characters")
+	}
+	remarkStore, ok := s.keyStore.(keystore.RemarkStore)
+	if !ok {
+		return errors.New("upstream key store does not support remarks")
+	}
+	if err := remarkStore.SetRemark(vendor, key, remark); err != nil {
+		return err
+	}
+	s.audit.Log(actor, "upstream_key.remark", map[string]any{"vendor": vendor, "key_id": keystore.KeyID(key)})
+	return nil
+}
+
 func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
@@ -469,6 +493,7 @@ func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 				Key:           record.Key,
 				KeyID:         keystore.KeyID(record.Key),
 				Masked:        mask(record.Key),
+				Remark:        record.Remark,
 				Status:        record.Status,
 				DisableReason: record.DisableReason,
 				DisabledAt:    disabledAt,

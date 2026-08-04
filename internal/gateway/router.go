@@ -12,9 +12,10 @@ import (
 )
 
 type preparedProxyRequest struct {
-	vendor     *vendorGateway
-	path       string
-	bodySource *requestBodySource
+	vendor      *vendorGateway
+	path        string
+	bodySource  *requestBodySource
+	allowedKeys map[string]struct{}
 }
 
 type upstreamAttempt struct {
@@ -198,9 +199,10 @@ func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, 
 	}
 
 	return &preparedProxyRequest{
-		vendor:     child.vendor,
-		path:       child.vendor.rewrites.Apply(config.NormalizePath(path)),
-		bodySource: bodySource,
+		vendor:      child.vendor,
+		path:        child.vendor.rewrites.Apply(config.NormalizePath(path)),
+		bodySource:  bodySource,
+		allowedKeys: child.keys,
 	}, nil
 }
 
@@ -211,7 +213,7 @@ func aggregateChildAvailable(e *aggregateChildEntry) bool {
 	if !e.vendor.usesManagedUpstreamKeys() {
 		return true
 	}
-	return e.vendor.hasAvailableKey(nil)
+	return e.vendor.hasAvailableKey(nil, e.keys)
 }
 
 func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request, agg *vendorGateway, path string) {
@@ -308,7 +310,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			return vendorRequestDone
 		}
 
-		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx)
+		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeys)
 		if proxyErr != nil {
 			writeHTTPError(w, interim, proxyErr.message, proxyErr.statusCode)
 			return vendorRequestDone
@@ -330,7 +332,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			if prepared.bodySource.canRetryRequestError(decision) && vg.usesManagedUpstreamKeys() {
 				triedManagedKeyIdx[attempt.idx] = struct{}{}
 			}
-			if prepared.bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx) {
+			if prepared.bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx, prepared.allowedKeys) {
 				if attempts >= maxAttempts {
 					if aggregateHook != nil && aggregateHook(0, err, prepared.bodySource) {
 						return vendorRequestRetryAggregateChild
@@ -351,7 +353,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			resp.Body = newIdleTimeoutReadCloser(resp.Body, vg.upstreamBodyTimeout)
 		}
 
-		switch r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, interim, aggregateHook, attempts < maxAttempts) {
+		switch r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeys, interim, aggregateHook, attempts < maxAttempts) {
 		case upstreamResponseRetryVendorKey:
 			continue
 		case upstreamResponseRetryAggregateChild:
@@ -362,7 +364,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 	}
 }
 
-func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, vg *vendorGateway, attempt *upstreamAttempt, bodySource *requestBodySource, triedManagedKeyIdx map[int]struct{}, interim *interimResponseSender, aggregateHook aggregateRetryHook, vendorRetryRemaining bool) upstreamResponseOutcome {
+func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, vg *vendorGateway, attempt *upstreamAttempt, bodySource *requestBodySource, triedManagedKeyIdx map[int]struct{}, allowedKeys map[string]struct{}, interim *interimResponseSender, aggregateHook aggregateRetryHook, vendorRetryRemaining bool) upstreamResponseOutcome {
 	if resp.StatusCode >= http.StatusBadRequest {
 		preview, bodyReader, err := captureResponsePreview(resp.Body, 2048, resp.Header)
 		if err != nil {
@@ -378,7 +380,7 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			if bodySource.canRetryRequestError(decision) && vg.usesManagedUpstreamKeys() {
 				triedManagedKeyIdx[attempt.idx] = struct{}{}
 			}
-			if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx) {
+			if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeys) {
 				if !vendorRetryRemaining {
 					if aggregateHook != nil && aggregateHook(0, err, bodySource) {
 						return upstreamResponseRetryAggregateChild
@@ -401,7 +403,7 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			if vg.usesManagedUpstreamKeys() {
 				triedManagedKeyIdx[attempt.idx] = struct{}{}
 			}
-			if vg.hasAvailableKey(triedManagedKeyIdx) {
+			if vg.hasAvailableKey(triedManagedKeyIdx, allowedKeys) {
 				if !vendorRetryRemaining {
 					if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource) {
 						_ = resp.Body.Close()
