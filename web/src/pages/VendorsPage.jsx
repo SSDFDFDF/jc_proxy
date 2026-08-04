@@ -131,6 +131,10 @@ export function VendorsPage({
     row.name.toLowerCase().includes(vendorSearchQuery.toLowerCase()) || 
     (row.provider && row.provider.toLowerCase().includes(vendorSearchQuery.toLowerCase()))
   )
+  const aggregateVendorRows = filteredVendorRows.filter((row) => row.provider === 'aggregate')
+  const independentVendorRows = filteredVendorRows.filter((row) => row.provider !== 'aggregate')
+  const aggregateVendorCount = (vendorRows || []).filter((row) => row.provider === 'aggregate').length
+  const independentVendorCount = (vendorRows || []).length - aggregateVendorCount
 
   useEffect(() => {
     setClientKeyInputText('')
@@ -282,12 +286,44 @@ export function VendorsPage({
     })
   }
 
+  const renderVendorItem = (row) => {
+    const aggregate = row.provider === 'aggregate'
+    const state = aggregate
+      ? (Number(row.aggregateChildCount || 0) > 0 ? 'ready' : 'warning')
+      : (Number(row.activeUpstreamKeys || 0) > 0 ? 'ready' : (Number(row.upstreamKeys || 0) > 0 ? 'disabled' : 'warning'))
+    return (
+      <button
+        key={row.name}
+        className={`vendor-item vendor-item-${aggregate ? 'aggregate' : 'independent'} ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
+        onClick={() => onSelectVendor(row.name)}
+      >
+        <span className="vendor-item-heading">
+          <i className={`vendor-state-dot vendor-state-dot-${state}`} aria-hidden="true" />
+          <strong>{row.name}</strong>
+          {!aggregate && <em>{row.provider}</em>}
+        </span>
+        <span>
+          {aggregate
+            ? `${row.aggregateChildCount || 0} 个子供应商`
+            : `Key ${row.activeUpstreamKeys || 0}/${row.upstreamKeys || 0} · 客户端 ${row.clientKeys || 0}`}
+        </span>
+      </button>
+    )
+  }
+
   return (
-    <section className="grid gap-5 2xl:grid-cols-[280px_1fr] animate-fade-in">
+    <section className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)] animate-fade-in">
       {/* Sidebar */}
       <aside className={panelClass('p-4')}>
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h3 className="section-title">供应商</h3>
+          <div>
+            <h3 className="section-title">供应商</h3>
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+              <span>聚合 {aggregateVendorCount}</span>
+              <span className="text-[var(--border-strong)]">/</span>
+              <span>独立 {independentVendorCount}</span>
+            </div>
+          </div>
           <button className={buttonClass('ghost')} disabled={busy} onClick={onRefresh}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
@@ -305,38 +341,57 @@ export function VendorsPage({
           />
         </div>
 
-        <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto pr-1 custom-scrollbar">
-          {filteredVendorRows.map((row) => (
-            <button
-              key={row.name}
-              className={`vendor-item ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
-              onClick={() => onSelectVendor(row.name)}
-            >
-              <strong>{row.name}</strong>
-              <span>
-                {row.provider === 'aggregate'
-                  ? `聚合 · 子节点 ${row.aggregateChildCount}`
-                  : `上游 ${row.upstreamKeys} · 启用 ${row.activeUpstreamKeys || 0} / 禁用 ${row.disabledUpstreamKeys || 0} · 客户端 ${row.clientKeys}`}
-              </span>
-            </button>
-          ))}
+        <div className="vendor-list max-h-[420px] overflow-y-auto pr-1 custom-scrollbar xl:max-h-[calc(100vh-310px)]">
+          {(aggregateVendorRows.length > 0 || !vendorSearchQuery) && (
+            <section className="vendor-list-group vendor-list-group-aggregate">
+              <div className="vendor-list-group-header">
+                <span><i aria-hidden="true" />聚合供应商</span>
+                <strong>{aggregateVendorRows.length}</strong>
+              </div>
+              <div className="space-y-2">
+                {aggregateVendorRows.map(renderVendorItem)}
+                {aggregateVendorRows.length === 0 && <p className="vendor-list-empty">暂无聚合供应商</p>}
+              </div>
+            </section>
+          )}
+
+          {(independentVendorRows.length > 0 || !vendorSearchQuery) && (
+            <section className="vendor-list-group vendor-list-group-independent">
+              <div className="vendor-list-group-header">
+                <span><i aria-hidden="true" />独立供应商</span>
+                <strong>{independentVendorRows.length}</strong>
+              </div>
+              <div className="space-y-2">
+                {independentVendorRows.map(renderVendorItem)}
+                {independentVendorRows.length === 0 && <p className="vendor-list-empty">暂无独立供应商</p>}
+              </div>
+            </section>
+          )}
           {filteredVendorRows.length === 0 && (
             <div className="text-center text-xs text-[var(--text-muted)] py-4">未找到匹配的供应商</div>
           )}
         </div>
 
         {/* Create Vendor */}
-        <section className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
+        <section className="mt-4 border-t border-[var(--border)] pt-4">
           <h3 className="section-title text-sm mb-3">新建供应商</h3>
           <div className="space-y-3">
-            <select
-              className="select-base w-full"
-              value={newVendorForm.provider || 'generic'}
-              onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, provider: e.target.value }))}
-            >
-              <option value="generic">独立供应商 (常规)</option>
-              <option value="aggregate">聚合供应商 (路由分发)</option>
-            </select>
+            <div className="vendor-type-segment" role="group" aria-label="供应商类型">
+              <button
+                type="button"
+                className={newVendorForm.provider !== 'aggregate' ? 'active' : ''}
+                onClick={() => onNewVendorFormChange((prev) => ({ ...prev, provider: 'generic' }))}
+              >
+                独立
+              </button>
+              <button
+                type="button"
+                className={newVendorForm.provider === 'aggregate' ? 'active aggregate' : ''}
+                onClick={() => onNewVendorFormChange((prev) => ({ ...prev, provider: 'aggregate' }))}
+              >
+                聚合
+              </button>
+            </div>
             <input
               className="input-base w-full"
               placeholder="供应商名称，例如 openai"
@@ -365,9 +420,21 @@ export function VendorsPage({
           <div className="space-y-5">
             {/* Vendor Header */}
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
-              <h3 className="section-title text-base">{selectedVendor}</h3>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="section-title text-base">{selectedVendor}</h3>
+                  <span className={`vendor-kind-badge ${isAggregate ? 'vendor-kind-badge-aggregate' : ''}`}>
+                    {isAggregate ? '聚合供应商' : '独立供应商'}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  {isAggregate
+                    ? `${aggregateChildren.length} 个子供应商参与路由`
+                    : `${vendorDraft.provider || 'generic'} · ${vendorRowByName.get(selectedVendor)?.activeUpstreamKeys || 0} 个可用 Key`}
+                </p>
+              </div>
               <div className="flex flex-wrap gap-2">
-                <button className={buttonClass('ghost')} onClick={onOpenUpstreamKeys}>上游密钥 →</button>
+                {!isAggregate && <button className={buttonClass('ghost')} onClick={onOpenUpstreamKeys}>上游密钥 →</button>}
                 <button className={buttonClass('primary')} disabled={busy} onClick={onSaveVendor}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17,21 17,13 7,13 7,21" /><polyline points="7,3 7,8 15,8" />
