@@ -202,6 +202,9 @@ func mergeLoadedConfig(base *config.Config, loaded *loadedConfig) (*config.Confi
 		merged.Storage = base.Storage
 		mergeAdminCredentials(&merged.Admin, base.Admin, loaded.adminLayer)
 	}
+	if err := merged.ApplyCriticalEnvOverrides(os.LookupEnv); err != nil {
+		return nil, err
+	}
 	return merged, nil
 }
 

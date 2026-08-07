@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -38,6 +39,61 @@ type ServerConfig struct {
 	WriteTimeout    time.Duration `yaml:"write_timeout" json:"write_timeout"`
 	IdleTimeout     time.Duration `yaml:"idle_timeout" json:"idle_timeout"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" json:"shutdown_timeout"`
+	TLS             TLSConfig     `yaml:"tls" json:"tls"`
+}
+
+type TLSConfig struct {
+	CertFile   string `yaml:"cert_file" json:"cert_file"`
+	KeyFile    string `yaml:"key_file" json:"key_file"`
+	MinVersion string `yaml:"min_version" json:"min_version"`
+}
+
+func (t TLSConfig) Enabled() bool {
+	return strings.TrimSpace(t.CertFile) != "" && strings.TrimSpace(t.KeyFile) != ""
+}
+
+func (t TLSConfig) GoTLSConfig() (*tls.Config, error) {
+	if !t.Enabled() {
+		return nil, nil
+	}
+	cert, err := tls.LoadX509KeyPair(t.CertFile, t.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS certificate: %w", err)
+	}
+	minVer := uint16(tls.VersionTLS12)
+	switch strings.TrimSpace(strings.ToLower(t.MinVersion)) {
+	case "", "1.2", "tls1.2":
+		minVer = tls.VersionTLS12
+	case "1.3", "tls1.3":
+		minVer = tls.VersionTLS13
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   minVer,
+	}, nil
+}
+
+func (t TLSConfig) validate() error {
+	certSet := strings.TrimSpace(t.CertFile) != ""
+	keySet := strings.TrimSpace(t.KeyFile) != ""
+	if certSet != keySet {
+		return errors.New("server.tls requires both cert_file and key_file")
+	}
+	if !t.Enabled() {
+		return nil
+	}
+	if _, err := os.Stat(t.CertFile); err != nil {
+		return fmt.Errorf("server.tls.cert_file: %w", err)
+	}
+	if _, err := os.Stat(t.KeyFile); err != nil {
+		return fmt.Errorf("server.tls.key_file: %w", err)
+	}
+	switch strings.TrimSpace(strings.ToLower(t.MinVersion)) {
+	case "", "1.2", "tls1.2", "1.3", "tls1.3":
+	default:
+		return fmt.Errorf("server.tls.min_version invalid: %q (use 1.2, 1.3, tls1.2 or tls1.3)", t.MinVersion)
+	}
+	return nil
 }
 
 type AdminConfig struct {
@@ -285,7 +341,7 @@ func loadBytes(b []byte, bootstrap bool, lookup envLookup) (*Config, error) {
 			return nil, fmt.Errorf("parse config yaml: %w", err)
 		}
 	}
-	if err := cfg.applyCriticalEnvOverrides(lookup); err != nil {
+	if err := cfg.ApplyCriticalEnvOverrides(lookup); err != nil {
 		return nil, err
 	}
 	if bootstrap {
@@ -317,7 +373,7 @@ func loadDotEnv(configPath string) error {
 	return nil
 }
 
-func (c *Config) applyCriticalEnvOverrides(lookup envLookup) error {
+func (c *Config) ApplyCriticalEnvOverrides(lookup envLookup) error {
 	if c == nil || lookup == nil {
 		return nil
 	}
@@ -326,6 +382,15 @@ func (c *Config) applyCriticalEnvOverrides(lookup envLookup) error {
 		return err
 	} else if ok {
 		c.Server.Listen = listen
+	}
+	if certFile, ok := lookupEnvValue(lookup, "JC_PROXY_SERVER_TLS_CERT_FILE"); ok {
+		c.Server.TLS.CertFile = certFile
+	}
+	if keyFile, ok := lookupEnvValue(lookup, "JC_PROXY_SERVER_TLS_KEY_FILE"); ok {
+		c.Server.TLS.KeyFile = keyFile
+	}
+	if minVersion, ok := lookupEnvValue(lookup, "JC_PROXY_SERVER_TLS_MIN_VERSION"); ok {
+		c.Server.TLS.MinVersion = minVersion
 	}
 	if enabled, ok, err := lookupEnvBool(lookup, "JC_PROXY_ADMIN_ENABLED"); err != nil {
 		return err
@@ -709,6 +774,9 @@ func (c *Config) ValidateBootstrap() error {
 func (c *Config) validate(requireVendors bool) error {
 	if requireVendors && len(c.Vendors) == 0 {
 		return errors.New("config vendors is empty")
+	}
+	if err := c.Server.TLS.validate(); err != nil {
+		return err
 	}
 	if c.Admin.Enabled {
 		if strings.TrimSpace(c.Admin.Username) == "" {

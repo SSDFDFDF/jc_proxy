@@ -222,6 +222,34 @@ func TestMergeLoadedConfigFallsBackToBootstrapAdminCredentials(t *testing.T) {
 	}
 }
 
+func TestMergeLoadedConfigAppliesCriticalEnvOverrides(t *testing.T) {
+	t.Setenv("JC_PROXY_SERVER_LISTEN", ":8080")
+
+	base := &config.Config{
+		Server: config.ServerConfig{Listen: ":8080"},
+		Storage: config.StorageConfig{
+			Config: config.ConfigStoreConfig{
+				Driver: "pgsql",
+				PGSQL:  config.ConfigStorePGSQLConfig{DSN: "postgres://bootstrap"},
+			},
+		},
+	}
+	remote := &config.Config{
+		Server: config.ServerConfig{Listen: ":10000"},
+	}
+
+	merged, err := mergeLoadedConfig(base, &loadedConfig{
+		cfg: remote,
+	})
+	if err != nil {
+		t.Fatalf("mergeLoadedConfig() error = %v", err)
+	}
+
+	if merged.Server.Listen != ":8080" {
+		t.Fatalf("Server.Listen = %q, want :8080", merged.Server.Listen)
+	}
+}
+
 func strPtr(value string) *string {
 	return &value
 }

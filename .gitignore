@@ -5,3 +5,6 @@ config.yaml
 
 data/
 internal/ui/dist/
+
+*.pem
+jc_proxy

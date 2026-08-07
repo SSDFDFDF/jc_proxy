@@ -114,10 +114,25 @@ func main() {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
+	if cfg.Server.TLS.Enabled() {
+		tlsCfg, err := cfg.Server.TLS.GoTLSConfig()
+		if err != nil {
+			log.Fatalf("init TLS config failed: %v", err)
+		}
+		srv.TLSConfig = tlsCfg
+	}
+
 	go func() {
-		log.Printf("jc_proxy listening on %s", cfg.Server.Listen)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen failed: %v", err)
+		if cfg.Server.TLS.Enabled() {
+			log.Printf("jc_proxy listening on %s (HTTPS)", cfg.Server.Listen)
+			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("listen failed: %v", err)
+			}
+		} else {
+			log.Printf("jc_proxy listening on %s", cfg.Server.Listen)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("listen failed: %v", err)
+			}
 		}
 	}()
 
