@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { CLIENT_HEADER_PRESET_OPTIONS, CLIENT_HEADER_PRESET_PREVIEWS, DEFAULT_CLIENT_HEADER_DROP_PREVIEW } from '../app/constants'
 import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass, parseKeysText, recommendedClientHeaderPreset } from '../app/utils'
@@ -122,6 +122,8 @@ export function VendorsPage({
   const [clientKeyInputText, setClientKeyInputText] = useState('')
   const [expandedSections, setExpandedSections] = useState(DEFAULT_EXPANDED_SECTIONS)
   const [vendorSearchQuery, setVendorSearchQuery] = useState('')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [collapsedGroups, setCollapsedGroups] = useState({ aggregate: false, independent: false })
   const [keyPicker, setKeyPicker] = useState(null)
   const allowlistCount = countTextItems(allowlistText)
   const dropHeadersCount = countTextItems(dropHeadersText)
@@ -135,13 +137,35 @@ export function VendorsPage({
   )
   const aggregateVendorRows = filteredVendorRows.filter((row) => row.provider === 'aggregate')
   const independentVendorRows = filteredVendorRows.filter((row) => row.provider !== 'aggregate')
-  const aggregateVendorCount = (vendorRows || []).filter((row) => row.provider === 'aggregate').length
-  const independentVendorCount = (vendorRows || []).length - aggregateVendorCount
+
+  const newVendorFormRef = useRef(newVendorForm)
+  useEffect(() => {
+    newVendorFormRef.current = newVendorForm
+  }, [newVendorForm])
 
   useEffect(() => {
     setClientKeyInputText('')
     setKeyPicker(null)
   }, [selectedVendor])
+
+  // 搜索时自动展开分组，避免命中项被折叠隐藏。
+  useEffect(() => {
+    if (vendorSearchQuery.trim()) setCollapsedGroups({ aggregate: false, independent: false })
+  }, [vendorSearchQuery])
+
+  const toggleVendorGroup = (groupKey) => {
+    setCollapsedGroups((prev) => ({ ...prev, [groupKey]: !prev[groupKey] }))
+  }
+
+  const canCreateVendor = Boolean(String(newVendorForm.name || '').trim())
+    && (newVendorForm.provider === 'aggregate' || Boolean(String(newVendorForm.baseURL || '').trim()))
+
+  const handleCreateVendor = async () => {
+    if (busy || !canCreateVendor) return
+    await onCreateVendor()
+    // 父组件创建成功后会清空表单，据此收起新建面板。
+    if (!String(newVendorFormRef.current?.name || '').trim()) setCreateOpen(false)
+  }
 
   const toggleSection = (sectionKey) => {
     setExpandedSections((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }))
@@ -370,7 +394,8 @@ export function VendorsPage({
     return (
       <button
         key={row.name}
-        className={`vendor-item vendor-item-${aggregate ? 'aggregate' : 'independent'} ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
+        type="button"
+        className={`vendor-item ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
         onClick={() => onSelectVendor(row.name)}
       >
         <span className="vendor-item-heading">
@@ -387,71 +412,58 @@ export function VendorsPage({
     )
   }
 
+  const renderVendorGroup = (groupKey, label, rows) => {
+    const open = !collapsedGroups[groupKey]
+    return (
+      <section className="vendor-list-group" key={groupKey}>
+        <button
+          type="button"
+          className="vendor-list-group-header"
+          aria-expanded={open}
+          onClick={() => toggleVendorGroup(groupKey)}
+        >
+          <svg className="vendor-list-group-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+          <span>{label}</span>
+          <span className="vendor-list-group-count">{rows.length}</span>
+        </button>
+        {open && (
+          <div className="vendor-list-group-items">
+            {rows.map(renderVendorItem)}
+            {!rows.length && <p className="vendor-list-empty">暂无{label}</p>}
+          </div>
+        )}
+      </section>
+    )
+  }
+
   return (
     <section className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)] animate-fade-in">
       {/* Sidebar */}
       <aside className={panelClass('p-4')}>
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <h3 className="section-title">供应商</h3>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
-              <span>聚合 {aggregateVendorCount}</span>
-              <span className="text-[var(--border-strong)]">/</span>
-              <span>独立 {independentVendorCount}</span>
-            </div>
+        {/* Header + 新建入口 */}
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="section-title">供应商</h3>
+          <div className="flex items-center gap-2">
+            <button className={buttonClass('ghost')} type="button" disabled={busy} onClick={onRefresh} title="刷新列表" aria-label="刷新列表">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+              </svg>
+            </button>
+            <button
+              className={buttonClass(createOpen ? 'ghost' : 'primary')}
+              type="button"
+              aria-expanded={createOpen}
+              onClick={() => setCreateOpen((prev) => !prev)}
+            >
+              {createOpen ? '收起' : '新建'}
+            </button>
           </div>
-          <button className={buttonClass('ghost')} disabled={busy} onClick={onRefresh}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-            </svg>
-          </button>
         </div>
 
-        <div className="mb-3">
-          <input
-            type="text"
-            className="input-base w-full text-sm"
-            placeholder="搜索供应商..."
-            value={vendorSearchQuery}
-            onChange={(e) => setVendorSearchQuery(e.target.value)}
-          />
-        </div>
-
-        <div className="vendor-list max-h-[420px] overflow-y-auto pr-1 custom-scrollbar xl:max-h-[calc(100vh-310px)]">
-          {(aggregateVendorRows.length > 0 || !vendorSearchQuery) && (
-            <section className="vendor-list-group vendor-list-group-aggregate">
-              <div className="vendor-list-group-header">
-                <span><i aria-hidden="true" />聚合供应商</span>
-                <strong>{aggregateVendorRows.length}</strong>
-              </div>
-              <div className="space-y-2">
-                {aggregateVendorRows.map(renderVendorItem)}
-                {aggregateVendorRows.length === 0 && <p className="vendor-list-empty">暂无聚合供应商</p>}
-              </div>
-            </section>
-          )}
-
-          {(independentVendorRows.length > 0 || !vendorSearchQuery) && (
-            <section className="vendor-list-group vendor-list-group-independent">
-              <div className="vendor-list-group-header">
-                <span><i aria-hidden="true" />独立供应商</span>
-                <strong>{independentVendorRows.length}</strong>
-              </div>
-              <div className="space-y-2">
-                {independentVendorRows.map(renderVendorItem)}
-                {independentVendorRows.length === 0 && <p className="vendor-list-empty">暂无独立供应商</p>}
-              </div>
-            </section>
-          )}
-          {filteredVendorRows.length === 0 && (
-            <div className="text-center text-xs text-[var(--text-muted)] py-4">未找到匹配的供应商</div>
-          )}
-        </div>
-
-        {/* Create Vendor */}
-        <section className="mt-4 border-t border-[var(--border)] pt-4">
-          <h3 className="section-title text-sm mb-3">新建供应商</h3>
-          <div className="space-y-3">
+        {createOpen && (
+          <div className="vendor-create mb-3">
             <div className="vendor-type-segment" role="group" aria-label="供应商类型">
               <button
                 type="button"
@@ -462,7 +474,7 @@ export function VendorsPage({
               </button>
               <button
                 type="button"
-                className={newVendorForm.provider === 'aggregate' ? 'active aggregate' : ''}
+                className={newVendorForm.provider === 'aggregate' ? 'active' : ''}
                 onClick={() => onNewVendorFormChange((prev) => ({ ...prev, provider: 'aggregate' }))}
               >
                 聚合
@@ -473,6 +485,7 @@ export function VendorsPage({
               placeholder="供应商名称，例如 openai"
               value={newVendorForm.name}
               onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, name: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateVendor() }}
             />
             {newVendorForm.provider !== 'aggregate' && (
               <input
@@ -480,13 +493,30 @@ export function VendorsPage({
                 placeholder="上游 base_url"
                 value={newVendorForm.baseURL}
                 onChange={(e) => onNewVendorFormChange((prev) => ({ ...prev, baseURL: e.target.value }))}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateVendor() }}
               />
             )}
-            <button className={`${buttonClass('primary')} w-full`} disabled={busy} onClick={onCreateVendor}>
+            <button className={`${buttonClass('primary')} w-full`} type="button" disabled={busy || !canCreateVendor} onClick={handleCreateVendor}>
               创建供应商
             </button>
           </div>
-        </section>
+        )}
+
+        <input
+          type="text"
+          className="input-base w-full text-sm"
+          placeholder="搜索供应商..."
+          value={vendorSearchQuery}
+          onChange={(e) => setVendorSearchQuery(e.target.value)}
+        />
+
+        <div className="vendor-list mt-3 max-h-[440px] overflow-y-auto pr-1 custom-scrollbar xl:max-h-[calc(100vh-260px)]">
+          {(aggregateVendorRows.length > 0 || !vendorSearchQuery) && renderVendorGroup('aggregate', '聚合供应商', aggregateVendorRows)}
+          {(independentVendorRows.length > 0 || !vendorSearchQuery) && renderVendorGroup('independent', '独立供应商', independentVendorRows)}
+          {filteredVendorRows.length === 0 && !!vendorSearchQuery && (
+            <p className="vendor-list-empty">未找到匹配的供应商</p>
+          )}
+        </div>
       </aside>
 
       {/* Main Config Area */}
