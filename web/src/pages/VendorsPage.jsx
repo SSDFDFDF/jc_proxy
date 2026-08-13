@@ -510,7 +510,7 @@ export function VendorsPage({
           onChange={(e) => setVendorSearchQuery(e.target.value)}
         />
 
-        <div className="vendor-list mt-3 max-h-[440px] overflow-y-auto pr-1 custom-scrollbar xl:max-h-[calc(100vh-260px)]">
+        <div className="vendor-list mt-3 overflow-y-auto pr-1 custom-scrollbar">
           {(aggregateVendorRows.length > 0 || !vendorSearchQuery) && renderVendorGroup('aggregate', '聚合供应商', aggregateVendorRows)}
           {(independentVendorRows.length > 0 || !vendorSearchQuery) && renderVendorGroup('independent', '独立供应商', independentVendorRows)}
           {filteredVendorRows.length === 0 && !!vendorSearchQuery && (
