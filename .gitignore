@@ -8,3 +8,10 @@ internal/ui/dist/
 
 *.pem
 jc_proxy
+
+# jc_proxy_upgrade writes backups next to the file it migrates; they hold the
+# same secrets as the original config and must never be committed.
+*.bak
+
+# Production migration config; holds the live database DSN.
+migrate_neon.yaml

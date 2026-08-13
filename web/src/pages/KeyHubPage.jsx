@@ -181,7 +181,8 @@ function ErrorPill({ label, count, tone = 'default' }) {
 
 export function KeyHubPage({
   upstreamKeysData,
-  selectedKeyVendor,
+  selectedKeyVendorID,
+  selectedKeyVendorName,
   showSecrets,
   busy,
   onToggleSecrets,
@@ -216,8 +217,8 @@ export function KeyHubPage({
   const [selectedKeys, setSelectedKeys] = useState(new Set())
   const [remarkEditor, setRemarkEditor] = useState(null)
 
-  const allItems = upstreamKeysData.items?.[selectedKeyVendor] || []
-  const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendor] || []
+  const allItems = upstreamKeysData.items?.[selectedKeyVendorID] || []
+  const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendorID] || []
 
   /* ── Build runtime lookup by stable key id ── */
   const runtimeMap = useMemo(() => {
@@ -304,7 +305,7 @@ export function KeyHubPage({
     setShowAddModal(false)
     setModalHint('')
     setRemarkEditor(null)
-  }, [selectedKeyVendor])
+  }, [selectedKeyVendorID])
 
   useEffect(() => {
     setPage((prev) => Math.min(prev, totalPages))
@@ -331,24 +332,24 @@ export function KeyHubPage({
 
   useEffect(() => {
     setSelectedKeys(new Set())
-  }, [query, statusFilter, page, pageSize, selectedKeyVendor])
+  }, [query, statusFilter, page, pageSize, selectedKeyVendorID])
 
   /* ── Build unified vendor tabs ── */
   const vendorTabs = useMemo(() => {
     const upstreamVendors = upstreamKeysData.vendors || []
     const upstreamItems = upstreamKeysData.items || {}
     const runtimeVendors = runtimeStats?.vendors || {}
-    const runtimeLookup = new Map(vendorRows.map((r) => [r.name, r]))
+    const runtimeLookup = new Map(vendorRows.map((r) => [r.id, r]))
     const seen = new Set()
     const tabs = []
 
-    const buildCounts = (vendor, fallbackActive = 0, fallbackDisabled = 0) => {
-      const vendorItems = upstreamItems[vendor] || []
+    const buildCounts = (vendorID, fallbackActive = 0, fallbackDisabled = 0) => {
+      const vendorItems = upstreamItems[vendorID] || []
       if (!vendorItems.length) {
         return { activeCount: fallbackActive, disabledCount: fallbackDisabled }
       }
       const vendorRuntimeMap = new Map()
-      for (const item of runtimeVendors[vendor] || []) {
+      for (const item of runtimeVendors[vendorID] || []) {
         if (item.key_id) vendorRuntimeMap.set(item.key_id, item)
         else if (item.key_masked) vendorRuntimeMap.set(item.key_masked, item)
       }
@@ -364,12 +365,15 @@ export function KeyHubPage({
     }
 
     for (const item of upstreamVendors) {
-      const row = runtimeLookup.get(item.vendor)
+      const row = runtimeLookup.get(item.vendor_id)
       if (row?.provider === 'aggregate') continue
-      seen.add(item.vendor)
-      const counts = buildCounts(item.vendor, item.active_count || 0, item.disabled_count || 0)
+      seen.add(item.vendor_id)
+      const counts = buildCounts(item.vendor_id, item.active_count || 0, item.disabled_count || 0)
       tabs.push({
-        vendor: item.vendor,
+        vendorID: item.vendor_id,
+        // An unconfigured partition has no config entry to take a name from.
+        vendorName: row?.name || item.vendor || item.vendor_id,
+        configured: item.configured !== false,
         activeCount: counts.activeCount,
         disabledCount: counts.disabledCount,
         backoff: row?.backoff || 0,
@@ -378,9 +382,9 @@ export function KeyHubPage({
     }
     for (const row of vendorRows) {
       if (row.provider === 'aggregate') continue
-      if (!seen.has(row.name)) {
-        const counts = buildCounts(row.name, 0, 0)
-        tabs.push({ vendor: row.name, activeCount: counts.activeCount, disabledCount: counts.disabledCount, backoff: row.backoff || 0, inflight: row.inflight || 0 })
+      if (!seen.has(row.id)) {
+        const counts = buildCounts(row.id, 0, 0)
+        tabs.push({ vendorID: row.id, vendorName: row.name, configured: true, activeCount: counts.activeCount, disabledCount: counts.disabledCount, backoff: row.backoff || 0, inflight: row.inflight || 0 })
       }
     }
     return tabs
@@ -439,11 +443,11 @@ export function KeyHubPage({
       <div className="mb-5 flex flex-wrap gap-2">
         {vendorTabs.map((item) => (
           <button
-            key={item.vendor}
-            className={`tab-link ${selectedKeyVendor === item.vendor ? 'tab-link-active' : ''}`}
-            onClick={() => onSelectVendor(item.vendor)}
+            key={item.vendorID}
+            className={`tab-link ${selectedKeyVendorID === item.vendorID ? 'tab-link-active' : ''}`}
+            onClick={() => onSelectVendor(item.vendorID)}
           >
-            <span>{item.vendor}</span>
+            <span>{item.vendorName}{item.configured ? '' : '（未配置）'}</span>
             <small className="inline-flex items-center gap-1.5 font-mono tabular-nums whitespace-nowrap">
               <span className="text-[var(--success)]" title="启用">◉</span><span>{item.activeCount}</span>
               <span className="text-[var(--text-faint)]">·</span>
@@ -458,7 +462,7 @@ export function KeyHubPage({
         {!vendorTabs.length && <p className="text-sm text-[var(--text-faint)]">暂无供应商，请先创建供应商。</p>}
       </div>
 
-      {selectedKeyVendor && (
+      {selectedKeyVendorID && (
         <div className="mt-4 space-y-5 border-t border-[var(--border)] pt-5">
           {/* ═══ Control Bar ═══ */}
           <div className="control-bar">
@@ -521,7 +525,7 @@ export function KeyHubPage({
                   </svg>
                   {showSecrets ? '隐藏' : '显示'}
                 </button>
-                <button className={buttonClass('primary')} disabled={busy || !selectedKeyVendor} onClick={() => setShowAddModal(true)}>
+                <button className={buttonClass('primary')} disabled={busy || !selectedKeyVendorID} onClick={() => setShowAddModal(true)}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
                   </svg>
@@ -693,7 +697,7 @@ export function KeyHubPage({
                           </button>
                           <button
                             className="font-medium text-[var(--accent)] hover:text-blue-400 transition-colors"
-                            onClick={() => onTestKey?.(selectedKeyVendor, item.key)}
+                            onClick={() => onTestKey?.(selectedKeyVendorID, item.key)}
                           >
                             测试
                           </button>

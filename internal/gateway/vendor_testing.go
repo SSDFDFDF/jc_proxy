@@ -29,6 +29,7 @@ type VendorTestPreset struct {
 }
 
 type VendorTestMeta struct {
+	VendorID       string             `json:"vendor_id"`
 	Vendor         string             `json:"vendor"`
 	Provider       string             `json:"provider"`
 	BaseURL        string             `json:"base_url"`
@@ -58,29 +59,30 @@ type VendorTestResult struct {
 	DurationMS  int64               `json:"duration_ms"`
 }
 
-func (rt *Runtime) VendorTestMeta(vendor string) (VendorTestMeta, error) {
+func (rt *Runtime) VendorTestMeta(vendorID string) (VendorTestMeta, error) {
 	router := rt.router.Load()
 	if router == nil {
 		return VendorTestMeta{}, errors.New("runtime router unavailable")
 	}
-	return router.VendorTestMeta(vendor)
+	return router.VendorTestMeta(vendorID)
 }
 
-func (rt *Runtime) ExecuteVendorTest(ctx context.Context, vendor string, req VendorTestRequest) (*VendorTestResult, error) {
+func (rt *Runtime) ExecuteVendorTest(ctx context.Context, vendorID string, req VendorTestRequest) (*VendorTestResult, error) {
 	router := rt.router.Load()
 	if router == nil {
 		return nil, errors.New("runtime router unavailable")
 	}
-	return router.ExecuteVendorTest(ctx, vendor, req)
+	return router.ExecuteVendorTest(ctx, vendorID, req)
 }
 
-func (r *Router) VendorTestMeta(vendor string) (VendorTestMeta, error) {
-	vg, err := r.lookupVendor(vendor)
+func (r *Router) VendorTestMeta(vendorID string) (VendorTestMeta, error) {
+	vg, err := r.lookupVendorByID(vendorID)
 	if err != nil {
 		return VendorTestMeta{}, err
 	}
 
 	return VendorTestMeta{
+		VendorID:       vg.id,
 		Vendor:         vg.name,
 		Provider:       vg.provider,
 		BaseURL:        vg.baseURL.String(),
@@ -89,22 +91,22 @@ func (r *Router) VendorTestMeta(vendor string) (VendorTestMeta, error) {
 	}, nil
 }
 
-func (r *Router) ExecuteVendorTest(ctx context.Context, vendor string, req VendorTestRequest) (*VendorTestResult, error) {
-	vg, err := r.lookupVendor(vendor)
+func (r *Router) ExecuteVendorTest(ctx context.Context, vendorID string, req VendorTestRequest) (*VendorTestResult, error) {
+	vg, err := r.lookupVendorByID(vendorID)
 	if err != nil {
 		return nil, err
 	}
 	return vg.executeTest(ctx, req)
 }
 
-func (r *Router) lookupVendor(vendor string) (*vendorGateway, error) {
-	name := strings.TrimSpace(vendor)
-	if name == "" {
-		return nil, errors.New("vendor is required")
+func (r *Router) lookupVendorByID(vendorID string) (*vendorGateway, error) {
+	id := strings.TrimSpace(vendorID)
+	if id == "" {
+		return nil, errors.New("vendor id is required")
 	}
-	vg := r.vendors[name]
+	vg := r.vendorsByID[id]
 	if vg == nil {
-		return nil, fmt.Errorf("vendor %q not found", name)
+		return nil, fmt.Errorf("vendor %q not found", id)
 	}
 	return vg, nil
 }

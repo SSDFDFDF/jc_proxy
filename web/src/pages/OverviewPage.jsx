@@ -50,7 +50,7 @@ export function OverviewPage({ metrics, vendorRows, upstreamStorage, onOpenUpstr
               </thead>
               <tbody>
                 {vendorRows.map((row) => (
-                  <tr key={row.name}>
+                  <tr key={row.id}>
                     <td className="font-semibold text-[var(--text-primary)]">{row.name}</td>
                     <td className="font-mono">{row.upstreamKeys}</td>
                     <td className="font-mono">{row.clientKeys}</td>

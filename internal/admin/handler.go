@@ -189,7 +189,7 @@ func (h *Handler) handleStats(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page")))
 	pageSize, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page_size")))
 	writeJSON(w, http.StatusOK, h.service.Stats(RuntimeStatsQuery{
-		Vendor:   strings.TrimSpace(r.URL.Query().Get("vendor")),
+		VendorID: strings.TrimSpace(r.URL.Query().Get("vendor_id")),
 		Filter:   strings.TrimSpace(r.URL.Query().Get("filter")),
 		Q:        strings.TrimSpace(r.URL.Query().Get("q")),
 		Page:     page,
@@ -345,61 +345,98 @@ func (h *Handler) handleVendors(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, cfg.Vendors)
 	case http.MethodPost:
-		var req VendorUpsertRequest
+		var req VendorCreateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json body")
 			return
 		}
-		if err := h.service.UpsertVendor(r.Header.Get("X-Admin-User"), req.Vendor, req.Config); err != nil {
+		id, err := h.service.CreateVendor(r.Header.Get("X-Admin-User"), req.Name, req.Config)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, VendorCreateResponse{VendorID: id, Name: strings.TrimSpace(req.Name)})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
+// handleVendorByPath addresses vendors by their immutable id, so a rename in
+// another browser tab cannot make an in-flight console action hit the wrong
+// vendor.
 func (h *Handler) handleVendorByPath(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/admin/vendors/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
-		writeError(w, http.StatusBadRequest, "vendor path required")
+		writeError(w, http.StatusBadRequest, "vendor id required")
 		return
 	}
-	vendor := parts[0]
+	vendorID := parts[0]
 
 	if len(parts) == 1 {
-		if r.Method != http.MethodDelete {
+		switch r.Method {
+		case http.MethodPut, http.MethodPatch:
+			var req VendorUpdateRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			if err := h.service.UpdateVendor(r.Header.Get("X-Admin-User"), vendorID, req.Config); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		case http.MethodDelete:
+			if err := h.service.DeleteVendor(r.Header.Get("X-Admin-User"), vendorID); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
 		}
-		if err := h.service.DeleteVendor(r.Header.Get("X-Admin-User"), vendor); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 
 	resource := parts[1]
+	if resource == "rename" {
+		h.handleVendorRename(w, r, vendorID)
+		return
+	}
 	if resource == "keys" {
-		h.handleUpstreamKeys(w, r, vendor)
+		h.handleUpstreamKeys(w, r, vendorID)
 		return
 	}
 	if resource == "client-keys" {
-		h.handleClientKeys(w, r, vendor)
+		h.handleClientKeys(w, r, vendorID)
 		return
 	}
 	if resource == "test-meta" {
-		h.handleVendorTestMeta(w, r, vendor)
+		h.handleVendorTestMeta(w, r, vendorID)
 		return
 	}
 	if resource == "test" {
-		h.handleVendorTest(w, r, vendor)
+		h.handleVendorTest(w, r, vendorID)
 		return
 	}
 	writeError(w, http.StatusNotFound, "unknown vendor resource")
+}
+
+func (h *Handler) handleVendorRename(w http.ResponseWriter, r *http.Request, vendorID string) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req VendorRenameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := h.service.RenameVendor(r.Header.Get("X-Admin-User"), vendorID, req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) handleUpstreamKeys(w http.ResponseWriter, r *http.Request, vendor string) {

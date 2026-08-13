@@ -75,7 +75,11 @@ function CollapsibleSection({
 export function VendorsPage({
   busy,
   vendorRows,
-  selectedVendor,
+  selectedVendorID,
+  selectedVendorName,
+  renameDraft,
+  onRenameDraftChange,
+  onRenameVendor,
   vendorDraft,
   upstreamKeysData,
   runtimeStats,
@@ -115,7 +119,7 @@ export function VendorsPage({
   setInjectRows,
   setRewriteRows
 }) {
-  const requestEndpoint = buildVendorRequestEndpoint(selectedVendor)
+  const requestEndpoint = buildVendorRequestEndpoint(selectedVendorName)
   const clientKeys = normalizeKeys(vendorDraft?.client_auth?.keys || [])
   const selectedPresetOption = CLIENT_HEADER_PRESET_OPTIONS.find((option) => option.value === clientHeaderPreset) || CLIENT_HEADER_PRESET_OPTIONS[0]
   const presetPreviewHeaders = CLIENT_HEADER_PRESET_PREVIEWS[clientHeaderPreset] || []
@@ -146,7 +150,7 @@ export function VendorsPage({
   useEffect(() => {
     setClientKeyInputText('')
     setKeyPicker(null)
-  }, [selectedVendor])
+  }, [selectedVendorID])
 
   // 搜索时自动展开分组，避免命中项被折叠隐藏。
   useEffect(() => {
@@ -255,18 +259,19 @@ export function VendorsPage({
   const isAggregate = vendorDraft?.provider === 'aggregate'
   const aggregateChildren = vendorDraft?.aggregate?.children || []
   const aggregateRetry = vendorDraft?.aggregate?.retry || {}
-  const vendorRowByName = new Map((vendorRows || []).map((row) => [row.name, row]))
-  const runtimeKeyByVendor = new Map(Object.entries(runtimeStats?.vendors || {}).map(([vendor, items]) => {
+  const vendorRowByID = new Map((vendorRows || []).map((row) => [row.id, row]))
+  // Runtime statistics and key partitions are both keyed by vendor id.
+  const runtimeKeyByVendorID = new Map(Object.entries(runtimeStats?.vendors || {}).map(([vendorID, items]) => {
     const keys = new Map()
     for (const item of items || []) {
       if (item.key_id) keys.set(item.key_id, item)
       if (item.key_masked) keys.set(item.key_masked, item)
     }
-    return [vendor, keys]
+    return [vendorID, keys]
   }))
 
-  const aggregateKeyState = (vendor, item) => {
-    const runtime = runtimeKeyByVendor.get(vendor)?.get(item.key_id) || runtimeKeyByVendor.get(vendor)?.get(item.masked) || {}
+  const aggregateKeyState = (vendorID, item) => {
+    const runtime = runtimeKeyByVendorID.get(vendorID)?.get(item.key_id) || runtimeKeyByVendorID.get(vendorID)?.get(item.masked) || {}
     const status = String(runtime.status || item.status || 'active')
     const backoff = Number(runtime.backoff_remaining_seconds || 0)
     return {
@@ -277,16 +282,16 @@ export function VendorsPage({
   }
 
   const aggregateChildHealth = (child) => {
-    const row = vendorRowByName.get(child?.vendor)
-    if (!child?.vendor || !row) {
+    const row = vendorRowByID.get(child?.vendor_id)
+    if (!child?.vendor_id || !row) {
       return { tone: 'muted', label: '未选择' }
     }
     const selectedIDs = Array.isArray(child.key_ids) ? child.key_ids : []
     if (selectedIDs.length > 0) {
       const selectedSet = new Set(selectedIDs)
-      const selectedStates = (upstreamKeysData?.items?.[child.vendor] || [])
+      const selectedStates = (upstreamKeysData?.items?.[child.vendor_id] || [])
         .filter((item) => selectedSet.has(item.key_id))
-        .map((item) => aggregateKeyState(child.vendor, item))
+        .map((item) => aggregateKeyState(child.vendor_id, item))
       const available = selectedStates.filter((state) => state.available).length
       const backingOff = selectedStates.some((state) => state.status === 'active' && state.backoff > 0)
       return {
@@ -310,7 +315,7 @@ export function VendorsPage({
     onMutateVendorDraft((draft) => {
       if (!draft.aggregate) draft.aggregate = { children: [] }
       if (!draft.aggregate.children) draft.aggregate.children = []
-      draft.aggregate.children.push({ vendor: '', weight: 1, priority: 0, key_ids: [] })
+      draft.aggregate.children.push({ vendor_id: '', weight: 1, priority: 0, key_ids: [] })
     })
   }
 
@@ -329,7 +334,7 @@ export function VendorsPage({
   const openAggregateKeyPicker = (childIndex, child) => {
     setKeyPicker({
       childIndex,
-      vendor: child.vendor,
+      vendorID: child.vendor_id,
       query: '',
       page: 1,
       selected: Array.isArray(child.key_ids) ? [...child.key_ids] : []
@@ -346,7 +351,7 @@ export function VendorsPage({
     })
   }
 
-  const pickerAllItems = keyPicker ? (upstreamKeysData?.items?.[keyPicker.vendor] || []) : []
+  const pickerAllItems = keyPicker ? (upstreamKeysData?.items?.[keyPicker.vendorID] || []) : []
   const pickerQuery = keyPicker?.query.trim().toLowerCase() || ''
   const pickerFilteredItems = pickerAllItems.filter((item) => !pickerQuery || [item.masked, item.remark, item.key_id, item.status]
     .filter(Boolean)
@@ -372,7 +377,7 @@ export function VendorsPage({
   const saveAggregateKeyPicker = () => {
     if (!keyPicker) return
     const child = aggregateChildren[keyPicker.childIndex]
-    if (child?.vendor === keyPicker.vendor) {
+    if (child?.vendor_id === keyPicker.vendorID) {
       updateAggregateChild(keyPicker.childIndex, 'key_ids', keyPicker.selected)
     }
     setKeyPicker(null)
@@ -393,10 +398,10 @@ export function VendorsPage({
       : (Number(row.activeUpstreamKeys || 0) > 0 ? 'ready' : (Number(row.upstreamKeys || 0) > 0 ? 'disabled' : 'warning'))
     return (
       <button
-        key={row.name}
+        key={row.id}
         type="button"
-        className={`vendor-item ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
-        onClick={() => onSelectVendor(row.name)}
+        className={`vendor-item ${selectedVendorID === row.id ? 'vendor-item-active' : ''}`}
+        onClick={() => onSelectVendor(row.id)}
       >
         <span className="vendor-item-heading">
           <i className={`vendor-state-dot vendor-state-dot-${state}`} aria-hidden="true" />
@@ -528,7 +533,7 @@ export function VendorsPage({
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="section-title text-base">{selectedVendor}</h3>
+                  <h3 className="section-title text-base">{selectedVendorName}</h3>
                   <span className={`vendor-kind-badge ${isAggregate ? 'vendor-kind-badge-aggregate' : ''}`}>
                     {isAggregate ? '聚合供应商' : '独立供应商'}
                   </span>
@@ -536,8 +541,9 @@ export function VendorsPage({
                 <p className="mt-1 text-xs text-[var(--text-muted)]">
                   {isAggregate
                     ? `${aggregateChildren.length} 个子供应商参与路由`
-                    : `${vendorDraft.provider || 'generic'} · ${vendorRowByName.get(selectedVendor)?.activeUpstreamKeys || 0} 个可用 Key`}
+                    : `${vendorDraft.provider || 'generic'} · ${vendorRowByID.get(selectedVendorID)?.activeUpstreamKeys || 0} 个可用 Key`}
                 </p>
+                <p className="mt-1 font-mono text-[11px] text-[var(--text-faint)]">ID {selectedVendorID}</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {!isAggregate && <button className={buttonClass('ghost')} onClick={onOpenUpstreamKeys}>上游密钥 →</button>}
@@ -549,6 +555,34 @@ export function VendorsPage({
                 </button>
                 <button className={buttonClass('danger')} disabled={busy} onClick={onDeleteVendor}>删除</button>
               </div>
+            </div>
+
+            {/* Rename: the id never changes, so only the display/route name moves. */}
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="field-wrap mb-0 min-w-[220px] flex-1">
+                  <span className="field-label">供应商名称</span>
+                  <input
+                    className="input-base"
+                    value={renameDraft ?? ''}
+                    placeholder={selectedVendorName}
+                    onChange={(e) => onRenameDraftChange?.(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') onRenameVendor?.() }}
+                  />
+                </label>
+                <button
+                  className={buttonClass('ghost')}
+                  type="button"
+                  disabled={busy || !String(renameDraft || '').trim() || String(renameDraft || '').trim() === selectedVendorName}
+                  onClick={() => onRenameVendor?.()}
+                >
+                  改名
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-[var(--text-muted)]">
+                名称同时是客户端调用路径的第一段。改名后旧地址会立即返回 404，请同步更新客户端；
+                上游密钥、运行统计和聚合关系都绑定在不变的 ID 上，不会受影响。
+              </p>
             </div>
 
             <CollapsibleSection
@@ -821,17 +855,17 @@ export function VendorsPage({
                               <span className="field-label">子供应商名称</span>
                               <select
                                 className="select-base w-full"
-                                value={child.vendor || ''}
+                                value={child.vendor_id || ''}
                                 onChange={(e) => {
-                                  updateAggregateChild(index, 'vendor', e.target.value)
+                                  updateAggregateChild(index, 'vendor_id', e.target.value)
                                   updateAggregateChild(index, 'key_ids', [])
                                 }}
                               >
                                 <option value="" disabled>-- 请选择已有供应商 --</option>
                                 {vendorRows
-                                  .filter((v) => v.name !== selectedVendor && v.provider !== 'aggregate')
+                                  .filter((v) => v.id !== selectedVendorID && v.provider !== 'aggregate')
                                   .map((v) => (
-                                    <option key={v.name} value={v.name}>
+                                    <option key={v.id} value={v.id}>
                                       {v.name} ({v.provider})
                                     </option>
                                   ))}
@@ -858,7 +892,7 @@ export function VendorsPage({
                               />
                             </label>
                           </div>
-                          {child.vendor && (
+                          {child.vendor_id && (
                             <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div>
@@ -1237,7 +1271,7 @@ export function VendorsPage({
           <div className="modal-panel animate-slide-in max-w-2xl">
             <div className="modal-header">
               <div>
-                <h3>选择 {keyPicker.vendor} 的 Key</h3>
+                <h3>选择 {vendorRowByID.get(keyPicker.vendorID)?.name || keyPicker.vendorID} 的 Key</h3>
                 <p>保存后，该子供应商只会在所选 Key 内进行轮询和故障切换。</p>
               </div>
               <button className="modal-close" type="button" aria-label="关闭" onClick={() => setKeyPicker(null)}>✕</button>
@@ -1260,7 +1294,7 @@ export function VendorsPage({
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {pickerPageItems.map((item) => {
-                  const state = aggregateKeyState(keyPicker.vendor, item)
+                  const state = aggregateKeyState(keyPicker.vendorID, item)
                   const stateLabel = state.backoff > 0
                     ? `退避 ${state.backoff}s`
                     : (state.status === 'active' ? '可用' : (state.status === 'disabled_manual' ? '手动禁用' : '自动禁用'))

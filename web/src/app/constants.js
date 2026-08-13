@@ -12,6 +12,7 @@ export const NAV_ITEMS = [
 ]
 
 export const EMPTY_CONFIG = {
+  schema_version: 2,
   server: {
     listen: ':8092',
     read_timeout: 30_000_000_000,
@@ -29,7 +30,7 @@ export const EMPTY_CONFIG = {
     allowed_cidrs: [],
     trusted_proxy_cidrs: []
   },
-  vendors: {}
+  vendors: []
 }
 
 export const EMPTY_UPSTREAM_KEYS = {

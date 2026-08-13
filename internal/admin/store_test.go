@@ -23,12 +23,12 @@ func TestStoreGeneratesInitialAdminPassword(t *testing.T) {
 				FilePath: filepath.Join(tmpDir, "upstream_keys.json"),
 			},
 		},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
-				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com", Keys: []string{"k1"}},
+				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("PrepareAndValidate() error = %v", err)

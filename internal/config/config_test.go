@@ -11,6 +11,7 @@ import (
 )
 
 const testConfigYAML = `
+schema_version: 2
 server:
   listen: ":8092"
 
@@ -22,7 +23,8 @@ storage:
     file_path: "./data/upstream_keys.json"
 
 vendors:
-  openai:
+  - id: "vid_openai"
+    name: "openai"
     upstream:
       base_url: "https://api.openai.com"
 `
@@ -75,6 +77,7 @@ func TestLoadBootstrapBytesKeepsAdminCredentialsFromConfigOverEnv(t *testing.T) 
 	t.Setenv("JC_PROXY_ADMIN_PASSWORD_HASH", "pbkdf2$120000$envsalt$envhash")
 
 	cfg, err := LoadBootstrapBytes([]byte(`
+schema_version: 2
 admin:
   enabled: true
   username: db-admin
@@ -112,6 +115,7 @@ func TestLoadBootstrapBytesNoEnvDoesNotApplyAdminCredentialOverrides(t *testing.
 	t.Setenv("JC_PROXY_ADMIN_PASSWORD_HASH", "pbkdf2$120000$envsalt$envhash")
 
 	cfg, err := LoadBootstrapBytesNoEnv([]byte(`
+schema_version: 2
 admin:
   enabled: true
 
@@ -263,7 +267,7 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 	if cfg.Server.WriteTimeout != 0 {
 		t.Fatalf("Server.WriteTimeout = %v, want 0", cfg.Server.WriteTimeout)
 	}
-	policy := cfg.Vendors["openai"].ErrorPolicy
+	policy := mustVendor(t, cfg, "openai").ErrorPolicy
 	if !boolValue(policy.AutoDisable.InvalidKey, false) {
 		t.Fatal("ErrorPolicy.AutoDisable.InvalidKey = false, want true")
 	}
@@ -283,6 +287,7 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 
 func TestLoadBytesSupportsCustomErrorPolicyRules(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
+schema_version: 2
 server:
   listen: ":8092"
 
@@ -294,7 +299,8 @@ storage:
     file_path: "./data/upstream_keys.json"
 
 vendors:
-  openai:
+  - id: "vid_openai"
+    name: "openai"
     upstream:
       base_url: "https://api.openai.com"
     error_policy:
@@ -316,7 +322,7 @@ vendors:
 		t.Fatalf("LoadBytes() error = %v", err)
 	}
 
-	policy := cfg.Vendors["openai"].ErrorPolicy
+	policy := mustVendor(t, cfg, "openai").ErrorPolicy
 	if len(policy.AutoDisable.InvalidKeyStatusCodes) != 2 || policy.AutoDisable.InvalidKeyStatusCodes[0] != 400 || policy.AutoDisable.InvalidKeyStatusCodes[1] != 401 {
 		t.Fatalf("invalid_key_status_codes = %#v", policy.AutoDisable.InvalidKeyStatusCodes)
 	}
@@ -336,6 +342,7 @@ vendors:
 
 func TestLoadBytesRejectsInvalidCustomErrorPolicyRules(t *testing.T) {
 	_, err := LoadBytes([]byte(`
+schema_version: 2
 server:
   listen: ":8092"
 
@@ -347,7 +354,8 @@ storage:
     file_path: "./data/upstream_keys.json"
 
 vendors:
-  openai:
+  - id: "vid_openai"
+    name: "openai"
     upstream:
       base_url: "https://api.openai.com"
     error_policy:
@@ -368,6 +376,7 @@ vendors:
 
 func TestLoadAllowsBootstrapAdminWithoutCredentials(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
+schema_version: 2
 server:
   listen: ":8092"
 
@@ -385,7 +394,8 @@ storage:
     file_path: "./data/upstream_keys.json"
 
 vendors:
-  openai:
+  - id: "vid_openai"
+    name: "openai"
     upstream:
       base_url: "https://api.openai.com"
 `))
@@ -462,6 +472,7 @@ func TestResolveRequestAddrIgnoresForwardedHeadersFromUntrustedPeer(t *testing.T
 
 func TestParseAdminCredentialLayerYAML(t *testing.T) {
 	layer, err := ParseAdminCredentialLayerYAML([]byte(`
+schema_version: 2
 admin:
   username: db-admin
   password_hash: db-hash
@@ -501,14 +512,14 @@ func TestPrepareAndValidateRejectsUnknownClientHeaderPreset(t *testing.T) {
 			Config:       ConfigStoreConfig{Driver: "file"},
 			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
 		},
-		Vendors: map[string]VendorConfig{
+		Vendors: VendorsFromMap(map[string]VendorConfig{
 			"openai": {
 				Upstream: UpstreamConfig{BaseURL: "https://api.openai.com"},
 				ClientHeaders: ClientHeadersConfig{
 					Preset: "unknown-preset",
 				},
 			},
-		},
+		}),
 	}
 
 	err := cfg.PrepareAndValidate()
@@ -524,26 +535,27 @@ func TestPrepareAndValidateSetsDefaultUpstreamResponseHeaderTimeout(t *testing.T
 			Config:       ConfigStoreConfig{Driver: "file"},
 			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
 		},
-		Vendors: map[string]VendorConfig{
+		Vendors: VendorsFromMap(map[string]VendorConfig{
 			"openai": {
 				Upstream: UpstreamConfig{BaseURL: "https://api.openai.com"},
 			},
-		},
+		}),
 	}
 
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("PrepareAndValidate() error = %v", err)
 	}
-	if got := cfg.Vendors["openai"].Upstream.ResponseHeaderTimeout; got == nil || *got != 300*time.Second {
+	if got := mustVendor(t, cfg, "openai").Upstream.ResponseHeaderTimeout; got == nil || *got != 300*time.Second {
 		t.Fatalf("ResponseHeaderTimeout = %v, want %v", got, 300*time.Second)
 	}
-	if got := cfg.Vendors["openai"].Upstream.InterimResponseInterval; got == nil || *got != 30*time.Second {
+	if got := mustVendor(t, cfg, "openai").Upstream.InterimResponseInterval; got == nil || *got != 30*time.Second {
 		t.Fatalf("InterimResponseInterval = %v, want %v", got, 30*time.Second)
 	}
 }
 
 func TestLoadBytesSupportsDisabledUpstreamInterimResponse(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
+schema_version: 2
 server:
   listen: ":8092"
 
@@ -555,7 +567,8 @@ storage:
     file_path: "./data/upstream_keys.json"
 
 vendors:
-  openai:
+  - id: "vid_openai"
+    name: "openai"
     upstream:
       base_url: "https://api.openai.com"
       interim_response_interval: 0s
@@ -564,7 +577,7 @@ vendors:
 		t.Fatalf("LoadBytes() error = %v", err)
 	}
 
-	got := cfg.Vendors["openai"].Upstream.InterimResponseInterval
+	got := mustVendor(t, cfg, "openai").Upstream.InterimResponseInterval
 	if got == nil {
 		t.Fatal("InterimResponseInterval = nil, want explicit zero")
 	}
@@ -575,6 +588,7 @@ vendors:
 
 func TestLoadBytesSupportsDisabledUpstreamResponseHeaderTimeout(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
+schema_version: 2
 server:
   listen: ":8092"
 
@@ -586,7 +600,8 @@ storage:
     file_path: "./data/upstream_keys.json"
 
 vendors:
-  openai:
+  - id: "vid_openai"
+    name: "openai"
     upstream:
       base_url: "https://api.openai.com"
       response_header_timeout: 0s
@@ -595,7 +610,7 @@ vendors:
 		t.Fatalf("LoadBytes() error = %v", err)
 	}
 
-	got := cfg.Vendors["openai"].Upstream.ResponseHeaderTimeout
+	got := mustVendor(t, cfg, "openai").Upstream.ResponseHeaderTimeout
 	if got == nil {
 		t.Fatal("ResponseHeaderTimeout = nil, want explicit zero")
 	}
@@ -612,14 +627,14 @@ func TestPrepareAndValidateRejectsNegativeUpstreamResponseHeaderTimeout(t *testi
 			Config:       ConfigStoreConfig{Driver: "file"},
 			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
 		},
-		Vendors: map[string]VendorConfig{
+		Vendors: VendorsFromMap(map[string]VendorConfig{
 			"openai": {
 				Upstream: UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
 					ResponseHeaderTimeout: &negative,
 				},
 			},
-		},
+		}),
 	}
 
 	err := cfg.PrepareAndValidate()
@@ -636,14 +651,14 @@ func TestPrepareAndValidateRejectsNegativeUpstreamInterimResponseInterval(t *tes
 			Config:       ConfigStoreConfig{Driver: "file"},
 			UpstreamKeys: UpstreamKeyStoreConfig{Driver: "file", FilePath: "./data/upstream_keys.json"},
 		},
-		Vendors: map[string]VendorConfig{
+		Vendors: VendorsFromMap(map[string]VendorConfig{
 			"openai": {
 				Upstream: UpstreamConfig{
 					BaseURL:                 "https://api.openai.com",
 					InterimResponseInterval: &negative,
 				},
 			},
-		},
+		}),
 	}
 
 	err := cfg.PrepareAndValidate()
@@ -691,4 +706,16 @@ func preserveEnv(t *testing.T, keys ...string) {
 			}
 		}
 	})
+}
+
+// mustVendor looks up a vendor by its display name and fails the test when it
+// is missing. Vendors are an ordered array keyed by immutable id, so tests
+// address them by name through this helper.
+func mustVendor(t *testing.T, cfg *Config, name string) VendorEntry {
+	t.Helper()
+	entry, ok := cfg.VendorByName(name)
+	if !ok {
+		t.Fatalf("vendor %q not found in config", name)
+	}
+	return entry
 }

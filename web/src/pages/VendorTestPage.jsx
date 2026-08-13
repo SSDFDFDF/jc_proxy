@@ -156,7 +156,8 @@ function ResultBlock({ title, result, models, selectedModel, onPickModel }) {
 export function VendorTestPage({
   busy,
   vendorRows,
-  selectedVendor,
+  selectedVendorID,
+  selectedVendorName,
   refreshStamp,
   onSelectVendor,
   onRefresh,
@@ -206,7 +207,7 @@ export function VendorTestPage({
   }, [vendorRows, vendorSearchQuery])
 
   useEffect(() => {
-    if (!selectedVendor) {
+    if (!selectedVendorID) {
       setMeta(null)
       setMetaError('')
       return
@@ -215,7 +216,7 @@ export function VendorTestPage({
     let cancelled = false
     setMetaError('')
 
-    onLoadMeta(selectedVendor, { silent: true, touchBusy: false })
+    onLoadMeta(selectedVendorID, { silent: true, touchBusy: false })
       .then((payload) => {
         if (cancelled) return
 
@@ -269,7 +270,7 @@ export function VendorTestPage({
     return () => {
       cancelled = true
     }
-  }, [selectedVendor, refreshStamp])
+  }, [selectedVendorID, refreshStamp])
 
   const applyRequestPreset = (presetIndex) => {
     const preset = requestPresets[presetIndex]
@@ -298,11 +299,11 @@ export function VendorTestPage({
   })
 
   const runModelFetch = async () => {
-    if (!selectedVendor) return
+    if (!selectedVendorID) return
     setModelError('')
     try {
       const endpoint = fillModelTemplate(modelEndpoint, selectedModel)
-      const result = await onRunTest(selectedVendor, buildPayload({
+      const result = await onRunTest(selectedVendorID, buildPayload({
         method: 'GET',
         endpoint,
         body: ''
@@ -319,12 +320,12 @@ export function VendorTestPage({
   }
 
   const runRequestTest = async () => {
-    if (!selectedVendor) return
+    if (!selectedVendorID) return
     setRequestError('')
     try {
       const endpoint = fillModelTemplate(requestEndpoint, selectedModel)
       const body = fillModelTemplate(requestBody, selectedModel)
-      const result = await onRunTest(selectedVendor, buildPayload({
+      const result = await onRunTest(selectedVendorID, buildPayload({
         method: requestMethod,
         endpoint,
         body
@@ -361,9 +362,9 @@ export function VendorTestPage({
         <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto pr-1 custom-scrollbar">
           {filteredVendorRows.map((row) => (
             <button
-              key={row.name}
-              className={`vendor-item ${selectedVendor === row.name ? 'vendor-item-active' : ''}`}
-              onClick={() => onSelectVendor(row.name)}
+              key={row.id}
+              className={`vendor-item ${selectedVendorID === row.id ? 'vendor-item-active' : ''}`}
+              onClick={() => onSelectVendor(row.id)}
             >
               <strong>{row.name}</strong>
               <span>上游 {row.upstreamKeys} · 回退 {row.backoff}</span>
@@ -386,19 +387,19 @@ export function VendorTestPage({
       </aside>
 
       <article className={panelClass('p-5')}>
-        {!selectedVendor && (
+        {!selectedVendorID && (
           <p className="text-sm text-[var(--text-muted)]">
             请先在左侧选择一个供应商。
           </p>
         )}
 
-        {selectedVendor && (
+        {selectedVendorID && (
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
               <div className="space-y-1">
                 <p className="section-kicker">供应商测试</p>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="section-title text-base">{selectedVendor}</h3>
+                  <h3 className="section-title text-base">{selectedVendorName}</h3>
                   <span className="status-pill pill-ok">{meta?.provider || '--'}</span>
                 </div>
               </div>

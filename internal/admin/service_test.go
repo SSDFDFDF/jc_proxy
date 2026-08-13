@@ -20,12 +20,12 @@ func testConfig() *config.Config {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
 		Admin:  config.AdminConfig{Enabled: true, Username: "admin", Password: "admin123", SessionTTL: 0},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
-				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com", Keys: []string{"k1"}},
+				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	_ = cfg.PrepareAndValidate()
 	return cfg
@@ -43,7 +43,7 @@ func newTestService(t *testing.T) *Service {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = keyStore.Close() })
-	if _, err := keystore.BootstrapLegacyKeys(keyStore, cfg); err != nil {
+	if _, err := keyStore.Append(vendorIDForTest(t, cfg, "openai"), []string{"k1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,30 +71,98 @@ func TestLogin(t *testing.T) {
 func TestVendorAndKeyCRUD(t *testing.T) {
 	s := newTestService(t)
 	actor := "admin"
+	openaiID := vendorIDFromService(t, s, "openai")
 
-	if err := s.AddUpstreamKey(actor, "openai", "k2"); err != nil {
+	if err := s.AddUpstreamKey(actor, openaiID, "k2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteUpstreamKey(actor, "openai", "k2"); err != nil {
+	if err := s.DeleteUpstreamKey(actor, openaiID, "k2"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.AddClientKey(actor, "openai", "ck1"); err != nil {
+	if err := s.AddClientKey(actor, openaiID, "ck1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteClientKey(actor, "openai", "ck1"); err != nil {
+	if err := s.DeleteClientKey(actor, openaiID, "ck1"); err != nil {
 		t.Fatal(err)
 	}
 
 	vc := config.VendorConfig{
-		Upstream:    config.UpstreamConfig{BaseURL: "https://api.anthropic.com", Keys: []string{"a1"}},
+		Upstream:    config.UpstreamConfig{BaseURL: "https://api.anthropic.com"},
 		LoadBalance: "round_robin",
 	}
-	if err := s.UpsertVendor(actor, "anthropic", vc); err != nil {
+	anthropicID, err := s.CreateVendor(actor, "anthropic", vc)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteVendor(actor, "anthropic"); err != nil {
+	if anthropicID == "" {
+		t.Fatal("CreateVendor returned an empty id")
+	}
+	if _, err := s.CreateVendor(actor, "anthropic", vc); err == nil {
+		t.Fatal("expected duplicate vendor name to be rejected")
+	}
+	if err := s.DeleteVendor(actor, anthropicID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A rename must touch nothing but the display/route name: the id, the upstream
+// key partition and its recorded status all stay put.
+func TestRenameVendorKeepsIDAndKeys(t *testing.T) {
+	s := newTestService(t)
+	actor := "admin"
+	openaiID := vendorIDFromService(t, s, "openai")
+
+	if err := s.SetUpstreamKeyRemark(actor, openaiID, "k1", "primary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameVendor(actor, openaiID, "openai-prod"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.VendorByName("openai"); ok {
+		t.Fatal("old vendor name still resolves after rename")
+	}
+	entry, ok := cfg.VendorByName("openai-prod")
+	if !ok {
+		t.Fatal("renamed vendor not found")
+	}
+	if entry.ID != openaiID {
+		t.Fatalf("vendor id changed on rename: %q -> %q", openaiID, entry.ID)
+	}
+
+	records, err := s.keyStore.List(openaiID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Key != "k1" || records[0].Remark != "primary" {
+		t.Fatalf("upstream keys did not survive the rename: %#v", records)
+	}
+}
+
+func TestRenameVendorRejectsDuplicateName(t *testing.T) {
+	s := newTestService(t)
+	actor := "admin"
+	openaiID := vendorIDFromService(t, s, "openai")
+
+	if _, err := s.CreateVendor(actor, "anthropic", config.VendorConfig{
+		Upstream:    config.UpstreamConfig{BaseURL: "https://api.anthropic.com"},
+		LoadBalance: "round_robin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameVendor(actor, openaiID, "anthropic"); err == nil {
+		t.Fatal("expected rename to a taken name to be rejected")
+	}
+	if err := s.RenameVendor(actor, openaiID, "console"); err == nil {
+		t.Fatal("expected rename to a reserved route name to be rejected")
+	}
+	if err := s.RenameVendor(actor, openaiID, "bad/name"); err == nil {
+		t.Fatal("expected rename to an invalid path segment to be rejected")
 	}
 }
 
@@ -105,10 +173,12 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	openaiID := vendorIDForTest(t, cfg, "openai")
 
-	current := cfg.Vendors["openai"]
-	current.Provider = "openai"
-	current.ErrorPolicy = config.ErrorPolicyConfig{
+	current, _ := cfg.VendorByName("openai")
+	currentVC := current.VendorConfig
+	currentVC.Provider = "openai"
+	currentVC.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
 			InvalidKey:      testBoolPtr(true),
 			PaymentRequired: testBoolPtr(false),
@@ -127,12 +197,12 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 			ServerError:  testBoolPtr(false),
 		},
 	}
-	cfg.Vendors["openai"] = current
+	mutateVendorForTest(t, cfg, "openai", func(vc *config.VendorConfig) { *vc = currentVC })
 	if err := s.UpdateConfig("admin", cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	update := current
+	update := currentVC
 	update.LoadBalance = "least_used"
 	update.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
@@ -151,7 +221,7 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 		},
 	}
 
-	if err := s.UpsertVendor("admin", "openai", update); err != nil {
+	if err := s.UpdateVendor("admin", openaiID, update); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +229,10 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := reloaded.Vendors["openai"]
+	got, ok := reloaded.VendorByID(openaiID)
+	if !ok {
+		t.Fatal("vendor missing after update")
+	}
 
 	if got.LoadBalance != "least_used" {
 		t.Fatalf("LoadBalance = %q, want %q", got.LoadBalance, "least_used")
@@ -243,7 +316,8 @@ func TestUpdateConfigInvalidatesSessionsWhenAdminUsernameChanges(t *testing.T) {
 
 func TestEnableDisableUpstreamKey(t *testing.T) {
 	s := newTestService(t)
-	if err := s.DisableUpstreamKey("admin", "openai", "k1", "manual test", keystore.KeyStatusDisabledManual); err != nil {
+	openaiID := vendorIDFromService(t, s, "openai")
+	if err := s.DisableUpstreamKey("admin", openaiID, "k1", "manual test", keystore.KeyStatusDisabledManual); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,50 +325,52 @@ func TestEnableDisableUpstreamKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := list.Items["openai"][0].Status; got != keystore.KeyStatusDisabledManual {
+	if got := list.Items[openaiID][0].Status; got != keystore.KeyStatusDisabledManual {
 		t.Fatalf("unexpected key status after disable: %q", got)
 	}
 
-	if err := s.EnableUpstreamKey("admin", "openai", "k1"); err != nil {
+	if err := s.EnableUpstreamKey("admin", openaiID, "k1"); err != nil {
 		t.Fatal(err)
 	}
 	list, err = s.ListUpstreamKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := list.Items["openai"][0].Status; got != keystore.KeyStatusActive {
+	if got := list.Items[openaiID][0].Status; got != keystore.KeyStatusActive {
 		t.Fatalf("unexpected key status after enable: %q", got)
 	}
 }
 
 func TestRecoverUpstreamKeysSetsStatusActive(t *testing.T) {
 	s := newTestService(t)
-	if err := s.DisableUpstreamKey("admin", "openai", "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {
+	openaiID := vendorIDFromService(t, s, "openai")
+	if err := s.DisableUpstreamKey("admin", openaiID, "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.RecoverUpstreamKeys("admin", "openai", []string{"k1"}); err != nil {
+	if err := s.RecoverUpstreamKeys("admin", openaiID, []string{"k1"}); err != nil {
 		t.Fatal(err)
 	}
 	list, err := s.ListUpstreamKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := list.Items["openai"][0].Status; got != keystore.KeyStatusActive {
+	if got := list.Items[openaiID][0].Status; got != keystore.KeyStatusActive {
 		t.Fatalf("unexpected key status after recover: %q", got)
 	}
-	if got := list.Items["openai"][0].DisableReason; got != "" {
+	if got := list.Items[openaiID][0].DisableReason; got != "" {
 		t.Fatalf("disable reason should be cleared after recover, got %q", got)
 	}
 }
 
 func TestReplaceUpstreamKeysPreservesDisabledStatusAndKeyID(t *testing.T) {
 	s := newTestService(t)
-	if err := s.DisableUpstreamKey("admin", "openai", "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {
+	openaiID := vendorIDFromService(t, s, "openai")
+	if err := s.DisableUpstreamKey("admin", openaiID, "k1", "quota", keystore.KeyStatusDisabledAuto); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.ReplaceUpstreamKeys("admin", "openai", []string{"k1"}); err != nil {
+	if err := s.ReplaceUpstreamKeys("admin", openaiID, []string{"k1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -302,7 +378,7 @@ func TestReplaceUpstreamKeysPreservesDisabledStatusAndKeyID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := list.Items["openai"]
+	items := list.Items[openaiID]
 	if len(items) != 1 {
 		t.Fatalf("expected one key, got %d", len(items))
 	}
@@ -316,14 +392,15 @@ func TestReplaceUpstreamKeysPreservesDisabledStatusAndKeyID(t *testing.T) {
 
 func TestSetUpstreamKeyRemarkIsReturnedByList(t *testing.T) {
 	s := newTestService(t)
-	if err := s.SetUpstreamKeyRemark("admin", "openai", "k1", "生产对话接口"); err != nil {
+	openaiID := vendorIDFromService(t, s, "openai")
+	if err := s.SetUpstreamKeyRemark("admin", openaiID, "k1", "生产对话接口"); err != nil {
 		t.Fatal(err)
 	}
 	list, err := s.ListUpstreamKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := list.Items["openai"]
+	items := list.Items[openaiID]
 	if len(items) != 1 || items[0].Remark != "生产对话接口" {
 		t.Fatalf("unexpected key remark response: %+v", items)
 	}
@@ -331,7 +408,7 @@ func TestSetUpstreamKeyRemarkIsReturnedByList(t *testing.T) {
 
 func TestBuildRuntimeStatsResponse(t *testing.T) {
 	vendors := map[string][]map[string]any{
-		"openai": {
+		"vid_openai": {
 			{
 				"key_masked":                "sk-jcp-active",
 				"status":                    keystore.KeyStatusActive,
@@ -372,7 +449,7 @@ func TestBuildRuntimeStatsResponse(t *testing.T) {
 	}
 
 	resp := buildRuntimeStatsResponse(vendors, RuntimeStatsQuery{
-		Vendor:   "openai",
+		VendorID: "vid_openai",
 		Filter:   "issues",
 		Page:     1,
 		PageSize: 1,
@@ -390,24 +467,24 @@ func TestBuildRuntimeStatsResponse(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected vendors type: %T", resp["vendors"])
 	}
-	if got := len(rows["openai"]); got != 1 {
+	if got := len(rows["vid_openai"]); got != 1 {
 		t.Fatalf("unexpected page size after pagination: %d", got)
 	}
-	if got := rows["openai"][0]["key_masked"]; got != "sk-jcp-disabled" {
+	if got := rows["vid_openai"][0]["key_masked"]; got != "sk-jcp-disabled" {
 		t.Fatalf("unexpected first filtered row: %v", got)
 	}
 
 	resp = buildRuntimeStatsResponse(vendors, RuntimeStatsQuery{
-		Vendor:   "openai",
+		VendorID: "vid_openai",
 		Q:        "rate limit",
 		Page:     1,
 		PageSize: 20,
 	})
 	rows = resp["vendors"].(map[string][]map[string]any)
-	if got := len(rows["openai"]); got != 1 {
+	if got := len(rows["vid_openai"]); got != 1 {
 		t.Fatalf("unexpected keyword match count: %d", got)
 	}
-	if got := rows["openai"][0]["key_masked"]; got != "sk-jcp-backoff" {
+	if got := rows["vid_openai"][0]["key_masked"]; got != "sk-jcp-backoff" {
 		t.Fatalf("unexpected keyword match row: %v", got)
 	}
 }

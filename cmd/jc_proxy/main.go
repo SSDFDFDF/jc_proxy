@@ -61,19 +61,6 @@ func main() {
 		log.Fatalf("init upstream key store failed: %v", err)
 	}
 
-	migrated, err := keystore.BootstrapLegacyKeys(rawKeyStore, bootstrapCfg, cfg)
-	if err != nil {
-		_ = rawKeyStore.Close()
-		log.Fatalf("bootstrap upstream keys failed: %v", err)
-	}
-	if migrated > 0 || bootstrapCfg.HasLegacyUpstreamKeys() || cfg.HasLegacyUpstreamKeys() {
-		if err := store.UpdateConfig(cfg); err != nil {
-			log.Printf("strip legacy upstream keys from config failed: %v", err)
-		} else {
-			log.Printf("migrated %d legacy upstream key(s) to external store", migrated)
-		}
-	}
-
 	keyStore, err := keystore.NewAsyncStatusStore(rawKeyStore, keystore.AsyncStatusStoreOptions{
 		SetStatusTimeout: time.Second,
 	})

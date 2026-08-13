@@ -9,15 +9,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"jc_proxy/internal/config"
 )
 
 type FileStore struct {
 	path string
 	mu   sync.RWMutex
+	// data is partitioned by immutable vendorID id, not by vendorID name.
 	data map[string][]Record
 }
 
 type fileSnapshot struct {
+	SchemaVersion int `json:"schema_version"`
+	// Vendors maps a vendorID id to its upstream key records.
 	Vendors map[string][]Record `json:"vendors"`
 }
 
@@ -45,11 +50,11 @@ func (s *FileStore) ListAll() (map[string][]Record, error) {
 	return cloneRecordMap(s.data), nil
 }
 
-func (s *FileStore) List(vendor string) ([]Record, error) {
-	vendor = normalizeVendor(vendor)
+func (s *FileStore) List(vendorID string) ([]Record, error) {
+	vendorID = normalizeVendor(vendorID)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := append([]Record(nil), s.data[vendor]...)
+	out := append([]Record(nil), s.data[vendorID]...)
 	for i := range out {
 		out[i] = NormalizeRecord(out[i])
 	}
@@ -64,10 +69,10 @@ func (s *FileStore) KeyMap() (map[string][]string, error) {
 	return toKeyMap(all), nil
 }
 
-func (s *FileStore) Replace(vendor string, keys []string) error {
-	vendor = normalizeVendor(vendor)
-	if vendor == "" {
-		return errors.New("vendor is required")
+func (s *FileStore) Replace(vendorID string, keys []string) error {
+	vendorID = normalizeVendor(vendorID)
+	if vendorID == "" {
+		return errors.New("vendor id is required")
 	}
 	keys = NormalizeKeys(keys)
 	now := time.Now().UTC()
@@ -79,24 +84,24 @@ func (s *FileStore) Replace(vendor string, keys []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existingIndex := make(map[string]Record, len(s.data[vendor]))
-	for _, record := range s.data[vendor] {
+	existingIndex := make(map[string]Record, len(s.data[vendorID]))
+	for _, record := range s.data[vendorID] {
 		existingIndex[record.Key] = record
 	}
 
 	if len(keys) == 0 {
-		disabled := make([]Record, 0, len(s.data[vendor]))
-		for _, record := range s.data[vendor] {
+		disabled := make([]Record, 0, len(s.data[vendorID]))
+		for _, record := range s.data[vendorID] {
 			record = NormalizeRecord(record)
 			if !IsActiveStatus(record.Status) {
 				disabled = append(disabled, record)
 			}
 		}
 		if len(disabled) == 0 {
-			delete(s.data, vendor)
+			delete(s.data, vendorID)
 		} else {
 			sortRecords(disabled)
-			s.data[vendor] = disabled
+			s.data[vendorID] = disabled
 		}
 		return s.saveLocked()
 	}
@@ -118,7 +123,7 @@ func (s *FileStore) Replace(vendor string, keys []string) error {
 			UpdatedAt: now,
 		})
 	}
-	for _, record := range s.data[vendor] {
+	for _, record := range s.data[vendorID] {
 		if _, ok := selected[record.Key]; ok {
 			continue
 		}
@@ -127,14 +132,14 @@ func (s *FileStore) Replace(vendor string, keys []string) error {
 		}
 	}
 	sortRecords(next)
-	s.data[vendor] = next
+	s.data[vendorID] = next
 	return s.saveLocked()
 }
 
-func (s *FileStore) Append(vendor string, keys []string) (int, error) {
-	vendor = normalizeVendor(vendor)
-	if vendor == "" {
-		return 0, errors.New("vendor is required")
+func (s *FileStore) Append(vendorID string, keys []string) (int, error) {
+	vendorID = normalizeVendor(vendorID)
+	if vendorID == "" {
+		return 0, errors.New("vendor id is required")
 	}
 	keys = NormalizeKeys(keys)
 	if len(keys) == 0 {
@@ -145,13 +150,13 @@ func (s *FileStore) Append(vendor string, keys []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing := make(map[string]struct{}, len(s.data[vendor]))
-	for _, record := range s.data[vendor] {
+	existing := make(map[string]struct{}, len(s.data[vendorID]))
+	for _, record := range s.data[vendorID] {
 		existing[record.Key] = struct{}{}
 	}
 
 	added := 0
-	next := append([]Record(nil), s.data[vendor]...)
+	next := append([]Record(nil), s.data[vendorID]...)
 	for _, key := range keys {
 		if _, ok := existing[key]; ok {
 			continue
@@ -170,14 +175,14 @@ func (s *FileStore) Append(vendor string, keys []string) (int, error) {
 		return 0, nil
 	}
 	sortRecords(next)
-	s.data[vendor] = next
+	s.data[vendorID] = next
 	return added, s.saveLocked()
 }
 
-func (s *FileStore) Delete(vendor string, keys []string) (int, error) {
-	vendor = normalizeVendor(vendor)
-	if vendor == "" {
-		return 0, errors.New("vendor is required")
+func (s *FileStore) Delete(vendorID string, keys []string) (int, error) {
+	vendorID = normalizeVendor(vendorID)
+	if vendorID == "" {
+		return 0, errors.New("vendor id is required")
 	}
 	keys = NormalizeKeys(keys)
 	if len(keys) == 0 {
@@ -192,7 +197,7 @@ func (s *FileStore) Delete(vendor string, keys []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current := s.data[vendor]
+	current := s.data[vendorID]
 	if len(current) == 0 {
 		return 0, nil
 	}
@@ -209,22 +214,22 @@ func (s *FileStore) Delete(vendor string, keys []string) (int, error) {
 		return 0, nil
 	}
 	if len(next) == 0 {
-		delete(s.data, vendor)
+		delete(s.data, vendorID)
 	} else {
-		s.data[vendor] = next
+		s.data[vendorID] = next
 	}
 	return removed, s.saveLocked()
 }
 
-func (s *FileStore) SetStatus(vendor, key, status, reason, actor string) error {
-	return s.setStatus(vendor, key, -1, false, status, reason, actor)
+func (s *FileStore) SetStatus(vendorID, key, status, reason, actor string) error {
+	return s.setStatus(vendorID, key, -1, false, status, reason, actor)
 }
 
-func (s *FileStore) SetRemark(vendor, key, remark string) error {
-	vendor = normalizeVendor(vendor)
+func (s *FileStore) SetRemark(vendorID, key, remark string) error {
+	vendorID = normalizeVendor(vendorID)
 	key = strings.TrimSpace(key)
-	if vendor == "" {
-		return errors.New("vendor is required")
+	if vendorID == "" {
+		return errors.New("vendor id is required")
 	}
 	if key == "" {
 		return errors.New("key is required")
@@ -232,7 +237,7 @@ func (s *FileStore) SetRemark(vendor, key, remark string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current := s.data[vendor]
+	current := s.data[vendorID]
 	for i := range current {
 		if current[i].Key != key {
 			continue
@@ -240,7 +245,7 @@ func (s *FileStore) SetRemark(vendor, key, remark string) error {
 		current[i].Remark = strings.TrimSpace(remark)
 		current[i].UpdatedAt = time.Now().UTC()
 		current[i] = NormalizeRecord(current[i])
-		s.data[vendor] = current
+		s.data[vendorID] = current
 		return s.saveLocked()
 	}
 	return ErrKeyNotFound
@@ -256,9 +261,9 @@ func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelt
 
 	next := cloneRecordMap(s.data)
 	changed := false
-	for vendor, records := range deltas {
-		vendor = normalizeVendor(vendor)
-		current := next[vendor]
+	for vendorID, records := range deltas {
+		vendorID = normalizeVendor(vendorID)
+		current := next[vendorID]
 		if len(current) == 0 {
 			continue
 		}
@@ -287,7 +292,7 @@ func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelt
 			current[idx] = NormalizeRecord(current[idx])
 			changed = true
 		}
-		next[vendor] = current
+		next[vendorID] = current
 	}
 	if !changed {
 		return nil
@@ -299,15 +304,15 @@ func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelt
 	return nil
 }
 
-func (s *FileStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error {
-	return s.setStatus(vendor, key, expectedVersion, true, status, reason, actor)
+func (s *FileStore) SetStatusIfVersion(vendorID, key string, expectedVersion int64, status, reason, actor string) error {
+	return s.setStatus(vendorID, key, expectedVersion, true, status, reason, actor)
 }
 
-func (s *FileStore) setStatus(vendor, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
-	vendor = normalizeVendor(vendor)
+func (s *FileStore) setStatus(vendorID, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
+	vendorID = normalizeVendor(vendorID)
 	key = strings.TrimSpace(key)
-	if vendor == "" {
-		return errors.New("vendor is required")
+	if vendorID == "" {
+		return errors.New("vendor id is required")
 	}
 	if key == "" {
 		return errors.New("key is required")
@@ -319,7 +324,7 @@ func (s *FileStore) setStatus(vendor, key string, expectedVersion int64, checkVe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current := s.data[vendor]
+	current := s.data[vendorID]
 	if len(current) == 0 {
 		return ErrKeyNotFound
 	}
@@ -350,19 +355,19 @@ func (s *FileStore) setStatus(vendor, key string, expectedVersion int64, checkVe
 	if !found {
 		return ErrKeyNotFound
 	}
-	s.data[vendor] = current
+	s.data[vendorID] = current
 	return s.saveLocked()
 }
 
-func (s *FileStore) DeleteVendor(vendor string) error {
-	vendor = normalizeVendor(vendor)
-	if vendor == "" {
-		return errors.New("vendor is required")
+func (s *FileStore) DeleteVendor(vendorID string) error {
+	vendorID = normalizeVendor(vendorID)
+	if vendorID == "" {
+		return errors.New("vendor id is required")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.data, vendor)
+	delete(s.data, vendorID)
 	return s.saveLocked()
 }
 
@@ -383,16 +388,25 @@ func (s *FileStore) load() error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return fmt.Errorf("parse upstream key file: %w", err)
 	}
+	if snap.SchemaVersion == 0 {
+		snap.SchemaVersion = config.LegacySchemaVersion
+	}
+	// A v1 file partitions records by vendorID name. Refuse to read it rather
+	// than silently treating names as ids. An empty file carries no v1 data,
+	// so it is adopted at the current version instead of blocking startup.
+	if snap.SchemaVersion != config.CurrentSchemaVersion && len(snap.Vendors) > 0 {
+		return config.NewSchemaVersionError("upstream key file "+s.path, snap.SchemaVersion)
+	}
 	if snap.Vendors == nil {
 		s.data = map[string][]Record{}
 		return nil
 	}
-	for vendor, records := range snap.Vendors {
+	for vendorID, records := range snap.Vendors {
 		for i := range records {
 			records[i] = NormalizeRecord(records[i])
 		}
 		sortRecords(records)
-		snap.Vendors[vendor] = records
+		snap.Vendors[vendorID] = records
 	}
 	s.data = snap.Vendors
 	return nil
@@ -408,7 +422,10 @@ func (s *FileStore) saveDataLocked(records map[string][]Record) error {
 		return fmt.Errorf("mkdir upstream key dir: %w", err)
 	}
 
-	snap := fileSnapshot{Vendors: cloneRecordMap(records)}
+	snap := fileSnapshot{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Vendors:       cloneRecordMap(records),
+	}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal upstream key file: %w", err)

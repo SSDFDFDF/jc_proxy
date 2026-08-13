@@ -10,13 +10,13 @@ import {
 } from '../app/constants'
 import {
   buildNewVendorConfig,
+  buildVendorRequestEndpoint,
   clone,
   listToText,
   mapToRows,
   normalizeKeys,
   nsToText,
   parseDurationToNs,
-  pickName,
   rowsToMap,
   textToList,
   withVendorDefaults
@@ -113,17 +113,39 @@ function emptyStatsResult() {
 
 function buildStatsPath(query = {}) {
   const params = new URLSearchParams()
-  const vendor = String(query.vendor || '').trim()
+  const vendorID = String(query.vendorID || '').trim()
   const filter = String(query.filter || 'all').trim()
   const keyword = String(query.q || '').trim()
 
-  if (vendor) params.set('vendor', vendor)
+  if (vendorID) params.set('vendor_id', vendorID)
   if (filter && filter !== 'all') params.set('filter', filter)
   if (keyword) params.set('q', keyword)
   params.set('page', String(Math.max(1, Number(query.page) || 1)))
   params.set('page_size', String(Math.max(1, Number(query.pageSize) || 50)))
 
   return `/admin/stats?${params.toString()}`
+}
+
+// vendors is an ordered array of {id, name, ...}: the id is immutable and keys
+// every stored reference, the name is a mutable label that doubles as the
+// request path segment.
+function vendorList(cfg) {
+  return Array.isArray(cfg?.vendors) ? cfg.vendors : []
+}
+
+function findVendorByID(cfg, vendorID) {
+  if (!vendorID) return null
+  return vendorList(cfg).find((entry) => entry?.id === vendorID) || null
+}
+
+function vendorNameByID(cfg, vendorID) {
+  return findVendorByID(cfg, vendorID)?.name || ''
+}
+
+function pickVendorID(ids, preferred, current) {
+  if (preferred && ids.includes(preferred)) return preferred
+  if (current && ids.includes(current)) return current
+  return ids[0] || ''
 }
 
 export function useAdminConsole() {
@@ -147,14 +169,14 @@ export function useAdminConsole() {
   const [autoRefreshStats, setAutoRefreshStats] = useState(true)
   const [refreshEverySec, setRefreshEverySec] = useState('4')
   const [statsFilters, setStatsFilters] = useState({
-    vendor: '',
+    vendorID: '',
     filter: 'all',
     q: '',
     page: 1,
     pageSize: 50
   })
 
-  const [selectedVendor, setSelectedVendor] = useState('')
+  const [selectedVendorID, setSelectedVendorID] = useState('')
   const [vendorDraft, setVendorDraft] = useState(null)
   const [invalidKeyStatusCodesText, setInvalidKeyStatusCodesText] = useState('')
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
@@ -170,10 +192,11 @@ export function useAdminConsole() {
   const [injectRows, setInjectRows] = useState([{ key: '', value: '' }])
   const [rewriteRows, setRewriteRows] = useState([{ key: '', value: '' }])
 
-  const [selectedKeyVendor, setSelectedKeyVendor] = useState('')
+  const [selectedKeyVendorID, setSelectedKeyVendorID] = useState('')
   const [showSecrets, setShowSecrets] = useState(false)
 
   const [newVendorForm, setNewVendorForm] = useState({ name: '', baseURL: '', provider: 'generic' })
+  const [renameDraft, setRenameDraft] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [systemForm, setSystemForm] = useState(DEFAULT_SYSTEM_FORM)
 
@@ -237,10 +260,11 @@ export function useAdminConsole() {
     })
   }
 
-  const syncVendorDraft = (cfg, vendorName) => {
-    const vendor = cfg?.vendors?.[vendorName]
-    if (!vendor) {
+  const syncVendorDraft = (cfg, vendorID) => {
+    const entry = findVendorByID(cfg, vendorID)
+    if (!entry) {
       setVendorDraft(null)
+      setRenameDraft('')
       setInvalidKeyStatusCodesText('')
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
@@ -256,8 +280,9 @@ export function useAdminConsole() {
       setRewriteRows([{ key: '', value: '' }])
       return
     }
-    const draft = withVendorDefaults(vendor)
+    const draft = withVendorDefaults(entry)
     setVendorDraft(draft)
+    setRenameDraft(entry.name || '')
     setInvalidKeyStatusCodesText(statusCodesToText(draft.error_policy?.auto_disable?.invalid_key_status_codes || []))
     setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
@@ -273,13 +298,13 @@ export function useAdminConsole() {
     setRewriteRows(mapToRows(draft.path_rewrites || {}))
   }
 
-  const selectVendor = (vendorName) => {
-    setSelectedVendor(vendorName)
-    syncVendorDraft(rawConfig, vendorName)
+  const selectVendor = (vendorID) => {
+    setSelectedVendorID(vendorID)
+    syncVendorDraft(rawConfig, vendorID)
   }
 
-  const selectKeyVendor = (vendorName) => {
-    setSelectedKeyVendor(vendorName)
+  const selectKeyVendor = (vendorID) => {
+    setSelectedKeyVendorID(vendorID)
   }
 
   const loadStats = async (silent = false, touchBusy = false) => {
@@ -302,7 +327,7 @@ export function useAdminConsole() {
       ...overrides
     }
 
-    if (!nextQuery.vendor) {
+    if (!nextQuery.vendorID) {
       setStatsResult(emptyStatsResult())
       return
     }
@@ -320,7 +345,7 @@ export function useAdminConsole() {
     }
   }
 
-  const refreshAll = async (preferredVendor = '', preferredKeyVendor = '') => {
+  const refreshAll = async (preferredVendorID = '', preferredKeyVendorID = '') => {
     setBusy(true)
     try {
       const [nextMe, raw, masked, upstreamKeys, runtimeStats] = await Promise.all([
@@ -339,22 +364,24 @@ export function useAdminConsole() {
       setStats(runtimeStats || { vendors: {} })
       syncSystemForm(raw || EMPTY_CONFIG)
 
-      const vendorNames = Object.keys(raw?.vendors || {}).sort()
-      const nextVendor = pickName(vendorNames, preferredVendor, selectedVendor)
-      setSelectedVendor(nextVendor)
-      syncVendorDraft(raw || EMPTY_CONFIG, nextVendor)
+      const vendorIDs = vendorList(raw).map((entry) => entry.id)
+      const nextVendorID = pickVendorID(vendorIDs, preferredVendorID, selectedVendorID)
+      setSelectedVendorID(nextVendorID)
+      syncVendorDraft(raw || EMPTY_CONFIG, nextVendorID)
       setStatsFilters((prev) => {
-        const nextStatsVendor = pickName(vendorNames, preferredVendor || nextVendor, prev.vendor)
+        const nextStatsVendorID = pickVendorID(vendorIDs, preferredVendorID || nextVendorID, prev.vendorID)
         return {
           ...prev,
-          vendor: nextStatsVendor,
-          page: nextStatsVendor === prev.vendor ? prev.page : 1
+          vendorID: nextStatsVendorID,
+          page: nextStatsVendorID === prev.vendorID ? prev.page : 1
         }
       })
 
-      const upstreamVendorNames = (upstreamKeys?.vendors || []).map((item) => item.vendor)
-      const nextKeyVendor = pickName(upstreamVendorNames, preferredKeyVendor || nextVendor, selectedKeyVendor)
-      setSelectedKeyVendor(nextKeyVendor)
+      // Key partitions can outlive their config entry (orphans), so the picker
+      // is driven by the key store's own vendor list.
+      const upstreamVendorIDs = (upstreamKeys?.vendors || []).map((item) => item.vendor_id)
+      const nextKeyVendorID = pickVendorID(upstreamVendorIDs, preferredKeyVendorID || nextVendorID, selectedKeyVendorID)
+      setSelectedKeyVendorID(nextKeyVendorID)
 
       setLastSyncAt(Date.now())
       setStatus('success', '管理数据已同步')
@@ -409,7 +436,7 @@ export function useAdminConsole() {
   }
 
   const saveVendor = async () => {
-    if (!selectedVendor || !vendorDraft) return
+    if (!selectedVendorID || !vendorDraft) return
     setBusy(true)
     try {
       const next = clone(vendorDraft)
@@ -433,13 +460,15 @@ export function useAdminConsole() {
       next.client_auth.keys = normalizeKeys(next.client_auth.keys || [])
       if (next.client_auth.keys.length === 0) next.client_auth.enabled = false
 
-      await api('/admin/vendors', {
-        method: 'POST',
+      // Addressed by immutable id, and the payload carries config only: the
+      // display/route name is changed through renameVendor.
+      await api(`/admin/vendors/${encodeURIComponent(selectedVendorID)}`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vendor: selectedVendor, config: next })
+        body: JSON.stringify({ config: next })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor || selectedVendor)
-      setStatus('success', `供应商 ${selectedVendor} 已保存`)
+      await refreshAll(selectedVendorID, selectedKeyVendorID || selectedVendorID)
+      setStatus('success', `供应商 ${selectedVendorName || selectedVendorID} 已保存`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -461,14 +490,15 @@ export function useAdminConsole() {
     }
     setBusy(true)
     try {
-      await api('/admin/vendors', {
+      const created = await api('/admin/vendors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vendor: name, config: buildNewVendorConfig(baseURL, provider) })
+        body: JSON.stringify({ name, config: buildNewVendorConfig(baseURL, provider) })
       })
+      const createdID = created?.vendor_id || ''
       setNewVendorForm({ name: '', baseURL: '', provider: 'generic' })
       setNav('vendors')
-      await refreshAll(name, name)
+      await refreshAll(createdID, createdID)
       if (provider === 'aggregate') {
         setStatus('success', `聚合供应商 ${name} 已创建`)
       } else {
@@ -481,14 +511,52 @@ export function useAdminConsole() {
     }
   }
 
-  const deleteVendor = async () => {
-    if (!selectedVendor) return
-    if (!window.confirm(`确认删除供应商 ${selectedVendor} 吗？对应的上游密钥也会一并移除。`)) return
+  // Renaming only changes the display/route name. Every stored reference keys
+  // off the immutable id, so keys, statistics and aggregate topology stay put;
+  // the one visible effect is that clients must call the new path segment.
+  const renameVendor = async () => {
+    const nextName = String(renameDraft || '').trim()
+    if (!selectedVendorID) return
+    if (!nextName) {
+      setStatus('warn', '请输入新的供应商名称')
+      return
+    }
+    if (nextName === selectedVendorName) {
+      setStatus('info', '名称未变化')
+      return
+    }
+    const oldEndpoint = buildVendorRequestEndpoint(selectedVendorName)
+    const nextEndpoint = buildVendorRequestEndpoint(nextName)
+    const confirmed = window.confirm(
+      `确认把供应商 ${selectedVendorName} 改名为 ${nextName} 吗？\n\n` +
+        `调用地址会从\n  ${oldEndpoint}\n变为\n  ${nextEndpoint}\n\n` +
+        '旧地址会立即返回 404，请同步更新客户端配置。上游密钥、运行统计和聚合关系不受影响。'
+    )
+    if (!confirmed) return
     setBusy(true)
     try {
-      await api(`/admin/vendors/${encodeURIComponent(selectedVendor)}`, { method: 'DELETE' })
+      await api(`/admin/vendors/${encodeURIComponent(selectedVendorID)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: nextName })
+      })
+      await refreshAll(selectedVendorID, selectedKeyVendorID || selectedVendorID)
+      setStatus('success', `供应商已改名为 ${nextName}，请更新客户端调用地址`)
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const deleteVendor = async () => {
+    if (!selectedVendorID) return
+    if (!window.confirm(`确认删除供应商 ${selectedVendorName || selectedVendorID} 吗？对应的上游密钥也会一并移除。`)) return
+    setBusy(true)
+    try {
+      await api(`/admin/vendors/${encodeURIComponent(selectedVendorID)}`, { method: 'DELETE' })
       await refreshAll('', '')
-      setStatus('success', `供应商 ${selectedVendor} 已删除`)
+      setStatus('success', `供应商 ${selectedVendorName || selectedVendorID} 已删除`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
     } finally {
@@ -497,7 +565,7 @@ export function useAdminConsole() {
   }
 
   const addUpstreamKeys = async (keys) => {
-    if (!selectedKeyVendor) {
+    if (!selectedKeyVendorID) {
       setStatus('warn', '请先选择供应商')
       return false
     }
@@ -508,12 +576,12 @@ export function useAdminConsole() {
     }
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keys: nextKeys })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', nextKeys.length === 1 ? '密钥已添加' : `已添加 ${nextKeys.length} 条密钥`)
       return true
     } catch (err) {
@@ -525,15 +593,15 @@ export function useAdminConsole() {
   }
 
   const disableUpstreamKey = async (key) => {
-    if (!selectedKeyVendor || !key) return
+    if (!selectedKeyVendorID || !key) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/disable`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/disable`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, reason: 'manually disabled' })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `密钥已禁用`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -544,15 +612,15 @@ export function useAdminConsole() {
 
   const disableUpstreamKeys = async (keys) => {
     const nextKeys = normalizeKeys(Array.isArray(keys) ? keys : [])
-    if (!selectedKeyVendor || !nextKeys.length) return
+    if (!selectedKeyVendorID || !nextKeys.length) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/disable`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/disable`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keys: nextKeys, reason: 'manually disabled' })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `已禁用 ${nextKeys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -562,15 +630,15 @@ export function useAdminConsole() {
   }
 
   const enableUpstreamKey = async (key) => {
-    if (!selectedKeyVendor || !key) return
+    if (!selectedKeyVendorID || !key) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/enable`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/enable`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `密钥已启用`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -581,15 +649,15 @@ export function useAdminConsole() {
 
   const enableUpstreamKeys = async (keys) => {
     const nextKeys = normalizeKeys(Array.isArray(keys) ? keys : [])
-    if (!selectedKeyVendor || !nextKeys.length) return
+    if (!selectedKeyVendorID || !nextKeys.length) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/enable`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/enable`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keys: nextKeys })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `已启用 ${nextKeys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -599,15 +667,15 @@ export function useAdminConsole() {
   }
 
   const recoverUpstreamKey = async (key) => {
-    if (!selectedKeyVendor || !key) return
+    if (!selectedKeyVendorID || !key) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/recover`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/recover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `密钥已恢复`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -618,15 +686,15 @@ export function useAdminConsole() {
 
   const recoverUpstreamKeys = async (keys) => {
     const nextKeys = normalizeKeys(Array.isArray(keys) ? keys : [])
-    if (!selectedKeyVendor || !nextKeys.length) return
+    if (!selectedKeyVendorID || !nextKeys.length) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/recover`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/recover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keys: nextKeys })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `已恢复 ${nextKeys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -636,16 +704,16 @@ export function useAdminConsole() {
   }
 
   const deleteUpstreamKey = async (key) => {
-    if (!selectedKeyVendor || !key) return
+    if (!selectedKeyVendorID || !key) return
     if (!window.confirm('确认删除这个上游密钥吗？')) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keys: [key] })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `密钥已删除`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -655,16 +723,16 @@ export function useAdminConsole() {
   }
 
   const deleteUpstreamKeys = async (keys) => {
-    if (!selectedKeyVendor || !keys?.length) return
+    if (!selectedKeyVendorID || !keys?.length) return
     if (!window.confirm(`确认删除这 ${keys.length} 个上游密钥吗？`)) return
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keys })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', `已删除 ${keys.length} 条密钥`)
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -674,15 +742,15 @@ export function useAdminConsole() {
   }
 
   const setUpstreamKeyRemark = async (key, remark) => {
-    if (!selectedKeyVendor || !key) return false
+    if (!selectedKeyVendorID || !key) return false
     setBusy(true)
     try {
-      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendor)}/remark`, {
+      await api(`/admin/upstream-keys/${encodeURIComponent(selectedKeyVendorID)}/remark`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, remark: String(remark || '').trim() })
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', '密钥备注已保存')
       return true
     } catch (err) {
@@ -714,7 +782,7 @@ export function useAdminConsole() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(next)
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', '系统配置已更新')
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -732,7 +800,7 @@ export function useAdminConsole() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(next)
       })
-      await refreshAll(selectedVendor, selectedKeyVendor)
+      await refreshAll(selectedVendorID, selectedKeyVendorID)
       setStatus('success', '高级 JSON 已保存')
     } catch (err) {
       setStatus('error', String(err?.message || err))
@@ -776,14 +844,14 @@ export function useAdminConsole() {
     }
   }
 
-  const loadVendorTestMeta = async (vendorName, options = {}) => {
-    const name = String(vendorName || '').trim()
-    if (!name) return null
+  const loadVendorTestMeta = async (vendorID, options = {}) => {
+    const id = String(vendorID || '').trim()
+    if (!id) return null
     const { silent = true, touchBusy = false } = options
     if (touchBusy) setBusy(true)
     try {
-      const data = await api(`/admin/vendors/${encodeURIComponent(name)}/test-meta`)
-      if (!silent) setStatus('success', `已加载 ${name} 的测试配置`)
+      const data = await api(`/admin/vendors/${encodeURIComponent(id)}/test-meta`)
+      if (!silent) setStatus('success', '已加载测试配置')
       return data
     } catch (err) {
       if (!silent) setStatus('error', String(err?.message || err))
@@ -793,13 +861,13 @@ export function useAdminConsole() {
     }
   }
 
-  const runVendorTest = async (vendorName, payload, options = {}) => {
-    const name = String(vendorName || '').trim()
-    if (!name) return null
+  const runVendorTest = async (vendorID, payload, options = {}) => {
+    const id = String(vendorID || '').trim()
+    if (!id) return null
     const { silent = false, touchBusy = true } = options
     if (touchBusy) setBusy(true)
     try {
-      const data = await api(`/admin/vendors/${encodeURIComponent(name)}/test`, {
+      const data = await api(`/admin/vendors/${encodeURIComponent(id)}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload || {})
@@ -833,35 +901,37 @@ export function useAdminConsole() {
     return () => window.clearInterval(interval)
   }, [isAuthed, nav, autoRefreshStats, refreshEverySec])
 
+  const selectedVendorName = useMemo(() => vendorNameByID(rawConfig, selectedVendorID), [rawConfig, selectedVendorID])
+
   const vendorRows = useMemo(() => {
-    const keySummaryMap = Object.fromEntries((upstreamKeysData.vendors || []).map((item) => [item.vendor, item]))
-    return Object.keys(rawConfig.vendors || {})
-      .sort()
-      .map((name) => {
-        const vendor = rawConfig.vendors[name] || {}
-        const runtimeKeys = stats.vendors?.[name] || []
-        const keySummary = keySummaryMap[name] || {}
+    const keySummaryMap = Object.fromEntries((upstreamKeysData.vendors || []).map((item) => [item.vendor_id, item]))
+    return vendorList(rawConfig)
+      .map((entry) => {
+        const runtimeKeys = stats.vendors?.[entry.id] || []
+        const keySummary = keySummaryMap[entry.id] || {}
         return {
-          name,
-          provider: vendor.provider || 'generic',
+          id: entry.id,
+          name: entry.name,
+          provider: entry.provider || 'generic',
           upstreamKeys: keySummary.count || 0,
           activeUpstreamKeys: keySummary.active_count || 0,
           disabledUpstreamKeys: keySummary.disabled_count || 0,
-          clientKeys: vendor.client_auth?.keys?.length || 0,
-          clientAuthEnabled: !!vendor.client_auth?.enabled,
-          resinEnabled: !!vendor.resin?.enabled,
-          aggregateChildCount: vendor.aggregate?.children?.length || 0,
+          clientKeys: entry.client_auth?.keys?.length || 0,
+          clientAuthEnabled: !!entry.client_auth?.enabled,
+          resinEnabled: !!entry.resin?.enabled,
+          aggregateChildCount: entry.aggregate?.children?.length || 0,
           backoff: runtimeKeys.filter((item) => Number(item.backoff_remaining_seconds || 0) > 0).length,
           inflight: runtimeKeys.reduce((sum, item) => sum + Number(item.inflight || 0), 0)
         }
       })
+      .sort((a, b) => a.name.localeCompare(b.name))
   }, [rawConfig, upstreamKeysData, stats])
 
   const overviewMetrics = useMemo(() => {
     let clientKeys = 0
     let resinEnabled = 0
     let clientAuthEnabled = 0
-    for (const vendor of Object.values(rawConfig.vendors || {})) {
+    for (const vendor of vendorList(rawConfig)) {
       clientKeys += vendor.client_auth?.keys?.length || 0
       if (vendor.resin?.enabled) resinEnabled += 1
       if (vendor.client_auth?.enabled) clientAuthEnabled += 1
@@ -881,7 +951,7 @@ export function useAdminConsole() {
     const upstreamKeys = (upstreamKeysData.vendors || []).reduce((sum, item) => sum + Number(item.count || 0), 0)
 
     return {
-      vendors: Object.keys(rawConfig.vendors || {}).length,
+      vendors: vendorList(rawConfig).length,
       upstreamKeys,
       clientKeys,
       resinEnabled,
@@ -923,7 +993,10 @@ export function useAdminConsole() {
       maskedConfig,
       rawConfigText,
       setRawConfigText,
-      selectedVendor,
+      selectedVendorID,
+      selectedVendorName,
+      renameDraft,
+      setRenameDraft,
       vendorDraft,
       invalidKeyStatusCodesText,
       invalidKeyKeywordsText,
@@ -959,13 +1032,15 @@ export function useAdminConsole() {
       mutateVendorDraft,
       saveVendor,
       createVendor,
+      renameVendor,
       deleteVendor,
       saveSystem,
       saveRaw
     },
     upstream: {
       upstreamKeysData,
-      selectedKeyVendor,
+      selectedKeyVendorID,
+      selectedKeyVendorName: vendorNameByID(rawConfig, selectedKeyVendorID),
       showSecrets,
       setShowSecrets,
       selectKeyVendor,
