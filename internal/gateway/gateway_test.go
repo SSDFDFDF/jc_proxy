@@ -445,21 +445,20 @@ func TestConsoleRoute(t *testing.T) {
 			Enabled:      true,
 			PasswordHash: "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
 		},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -531,21 +530,20 @@ func TestConsoleRouteHiddenForRemoteAddr(t *testing.T) {
 			PasswordHash: "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
 			AllowedCIDRs: []string{"127.0.0.1/32"},
 		},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -567,21 +565,20 @@ func TestConsoleRouteAllowsRemoteAddrWhenCIDRsEmpty(t *testing.T) {
 			Enabled:      true,
 			PasswordHash: "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
 		},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -605,21 +602,20 @@ func TestConsoleRouteAllowsTrustedProxyForwardedAddr(t *testing.T) {
 			AllowedCIDRs:      []string{"203.0.113.8/32"},
 			TrustedProxyCIDRs: []string{"10.0.0.0/8"},
 		},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -900,22 +896,21 @@ func TestRouterUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 	responseHeaderTimeout := 7 * time.Second
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
-					Keys:                  []string{"k1"},
 					ResponseHeaderTimeout: &responseHeaderTimeout,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -933,22 +928,21 @@ func TestRouterCanDisableResponseHeaderTimeout(t *testing.T) {
 	responseHeaderTimeout := time.Duration(0)
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
-					Keys:                  []string{"k1"},
 					ResponseHeaderTimeout: &responseHeaderTimeout,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -968,22 +962,21 @@ func TestRouterSendsInterimProcessingBeforeDelayedFinalResponse(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:                 "https://example.test",
-					Keys:                    []string{"k1"},
 					InterimResponseInterval: &interimInterval,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1039,22 +1032,21 @@ func TestRouterCanDisableInterimProcessing(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:                 "https://example.test",
-					Keys:                    []string{"k1"},
 					InterimResponseInterval: &interimInterval,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1101,22 +1093,21 @@ func TestRouterCanDisableInterimProcessing(t *testing.T) {
 func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:     "https://example.test",
-					Keys:        []string{"k1"},
 					BodyTimeout: 50 * time.Millisecond,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1147,7 +1138,7 @@ func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing
 		t.Fatalf("body timeout should stop waiting near configured deadline, elapsed=%v", elapsed)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["failures"]; got != 0 {
 		t.Fatalf("stall before first byte should not mark key failure, got %#v", got)
 	}
@@ -1159,21 +1150,20 @@ func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing
 func TestRouterAbortsClientConnectionWhenSuccessfulStreamBreaksMidBody(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://example.test",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1212,7 +1202,7 @@ func TestRouterAbortsClientConnectionWhenSuccessfulStreamBreaksMidBody(t *testin
 		t.Fatal("expected stream break to surface as client read error")
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["failures"]; got != 0 {
 		t.Fatalf("mid-stream upstream break should not mark key failure, got %#v", got)
 	}
@@ -1232,11 +1222,10 @@ func TestRouterSkipsClientAuthWhenDisabled(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 				ClientAuth: config.ClientAuthConfig{
@@ -1244,13 +1233,13 @@ func TestRouterSkipsClientAuthWhenDisabled(t *testing.T) {
 					Keys:    []string{"client-key-a"},
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1274,21 +1263,20 @@ func TestRouterDoesNotAddDefaultUserAgent(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1316,21 +1304,20 @@ func TestRouterForwardsClientUserAgent(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1356,18 +1343,17 @@ func TestRouterTracksUpstreamStatusStats(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -1381,7 +1367,7 @@ func TestRouterTracksUpstreamStatusStats(t *testing.T) {
 		t.Fatalf("expected upstream status passthrough, got %d", w.Code)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if len(stats) != 1 {
 		t.Fatalf("expected one key stats entry, got %d", len(stats))
 	}
@@ -1412,7 +1398,7 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -1420,11 +1406,11 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	ctrl := &testKeyController{
 		records: map[string][]keystore.Record{
-			"openai": {
+			"vid_openai": {
 				{Key: "k1", Status: keystore.KeyStatusActive},
 			},
 		},
@@ -1451,11 +1437,11 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 	if lastStatus != keystore.KeyStatusDisabledAuto {
 		t.Fatalf("expected auto disable status, got %q", lastStatus)
 	}
-	if lastVendor != "openai" || lastKey != "k1" {
+	if lastVendor != "vid_openai" || lastKey != "k1" {
 		t.Fatalf("unexpected disabled key target: %s %s", lastVendor, lastKey)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if len(stats) != 1 {
 		t.Fatalf("expected one key stats entry, got %d", len(stats))
 	}
@@ -1473,7 +1459,7 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 
 	baseStore := &blockingConditionalStore{
 		records: map[string][]keystore.Record{
-			"openai": {
+			"vid_openai": {
 				{Key: "k1", Status: keystore.KeyStatusActive, Version: 1},
 			},
 		},
@@ -1491,7 +1477,7 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -1499,7 +1485,7 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	router, err := NewWithUpstreamKeyRecords(cfg, baseStore.records, keyStore)
@@ -1540,7 +1526,7 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 		if err != nil {
 			t.Fatalf("list base store failed: %v", err)
 		}
-		if records["openai"][0].Status == keystore.KeyStatusDisabledAuto {
+		if records["vid_openai"][0].Status == keystore.KeyStatusDisabledAuto {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1554,18 +1540,18 @@ func TestRuntimeRefreshKeysPreservesCooldownState(t *testing.T) {
 		t.Fatalf("init file store failed: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+	if _, err := store.Append("vid_openai", []string{"k1"}); err != nil {
 		t.Fatalf("append key failed: %v", err)
 	}
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream:    config.UpstreamConfig{BaseURL: "http://upstream.invalid"},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	rt, err := NewRuntime(cfg, store)
@@ -1585,7 +1571,7 @@ func TestRuntimeRefreshKeysPreservesCooldownState(t *testing.T) {
 	}
 
 	// Adding an unrelated key triggers a full router rebuild.
-	if _, err := store.Append("openai", []string{"k2"}); err != nil {
+	if _, err := store.Append("vid_openai", []string{"k2"}); err != nil {
 		t.Fatalf("append second key failed: %v", err)
 	}
 	if err := rt.RefreshKeys(); err != nil {
@@ -1621,18 +1607,18 @@ func TestRuntimeRecoverUpstreamKeyClearsCooldownState(t *testing.T) {
 		t.Fatalf("init file store failed: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+	if _, err := store.Append("vid_openai", []string{"k1"}); err != nil {
 		t.Fatalf("append key failed: %v", err)
 	}
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream:    config.UpstreamConfig{BaseURL: "http://upstream.invalid"},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	rt, err := NewRuntime(cfg, store)
@@ -1650,7 +1636,7 @@ func TestRuntimeRecoverUpstreamKeyClearsCooldownState(t *testing.T) {
 		t.Fatal("k1 should be cooling down before recover")
 	}
 
-	if ok := rt.RecoverUpstreamKey("openai", "k1"); !ok {
+	if ok := rt.RecoverUpstreamKey("vid_openai", "k1"); !ok {
 		t.Fatal("recover failed")
 	}
 	if !pool.HasAvailable(nil) {
@@ -1675,20 +1661,20 @@ func TestRuntimeRefreshKeysPreservesRuntimeStats(t *testing.T) {
 		t.Fatalf("init file store failed: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+	if _, err := store.Append("vid_openai", []string{"k1"}); err != nil {
 		t.Fatalf("append key failed: %v", err)
 	}
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	rt, err := NewRuntime(cfg, store)
@@ -1707,7 +1693,7 @@ func TestRuntimeRefreshKeysPreservesRuntimeStats(t *testing.T) {
 		t.Fatalf("refresh keys failed: %v", err)
 	}
 
-	stats := rt.Snapshot().VendorStats()["openai"]
+	stats := rt.Snapshot().VendorStats()["vid_openai"]
 	if got := stats[0]["total_requests"]; got != 1 {
 		t.Fatalf("total_requests after refresh = %#v, want 1", got)
 	}
@@ -1730,21 +1716,21 @@ func TestRuntimeRefreshKeysDoesNotBlockInflightRequestsAndPreservesRuntimeStats(
 
 	ctrl := &testKeyController{
 		records: map[string][]keystore.Record{
-			"openai": {
+			"vid_openai": {
 				{Key: "k1", Status: keystore.KeyStatusActive},
 			},
 		},
 	}
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	rt, err := NewRuntime(cfg, ctrl)
@@ -1780,7 +1766,7 @@ func TestRuntimeRefreshKeysDoesNotBlockInflightRequestsAndPreservesRuntimeStats(
 		t.Fatal("refresh did not complete while request was in flight")
 	}
 
-	stats := rt.Snapshot().VendorStats()["openai"]
+	stats := rt.Snapshot().VendorStats()["vid_openai"]
 	if got := stats[0]["total_requests"]; got != 0 {
 		t.Fatalf("total_requests before in-flight request finishes = %#v, want 0", got)
 	}
@@ -1796,7 +1782,7 @@ func TestRuntimeRefreshKeysDoesNotBlockInflightRequestsAndPreservesRuntimeStats(
 		t.Fatal("request did not complete")
 	}
 
-	stats = rt.Snapshot().VendorStats()["openai"]
+	stats = rt.Snapshot().VendorStats()["vid_openai"]
 	if got := stats[0]["total_requests"]; got != 1 {
 		t.Fatalf("total_requests after inflight refresh = %#v, want 1", got)
 	}
@@ -1842,13 +1828,13 @@ func TestRuntimeStatsPersistAcrossRestart(t *testing.T) {
 		t.Fatalf("init file store failed: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+	if _, err := store.Append("vid_openai", []string{"k1"}); err != nil {
 		t.Fatalf("append key failed: %v", err)
 	}
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -1856,7 +1842,7 @@ func TestRuntimeStatsPersistAcrossRestart(t *testing.T) {
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	rt, err := NewRuntime(cfg, store)
@@ -1887,7 +1873,7 @@ func TestRuntimeStatsPersistAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart runtime failed: %v", err)
 	}
-	stats := restarted.Snapshot().VendorStats()["openai"]
+	stats := restarted.Snapshot().VendorStats()["vid_openai"]
 	if got := stats[0]["total_requests"]; got != 1 {
 		t.Fatalf("restarted total_requests = %#v, want 1", got)
 	}
@@ -1916,13 +1902,13 @@ func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
 		t.Fatalf("init file store failed: %v", err)
 	}
 	defer store.Close()
-	if _, err := store.Append("openai", []string{"k1"}); err != nil {
+	if _, err := store.Append("vid_openai", []string{"k1"}); err != nil {
 		t.Fatalf("append key failed: %v", err)
 	}
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -1930,7 +1916,7 @@ func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 
 	rt, err := NewRuntime(cfg, store)
@@ -1983,7 +1969,7 @@ func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart runtime failed: %v", err)
 	}
-	stats := restarted.Snapshot().VendorStats()["openai"]
+	stats := restarted.Snapshot().VendorStats()["vid_openai"]
 	if got := stats[0]["total_requests"]; got != 1 {
 		t.Fatalf("restarted total_requests = %#v, want 1", got)
 	}
@@ -2005,21 +1991,20 @@ func TestRouterFlushesStreamingResponses(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2052,7 +2037,7 @@ func TestRouterAggregateFlushesStreamingSuccessWithoutWaitingForEOF(t *testing.T
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2187,26 +2172,26 @@ func TestRouterAggregateChildUsesOnlySelectedKeys(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"child": {
 				Provider:    "generic",
-				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL, Keys: []string{"k1", "k2", "k3"}},
+				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
 				LoadBalance: "round_robin",
 			},
 			"agg": {
 				Provider:    "aggregate",
 				LoadBalance: "round_robin",
 				Aggregate: config.AggregateConfig{Children: []config.AggregateChild{{
-					Vendor: "child",
-					KeyIDs: []string{keystore.KeyID("k2"), keystore.KeyID("k3")},
+					VendorID: "vid_child",
+					KeyIDs:   []string{keystore.KeyID("k2"), keystore.KeyID("k3")},
 				}}},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"child": {"k1", "k2", "k3"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2236,10 +2221,10 @@ func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"child": {
 				Provider:    "generic",
-				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL, Keys: []string{"k1", "k2"}},
+				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{Failover: config.ErrorFailoverConfig{MaxAttempts: 1}},
 			},
@@ -2247,16 +2232,16 @@ func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
 				Provider:    "aggregate",
 				LoadBalance: "round_robin",
 				Aggregate: config.AggregateConfig{Children: []config.AggregateChild{
-					{Vendor: "child", KeyIDs: []string{keystore.KeyID("k1")}},
-					{Vendor: "child", KeyIDs: []string{keystore.KeyID("k2")}},
+					{VendorID: "vid_child", KeyIDs: []string{keystore.KeyID("k1")}},
+					{VendorID: "vid_child", KeyIDs: []string{keystore.KeyID("k2")}},
 				}},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"child": {"k1", "k2"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2275,16 +2260,15 @@ func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
 
 func TestRouterAggregateSkipsChildWhenSelectedKeysUnavailable(t *testing.T) {
 	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
-	childA := cfg.Vendors["child_a"]
-	childA.Upstream.Keys = []string{"child-a-key", "child-a-other"}
-	cfg.Vendors["child_a"] = childA
-	agg := cfg.Vendors["agg"]
-	agg.Aggregate.Children[0].KeyIDs = []string{keystore.KeyID("missing-key")}
-	cfg.Vendors["agg"] = agg
+	seed := aggregateTestSeed()
+	seed["child_a"] = []string{"child-a-key", "child-a-other"}
+	mutateTestVendor(t, cfg, "agg", func(vc *config.VendorConfig) {
+		vc.Aggregate.Children[0].KeyIDs = []string{keystore.KeyID("missing-key")}
+	})
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, seed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2311,7 +2295,7 @@ func TestRouterAggregateRetriesBufferedPostOnRateLimit(t *testing.T) {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2363,15 +2347,16 @@ func TestRouterAggregateRetriesNextChildWhenVendorKeyFailoverLimitReached(t *tes
 	attemptsA := 0
 	attemptsB := 0
 	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
-	childA := cfg.Vendors["child_a"]
-	childA.Upstream.Keys = []string{"child-a-key-1", "child-a-key-2"}
-	childA.ErrorPolicy.Failover.MaxAttempts = 1
-	cfg.Vendors["child_a"] = childA
+	seed := aggregateTestSeed()
+	seed["child_a"] = []string{"child-a-key-1", "child-a-key-2"}
+	mutateTestVendor(t, cfg, "child_a", func(vc *config.VendorConfig) {
+		vc.ErrorPolicy.Failover.MaxAttempts = 1
+	})
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, seed)
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2419,7 +2404,7 @@ func TestRouterAggregateDoesNotRetryBufferedPostOnServerError(t *testing.T) {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2472,7 +2457,7 @@ func TestRouterAggregateDoesNotRetryBufferedPostOnNetworkError(t *testing.T) {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2518,7 +2503,7 @@ func TestRouterAggregateDoesNotRetryMultipartPost(t *testing.T) {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2567,7 +2552,7 @@ func TestRouterAggregateRespectsDisabledNetworkRetry(t *testing.T) {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2605,14 +2590,14 @@ func TestRouterAggregateInterimProcessingKeepsFinalStatus(t *testing.T) {
 	interimInterval := 10 * time.Millisecond
 
 	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
-	childA := cfg.Vendors["child_a"]
-	childA.Upstream.InterimResponseInterval = &interimInterval
-	cfg.Vendors["child_a"] = childA
+	mutateTestVendor(t, cfg, "child_a", func(vc *config.VendorConfig) {
+		vc.Upstream.InterimResponseInterval = &interimInterval
+	})
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, aggregateTestSeed())
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2671,21 +2656,20 @@ func TestRouterDoesNotCooldownHealthyKeyOnClientDisconnect(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2694,7 +2678,7 @@ func TestRouterDoesNotCooldownHealthyKeyOnClientDisconnect(t *testing.T) {
 	w := &brokenPipeWriter{}
 	router.ServeHTTP(w, req)
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if len(stats) != 1 {
 		t.Fatalf("expected one key stats entry, got %d", len(stats))
 	}
@@ -2718,7 +2702,7 @@ func TestRouterStillClassifiesErrorResponseOnClientDisconnect(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -2726,11 +2710,11 @@ func TestRouterStillClassifiesErrorResponseOnClientDisconnect(t *testing.T) {
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	ctrl := &testKeyController{
 		records: map[string][]keystore.Record{
-			"openai": {
+			"vid_openai": {
 				{Key: "k1", Status: keystore.KeyStatusActive},
 			},
 		},
@@ -2745,7 +2729,7 @@ func TestRouterStillClassifiesErrorResponseOnClientDisconnect(t *testing.T) {
 	w := &brokenPipeWriter{}
 	router.ServeHTTP(w, req)
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["status"]; got != keystore.KeyStatusDisabledAuto {
 		t.Fatalf("expected key to remain auto disabled on upstream 401, got %#v", got)
 	}
@@ -2775,22 +2759,21 @@ func TestRouterFailsOverBufferedPostOnRateLimit(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2816,7 +2799,7 @@ func TestRouterFailsOverBufferedPostOnRateLimit(t *testing.T) {
 		t.Fatalf("request body should be replayed verbatim, got %#v", bodies)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if len(stats) != 2 {
 		t.Fatalf("expected two key stats entries, got %d", len(stats))
 	}
@@ -2843,22 +2826,21 @@ func TestRouterDoesNotRetryMultipartPost(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2880,22 +2862,21 @@ func TestRouterDoesNotRetryMultipartPost(t *testing.T) {
 func TestRouterRetriesSafeGetOnRequestError(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://example.test",
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2941,12 +2922,11 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
@@ -2958,13 +2938,13 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 					},
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -2980,7 +2960,7 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 		t.Fatalf("rate limit failover disabled should only attempt once, got %d", attempts)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["failures"]; got != 0 {
 		t.Fatalf("rate limit cooldown disabled should not record failures, got %#v", got)
 	}
@@ -3004,12 +2984,11 @@ func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testi
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
@@ -3021,13 +3000,13 @@ func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testi
 					},
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -3046,7 +3025,7 @@ func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testi
 		t.Fatalf("unexpected attempt order: %#v", attempts)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["last_status"]; got != http.StatusTooManyRequests {
 		t.Fatalf("first key last_status = %#v, want %d", got, http.StatusTooManyRequests)
 	}
@@ -3067,7 +3046,7 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3086,11 +3065,11 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 					},
 				},
 			},
-		},
+		}),
 	}
 	ctrl := &testKeyController{
 		records: map[string][]keystore.Record{
-			"openai": {
+			"vid_openai": {
 				{Key: "k1", Status: keystore.KeyStatusActive},
 			},
 		},
@@ -3115,7 +3094,7 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 		t.Fatalf("invalid key auto disable disabled should not persist disable status, got %q", ctrl.lastStatus)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["status"]; got != keystore.KeyStatusActive {
 		t.Fatalf("key should remain active, got %#v", got)
 	}
@@ -3127,21 +3106,20 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 func TestRouterDoesNotCooldownKeyOnCanceledRequestContext(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://example.test",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -3171,7 +3149,7 @@ func TestRouterDoesNotCooldownKeyOnCanceledRequestContext(t *testing.T) {
 		t.Fatal("ServeHTTP did not return after context cancellation")
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if len(stats) != 1 {
 		t.Fatalf("expected one key stats entry, got %d", len(stats))
 	}
@@ -3196,7 +3174,7 @@ func TestRouterPassthroughModeDoesNotRequireManagedKeys(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"generic": {
 				Provider: "generic",
 				Upstream: config.UpstreamConfig{
@@ -3210,7 +3188,7 @@ func TestRouterPassthroughModeDoesNotRequireManagedKeys(t *testing.T) {
 					Allowlist: []string{"Content-Type"},
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
@@ -3233,7 +3211,7 @@ func TestRouterPassthroughModeDoesNotRequireManagedKeys(t *testing.T) {
 		t.Fatalf("authorization header not forwarded in passthrough mode: %q", gotAuth)
 	}
 
-	stats := router.VendorStats()["generic"]
+	stats := router.VendorStats()["vid_generic"]
 	if len(stats) != 0 {
 		t.Fatalf("passthrough mode should not create managed key stats, got %d entries", len(stats))
 	}
@@ -3253,12 +3231,11 @@ func TestRouterResinReverseProxySetsAccountHeaderForManagedKey(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 				Resin: config.ResinConfig{
@@ -3268,13 +3245,13 @@ func TestRouterResinReverseProxySetsAccountHeaderForManagedKey(t *testing.T) {
 					Mode:     "reverse",
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -3311,7 +3288,7 @@ func TestRouterResinReverseProxySetsAccountHeaderForPassthroughKey(t *testing.T)
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3331,7 +3308,7 @@ func TestRouterResinReverseProxySetsAccountHeaderForPassthroughKey(t *testing.T)
 					Mode:     "reverse",
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
@@ -3376,21 +3353,20 @@ func TestRouterDoesNotFollowUpstreamRedirects(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1"},
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -3418,12 +3394,11 @@ func configBoolPtr(v bool) *bool {
 func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Config {
 	return &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"child_a": {
 				Provider: "generic",
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://child-a.test",
-					Keys:    []string{"child-a-key"},
 				},
 				LoadBalance: "round_robin",
 			},
@@ -3431,7 +3406,6 @@ func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Conf
 				Provider: "generic",
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://child-b.test",
-					Keys:    []string{"child-b-key"},
 				},
 				LoadBalance: "round_robin",
 			},
@@ -3440,12 +3414,12 @@ func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Conf
 				LoadBalance: "round_robin",
 				Aggregate: config.AggregateConfig{
 					Children: []config.AggregateChild{
-						{Vendor: "child_a"},
-						{Vendor: "child_b"},
+						{VendorID: "vid_child_a"},
+						{VendorID: "vid_child_b"},
 					},
 					Retry: retry,
 				},
 			},
-		},
+		}),
 	}
 }

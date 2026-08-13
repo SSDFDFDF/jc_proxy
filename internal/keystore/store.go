@@ -30,7 +30,7 @@ var (
 )
 
 type ConditionalStatusStore interface {
-	SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error
+	SetStatusIfVersion(vendorID, key string, expectedVersion int64, status, reason, actor string) error
 }
 
 type RuntimeStats struct {
@@ -54,7 +54,7 @@ type RuntimeStatsStore interface {
 }
 
 type RemarkStore interface {
-	SetRemark(vendor, key, remark string) error
+	SetRemark(vendorID, key, remark string) error
 }
 
 type Record struct {
@@ -70,16 +70,19 @@ type Record struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Store persists upstream keys partitioned by the immutable vendor id
+// (config.VendorEntry.ID), never by the vendor's display name. That is what
+// makes renaming a vendor a pure config edit with no data movement.
 type Store interface {
 	Info() Info
 	ListAll() (map[string][]Record, error)
-	List(vendor string) ([]Record, error)
+	List(vendorID string) ([]Record, error)
 	KeyMap() (map[string][]string, error)
-	Replace(vendor string, keys []string) error
-	Append(vendor string, keys []string) (int, error)
-	Delete(vendor string, keys []string) (int, error)
-	SetStatus(vendor, key, status, reason, actor string) error
-	DeleteVendor(vendor string) error
+	Replace(vendorID string, keys []string) error
+	Append(vendorID string, keys []string) (int, error)
+	Delete(vendorID string, keys []string) (int, error)
+	SetStatus(vendorID, key, status, reason, actor string) error
+	DeleteVendor(vendorID string) error
 	Close() error
 }
 
@@ -92,41 +95,6 @@ func New(cfg config.UpstreamKeyStoreConfig) (Store, error) {
 	default:
 		return nil, fmt.Errorf("unsupported upstream key store driver: %s", cfg.Driver)
 	}
-}
-
-func BootstrapLegacyKeys(store Store, cfgs ...*config.Config) (int, error) {
-	if store == nil {
-		return 0, errors.New("store is nil")
-	}
-	current, err := store.KeyMap()
-	if err != nil {
-		return 0, err
-	}
-
-	imported := 0
-	for _, cfg := range cfgs {
-		if cfg == nil {
-			continue
-		}
-		for vendor, vc := range cfg.Vendors {
-			keys := NormalizeKeys(vc.Upstream.Keys)
-			if len(keys) == 0 {
-				continue
-			}
-			if len(current[vendor]) > 0 {
-				continue
-			}
-			n, err := store.Append(vendor, keys)
-			if err != nil {
-				return imported, err
-			}
-			if n > 0 {
-				current[vendor] = append([]string(nil), keys...)
-				imported += n
-			}
-		}
-	}
-	return imported, nil
 }
 
 func NormalizeKeys(keys []string) []string {
@@ -191,8 +159,8 @@ func NormalizeRecord(record Record) Record {
 	return record
 }
 
-func normalizeVendor(vendor string) string {
-	return strings.TrimSpace(vendor)
+func normalizeVendor(vendorID string) string {
+	return strings.TrimSpace(vendorID)
 }
 
 func cloneRecordMap(src map[string][]Record) map[string][]Record {

@@ -291,8 +291,4 @@ export function storageSummary(info) {
   return `file · ${info.file_path || '--'}`
 }
 
-export function pickName(list, preferred, current) {
-  if (preferred && list.includes(preferred)) return preferred
-  if (current && list.includes(current)) return current
-  return list[0] || ''
-}
+

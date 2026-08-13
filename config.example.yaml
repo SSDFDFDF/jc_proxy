@@ -1,3 +1,6 @@
+# 持久化数据结构版本。服务只读取当前版本，遇到旧版本会拒绝启动并提示运行 jc_proxy_upgrade。
+schema_version: 2
+
 server:
   listen: ":8092"
   read_timeout: 30s
@@ -49,8 +52,11 @@ storage:
       max_idle_conns: 2
       conn_max_lifetime: 30m
 
+# vendors 是有序数组：id 不可变，是上游 Key 分区、聚合引用和运行统计的唯一标识；
+# name 可以随时改，它同时是客户端调用路径的第一段（改名后旧地址立即 404）。
+# 手写配置时可以省略 id，启动时会自动生成并写回。
 vendors:
-  openai:
+  - name: "openai"
     provider: "openai"
     upstream:
       base_url: "https://api.openai.com"
@@ -117,7 +123,7 @@ vendors:
       platform: "Default"
       mode: "reverse"
 
-  anthropic:
+  - name: "anthropic"
     provider: "anthropic"
     upstream:
       base_url: "https://api.anthropic.com"

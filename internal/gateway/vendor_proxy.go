@@ -180,17 +180,18 @@ func (v *vendorGateway) persistDisabledKeyAsync(key string, version int64, reaso
 	if v.keyCtrl == nil {
 		return
 	}
+	// Key storage is partitioned by vendor id, never by the mutable name.
 	if asyncStore, ok := v.keyCtrl.(*keystore.AsyncStatusStore); ok {
-		_ = asyncStore.SetStatusIfVersion(v.name, key, version, keystore.KeyStatusDisabledAuto, reason, "system:auto")
+		_ = asyncStore.SetStatusIfVersion(v.id, key, version, keystore.KeyStatusDisabledAuto, reason, "system:auto")
 		return
 	}
-	go func(ctrl UpstreamKeyController, vendor, key string, version int64, reason string) {
+	go func(ctrl UpstreamKeyController, vendorID, key string, version int64, reason string) {
 		if versioned, ok := ctrl.(keystore.ConditionalStatusStore); ok {
-			_ = versioned.SetStatusIfVersion(vendor, key, version, keystore.KeyStatusDisabledAuto, reason, "system:auto")
+			_ = versioned.SetStatusIfVersion(vendorID, key, version, keystore.KeyStatusDisabledAuto, reason, "system:auto")
 			return
 		}
-		_ = ctrl.SetStatus(vendor, key, keystore.KeyStatusDisabledAuto, reason, "system:auto")
-	}(v.keyCtrl, v.name, key, version, reason)
+		_ = ctrl.SetStatus(vendorID, key, keystore.KeyStatusDisabledAuto, reason, "system:auto")
+	}(v.keyCtrl, v.id, key, version, reason)
 }
 
 func (v *vendorGateway) usesManagedUpstreamKeys() bool {

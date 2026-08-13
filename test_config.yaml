@@ -1,21 +1,25 @@
+schema_version: 2
 admin:
-  enabled: true
-  username: "admin"
-  password: "password"
+    enabled: true
+    username: "admin"
+    password: "password"
 vendors:
-  v1:
-    provider: openai
-    upstream:
-      base_url: "https://api.openai.com"
-  v2:
-    provider: openai
-    upstream:
-      base_url: "https://api.openai.com"
-  agg:
-    provider: aggregate
-    aggregate:
-      children:
-        - vendor: v1
-          weight: 1
-        - vendor: v2
-          weight: 1
+    - id: v_1297c1a98014e3d7
+      name: v1
+      provider: openai
+      upstream:
+        base_url: "https://api.openai.com"
+    - id: v_904b6b821dd55c04
+      name: v2
+      provider: openai
+      upstream:
+        base_url: "https://api.openai.com"
+    - id: v_4ba76ac772f61d0d
+      name: agg
+      provider: aggregate
+      aggregate:
+        children:
+            - vendor_id: v_1297c1a98014e3d7
+              weight: 1
+            - vendor_id: v_904b6b821dd55c04
+              weight: 1

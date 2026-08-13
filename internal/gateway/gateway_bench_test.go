@@ -17,22 +17,21 @@ func newBenchRouter(b *testing.B, upstreamURL string) *Router {
 	zero := time.Duration(0)
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:                 upstreamURL,
-					Keys:                    []string{"k1", "k2", "k3"},
 					ResponseHeaderTimeout:   &zero,
 					InterimResponseInterval: &zero,
 				},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		b.Fatalf("prepare config failed: %v", err)
 	}
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2", "k3"}})
 	if err != nil {
 		b.Fatalf("init router failed: %v", err)
 	}

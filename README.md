@@ -15,6 +15,7 @@
 
 ```text
 cmd/jc_proxy/           程序入口
+cmd/jc_proxy_upgrade/   数据结构升级命令
 internal/gateway/       网关转发与 Key 策略
 internal/admin/         管理后台与配置管理
 internal/keystore/      上游 Key 存储
@@ -33,7 +34,7 @@ cp config.example.yaml config.yaml
 
 2. 按需修改 `config.yaml`
 
-- 配置 `vendors.<name>.upstream.base_url`
+- 在 `vendors` 数组里配置每个供应商的 `name` 和 `upstream.base_url`（`id` 可省略，首次启动自动生成）
 - 配置客户端鉴权 `client_auth`
 - 配置上游鉴权 `upstream_auth`
 - 根据需要启用 `admin.enabled`
@@ -116,6 +117,66 @@ curl http://127.0.0.1:8092/anthropic/v1/messages \
 - `admin`: 管理后台账号、会话和访问控制
 - `storage`: 配置与上游 Key 的存储方式
 - `vendors`: 每个供应商的上游地址、鉴权、路径重写和错误策略
+- `schema_version`: 持久化数据结构版本，见下节
+
+### 供应商 ID 与改名
+
+`vendors` 是有序数组，每一项都有 `id` 和 `name` 两个标识：
+
+```yaml
+vendors:
+  - id: "v_75fc384a04f64dcf"   # 不可变，手写配置时可省略，启动时自动生成并写回（写回会重新序列化配置，文件内注释不保留）
+    name: "openai"              # 可改，同时是客户端调用路径的第一段
+    provider: "openai"
+    upstream:
+      base_url: "https://api.openai.com"
+```
+
+- `id` 是唯一标识：上游 Key 分区、运行统计、聚合供应商的 `aggregate.children[].vendor_id` 全部绑定在它上面
+- `name` 只是展示名 + 路由段，可以随时改名，存储的数据一条都不用搬
+
+改名可以在后台供应商详情页操作，或直接调接口：
+
+```bash
+curl -X POST http://127.0.0.1:8092/admin/vendors/v_75fc384a04f64dcf/rename \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"openai-prod"}'
+```
+
+唯一的外部影响是调用地址：改名后 `/openai/v1/...` 立即返回 404，客户端要改成 `/openai-prod/v1/...`。
+名称必须全局唯一，不能包含 `/ ? # % \` 或空格，也不能占用内部路由 `healthz`、`console`、`admin`。
+
+所有供应商维度的管理接口都按 `id` 寻址（`/admin/vendors/{id}`、`/admin/upstream-keys/{id}`），
+因此并发改名不会让后台操作打到错误的供应商。
+
+### 数据结构版本与升级
+
+配置和上游 Key 存储都带版本标记（配置里的 `schema_version`,PGSQL Key 表旁的 `<table>_meta` 表）。
+服务只读取当前版本，遇到旧数据会直接拒绝启动并提示升级，不会在线迁移：
+
+```text
+load config failed: config schema version 1 is older than required (2): run "jc_proxy_upgrade -config <path>" to migrate, then restart
+```
+
+升级用独立命令，先 dry-run 再执行：
+
+```bash
+go build -o jc_proxy_upgrade ./cmd/jc_proxy_upgrade
+./jc_proxy_upgrade -config ./config.yaml -dry-run
+./jc_proxy_upgrade -config ./config.yaml
+```
+
+v1 → v2 会做这些事：
+
+- `vendors` 从按名字索引的 map 改成 `[{id, name, ...}]` 数组，并为每个供应商生成 `id`
+- `aggregate.children[].vendor` 改成 `vendor_id`
+- 上游 Key 分区从供应商名字改成 `id`（PGSQL 是 `vendor` 列改名为 `vendor_id`，在单个事务内完成）
+- 移除早已废弃的 `vendors.*.upstream.keys` 内联 Key 字段
+
+配置文件和 PGSQL 配置行都会先备份（`config.yaml.v1.<时间戳>.bak` / `<record_key>.v1.backup.<时间戳>` 行）。
+命令可以重复执行：已经是 v2 的数据会跳过，中途失败也能直接重跑。
+`storage.config.driver=pgsql` 时会同时迁移本地文件和数据库里的配置副本，避免重启读到旧数据。
 
 `storage` 是启动前配置，优先级为：
 
@@ -171,7 +232,7 @@ server:
 
 ```yaml
 vendors:
-  openai:
+  - name: "openai"
     upstream:
       interim_response_interval: 30s
 ```

@@ -40,7 +40,7 @@ function App() {
       token={auth.token}
       upstreamStorage={upstream.upstreamKeysData.storage}
       busy={auth.busy}
-      onRefreshAll={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
+      onRefreshAll={() => actions.refreshAll(config.selectedVendorID, upstream.selectedKeyVendorID)}
       onRefreshStats={() => statsView.loadStats(false, true)}
       onLogout={auth.logout}
     >
@@ -56,7 +56,8 @@ function App() {
       {shell.nav === 'keyHub' && (
         <KeyHubPage
           upstreamKeysData={upstream.upstreamKeysData}
-          selectedKeyVendor={upstream.selectedKeyVendor}
+          selectedKeyVendorID={upstream.selectedKeyVendorID}
+          selectedKeyVendorName={upstream.selectedKeyVendorName}
           showSecrets={upstream.showSecrets}
           busy={auth.busy}
           onToggleSecrets={() => upstream.setShowSecrets((prev) => !prev)}
@@ -71,9 +72,9 @@ function App() {
           onDeleteKey={upstream.deleteUpstreamKey}
           onDeleteKeys={upstream.deleteUpstreamKeys}
           onSetRemark={upstream.setUpstreamKeyRemark}
-          onTestKey={(vendor, key) => {
+          onTestKey={(vendorID, key) => {
             sessionStorage.setItem('jc_proxy_test_key', key)
-            config.selectVendor(vendor)
+            config.selectVendor(vendorID)
             shell.setNav('vendorTest')
           }}
           vendorRows={overview.vendorRows}
@@ -90,7 +91,11 @@ function App() {
         <VendorsPage
           busy={auth.busy}
           vendorRows={overview.vendorRows}
-          selectedVendor={config.selectedVendor}
+          selectedVendorID={config.selectedVendorID}
+          selectedVendorName={config.selectedVendorName}
+          renameDraft={config.renameDraft}
+          onRenameDraftChange={config.setRenameDraft}
+          onRenameVendor={config.renameVendor}
           vendorDraft={config.vendorDraft}
           upstreamKeysData={upstream.upstreamKeysData}
           runtimeStats={statsView.stats}
@@ -109,7 +114,7 @@ function App() {
           rewriteRows={config.rewriteRows}
           newVendorForm={config.newVendorForm}
           onSelectVendor={config.selectVendor}
-          onRefresh={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
+          onRefresh={() => actions.refreshAll(config.selectedVendorID, upstream.selectedKeyVendorID)}
           onNewVendorFormChange={config.setNewVendorForm}
           onCreateVendor={config.createVendor}
           onOpenUpstreamKeys={() => shell.setNav('keyHub')}
@@ -136,10 +141,11 @@ function App() {
         <VendorTestPage
           busy={auth.busy}
           vendorRows={overview.vendorRows}
-          selectedVendor={config.selectedVendor}
+          selectedVendorID={config.selectedVendorID}
+          selectedVendorName={config.selectedVendorName}
           refreshStamp={auth.lastSyncAt}
           onSelectVendor={config.selectVendor}
-          onRefresh={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
+          onRefresh={() => actions.refreshAll(config.selectedVendorID, upstream.selectedKeyVendorID)}
           onLoadMeta={vendorTest.loadVendorTestMeta}
           onRunTest={vendorTest.runVendorTest}
         />
@@ -154,7 +160,7 @@ function App() {
           maskedConfig={config.maskedConfig}
           onSystemFormChange={config.setSystemForm}
           onSave={config.saveSystem}
-          onRefreshPreview={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
+          onRefreshPreview={() => actions.refreshAll(config.selectedVendorID, upstream.selectedKeyVendorID)}
         />
       )}
 
@@ -179,7 +185,7 @@ function App() {
           busy={auth.busy}
           rawConfigText={config.rawConfigText}
           onRawConfigTextChange={config.setRawConfigText}
-          onReload={() => actions.refreshAll(config.selectedVendor, upstream.selectedKeyVendor)}
+          onReload={() => actions.refreshAll(config.selectedVendorID, upstream.selectedKeyVendorID)}
           onSave={config.saveRaw}
         />
       )}

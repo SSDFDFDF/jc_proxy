@@ -86,7 +86,7 @@ func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -99,11 +99,11 @@ func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 					},
 				},
 			},
-		},
+		}),
 	}
 	ctrl := &testKeyController{
 		records: map[string][]keystore.Record{
-			"openai": {
+			"vid_openai": {
 				{Key: "k1", Status: keystore.KeyStatusActive},
 			},
 		},
@@ -136,7 +136,7 @@ func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 		t.Fatalf("lastReason = %q, want invalid key marker", lastReason)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["status"]; got != keystore.KeyStatusDisabledAuto {
 		t.Fatalf("key status = %#v, want %q", got, keystore.KeyStatusDisabledAuto)
 	}
@@ -158,12 +158,11 @@ func TestRouterUsesCustomCooldownResponseRule(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
@@ -177,13 +176,13 @@ func TestRouterUsesCustomCooldownResponseRule(t *testing.T) {
 					},
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -202,7 +201,7 @@ func TestRouterUsesCustomCooldownResponseRule(t *testing.T) {
 		t.Fatalf("unexpected attempt order: %#v", attempts)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["last_status"]; got != http.StatusTeapot {
 		t.Fatalf("first key last_status = %#v, want %d", got, http.StatusTeapot)
 	}
@@ -227,12 +226,11 @@ func TestRouterUsesCustomFailoverResponseCodesWithoutCooldown(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
-					Keys:    []string{"k1", "k2"},
 				},
 				LoadBalance: "least_used",
 				ErrorPolicy: config.ErrorPolicyConfig{
@@ -241,13 +239,13 @@ func TestRouterUsesCustomFailoverResponseCodesWithoutCooldown(t *testing.T) {
 					},
 				},
 			},
-		},
+		}),
 	}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
 
-	router, err := New(cfg)
+	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1", "k2"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
 	}
@@ -266,7 +264,7 @@ func TestRouterUsesCustomFailoverResponseCodesWithoutCooldown(t *testing.T) {
 		t.Fatalf("unexpected attempt order: %#v", attempts)
 	}
 
-	stats := router.VendorStats()["openai"]
+	stats := router.VendorStats()["vid_openai"]
 	if got := stats[0]["backoff_remaining_seconds"]; got != 0 {
 		t.Fatalf("expected first key to avoid cooldown, got %#v", got)
 	}

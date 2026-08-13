@@ -18,6 +18,12 @@ type configBackend interface {
 	Close() error
 }
 
+// newRemoteConfigBackend is a seam so tests can fake the PostgreSQL backend
+// without a database.
+var newRemoteConfigBackend = func(cfg config.ConfigStorePGSQLConfig) (configBackend, error) {
+	return newPGConfigBackend(cfg)
+}
+
 type loadedConfig struct {
 	cfg        *config.Config
 	adminLayer config.AdminCredentialLayer
@@ -54,9 +60,13 @@ func NewStore(configPath string, bootstrap *config.Config) (*Store, error) {
 		return nil, err
 	}
 	seedRemote := false
+	// Ids minted during load exist only in memory; unless they are persisted
+	// below, the next restart mints different ones and every key partition and
+	// runtime statistic stored under the old ids is orphaned.
+	mintedIDs := bootstrap.MintedVendorIDs()
 
 	if bootstrap.Storage.Config.Driver == "pgsql" {
-		backend, err := newPGConfigBackend(bootstrap.Storage.Config.PGSQL)
+		backend, err := newRemoteConfigBackend(bootstrap.Storage.Config.PGSQL)
 		if err != nil {
 			return nil, err
 		}
@@ -75,6 +85,9 @@ func NewStore(configPath string, bootstrap *config.Config) (*Store, error) {
 				return nil, err
 			}
 			effective = nextEffective
+			// The remote payload replaced the bootstrap vendors, so from here
+			// on only its own minting matters.
+			mintedIDs = loaded.cfg.MintedVendorIDs()
 		} else {
 			seedRemote = true
 		}
@@ -94,13 +107,17 @@ func NewStore(configPath string, bootstrap *config.Config) (*Store, error) {
 		}
 		return nil, err
 	}
-	if s.useRemote && (seedRemote || s.initAdminPassword != "") {
+	if s.useRemote && (seedRemote || mintedIDs || s.initAdminPassword != "") {
 		if err := s.remote.Save(s.cfg); err != nil {
 			_ = s.remote.Close()
 			return nil, err
 		}
 	}
-	if s.initAdminPassword != "" && s.path != "" {
+	// In remote mode the local file is only a bootstrap layer whose vendors
+	// are ignored on the next boot, so minted ids alone are no reason to
+	// rewrite a hand-maintained file.
+	writeLocal := s.initAdminPassword != "" || (!s.useRemote && mintedIDs)
+	if writeLocal && s.path != "" {
 		if err := writeConfigFile(s.path, s.cfg); err != nil {
 			if s.remote != nil {
 				_ = s.remote.Close()
@@ -166,13 +183,14 @@ func (s *Store) SnapshotJSON(maskSecrets bool) ([]byte, error) {
 		return nil, err
 	}
 	if maskSecrets {
-		for k, v := range cfg.Vendors {
-			if v.ClientAuth.Enabled {
-				for i := range v.ClientAuth.Keys {
-					v.ClientAuth.Keys[i] = mask(v.ClientAuth.Keys[i])
-				}
+		for i := range cfg.Vendors {
+			if !cfg.Vendors[i].ClientAuth.Enabled {
+				continue
 			}
-			cfg.Vendors[k] = v
+			keys := cfg.Vendors[i].ClientAuth.Keys
+			for j := range keys {
+				keys[j] = mask(keys[j])
+			}
 		}
 		cfg.Admin.Password = "******"
 	}
@@ -185,7 +203,6 @@ func sanitizeConfigForStore(next *config.Config, storage config.StorageConfig) (
 		return nil, err
 	}
 	cloned.Storage = storage
-	cloned.StripExternalizedData()
 	return cloned, nil
 }
 

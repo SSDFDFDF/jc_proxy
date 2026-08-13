@@ -125,7 +125,7 @@ func captureRuntimeStats(router *Router) map[string]map[string]keystore.RuntimeS
 	}
 
 	out := make(map[string]map[string]keystore.RuntimeStats)
-	for vendor, states := range router.VendorStateSnapshots() {
+	for vendorID, states := range router.VendorStateSnapshots() {
 		if len(states) == 0 {
 			continue
 		}
@@ -138,7 +138,7 @@ func captureRuntimeStats(router *Router) map[string]map[string]keystore.RuntimeS
 			perVendor[key] = state.RuntimeStats
 		}
 		if len(perVendor) > 0 {
-			out[vendor] = perVendor
+			out[vendorID] = perVendor
 		}
 	}
 	return out
@@ -147,8 +147,8 @@ func captureRuntimeStats(router *Router) map[string]map[string]keystore.RuntimeS
 func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.RuntimeStats) (map[string][]keystore.RuntimeStatsDelta, map[string]map[string]keystore.RuntimeStats) {
 	deltas := make(map[string][]keystore.RuntimeStatsDelta)
 
-	for vendor, currentKeys := range current {
-		prevKeys := previous[vendor]
+	for vendorID, currentKeys := range current {
+		prevKeys := previous[vendorID]
 		for key, currentStats := range currentKeys {
 			prevStats, ok := prevKeys[key]
 			switch {
@@ -156,7 +156,7 @@ func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.Ru
 				if currentStats.IsZero() {
 					continue
 				}
-				deltas[vendor] = append(deltas[vendor], keystore.RuntimeStatsDelta{
+				deltas[vendorID] = append(deltas[vendorID], keystore.RuntimeStatsDelta{
 					Key:          key,
 					RuntimeStats: currentStats,
 				})
@@ -166,7 +166,7 @@ func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.Ru
 					if currentStats.IsZero() {
 						continue
 					}
-					deltas[vendor] = append(deltas[vendor], keystore.RuntimeStatsDelta{
+					deltas[vendorID] = append(deltas[vendorID], keystore.RuntimeStatsDelta{
 						Key:          key,
 						RuntimeStats: currentStats,
 					})
@@ -175,7 +175,7 @@ func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.Ru
 				if delta.IsZero() {
 					continue
 				}
-				deltas[vendor] = append(deltas[vendor], keystore.RuntimeStatsDelta{
+				deltas[vendorID] = append(deltas[vendorID], keystore.RuntimeStatsDelta{
 					Key:          key,
 					RuntimeStats: delta,
 				})
@@ -187,14 +187,14 @@ func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.Ru
 	// can mutate it in place and use it as the next baseline. Keys present
 	// in previous but missing from current are merged back so that historical
 	// counters are not lost across snapshots.
-	for vendor, prevKeys := range previous {
+	for vendorID, prevKeys := range previous {
 		if len(prevKeys) == 0 {
 			continue
 		}
-		nextKeys := current[vendor]
+		nextKeys := current[vendorID]
 		if nextKeys == nil {
 			nextKeys = make(map[string]keystore.RuntimeStats, len(prevKeys))
-			current[vendor] = nextKeys
+			current[vendorID] = nextKeys
 		}
 		for key, prevStats := range prevKeys {
 			if _, ok := nextKeys[key]; ok {
@@ -204,9 +204,9 @@ func buildRuntimeStatsDeltas(current, previous map[string]map[string]keystore.Ru
 		}
 	}
 
-	for vendor, records := range deltas {
+	for vendorID, records := range deltas {
 		if len(records) == 0 {
-			delete(deltas, vendor)
+			delete(deltas, vendorID)
 		}
 	}
 	return deltas, current

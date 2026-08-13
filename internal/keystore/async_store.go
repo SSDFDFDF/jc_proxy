@@ -19,12 +19,12 @@ type AsyncStatusStoreOptions struct {
 
 type conditionalStatusStoreWithContext interface {
 	ConditionalStatusStore
-	SetStatusIfVersionContext(ctx context.Context, vendor, key string, expectedVersion int64, status, reason, actor string) error
+	SetStatusIfVersionContext(ctx context.Context, vendorID, key string, expectedVersion int64, status, reason, actor string) error
 }
 
 type pendingStatusUpdate struct {
 	id              uint64
-	vendor          string
+	vendorID        string
 	key             string
 	expectedVersion int64
 	status          string
@@ -106,8 +106,8 @@ func (s *AsyncStatusStore) ListAll() (map[string][]Record, error) {
 	return all, nil
 }
 
-func (s *AsyncStatusStore) List(vendor string) ([]Record, error) {
-	records, err := s.base.List(vendor)
+func (s *AsyncStatusStore) List(vendorID string) ([]Record, error) {
+	records, err := s.base.List(vendorID)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func (s *AsyncStatusStore) List(vendor string) ([]Record, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, update := range s.pending {
-		if update.vendor != normalizeVendor(vendor) {
+		if update.vendorID != normalizeVendor(vendorID) {
 			continue
 		}
 		out = applyPendingVendorRecord(out, update)
@@ -128,58 +128,58 @@ func (s *AsyncStatusStore) KeyMap() (map[string][]string, error) {
 	return s.base.KeyMap()
 }
 
-func (s *AsyncStatusStore) Replace(vendor string, keys []string) error {
-	vendor = normalizeVendor(vendor)
-	carried, err := s.effectivePendingForVendor(vendor)
+func (s *AsyncStatusStore) Replace(vendorID string, keys []string) error {
+	vendorID = normalizeVendor(vendorID)
+	carried, err := s.effectivePendingForVendor(vendorID)
 	if err != nil {
 		return err
 	}
-	if err := s.base.Replace(vendor, keys); err != nil {
+	if err := s.base.Replace(vendorID, keys); err != nil {
 		return err
 	}
-	return s.reconcilePendingAfterReplace(vendor, carried)
+	return s.reconcilePendingAfterReplace(vendorID, carried)
 }
 
-func (s *AsyncStatusStore) Append(vendor string, keys []string) (int, error) {
-	added, err := s.base.Append(vendor, keys)
+func (s *AsyncStatusStore) Append(vendorID string, keys []string) (int, error) {
+	added, err := s.base.Append(vendorID, keys)
 	if err != nil {
 		return 0, err
 	}
 	for _, key := range NormalizeKeys(keys) {
-		s.clearKeyPending(vendor, key)
+		s.clearKeyPending(vendorID, key)
 	}
 	return added, nil
 }
 
-func (s *AsyncStatusStore) Delete(vendor string, keys []string) (int, error) {
-	removed, err := s.base.Delete(vendor, keys)
+func (s *AsyncStatusStore) Delete(vendorID string, keys []string) (int, error) {
+	removed, err := s.base.Delete(vendorID, keys)
 	if err != nil {
 		return 0, err
 	}
 	for _, key := range NormalizeKeys(keys) {
-		s.clearKeyPending(vendor, key)
+		s.clearKeyPending(vendorID, key)
 	}
 	return removed, nil
 }
 
-func (s *AsyncStatusStore) SetStatus(vendor, key, status, reason, actor string) error {
-	if err := s.base.SetStatus(vendor, key, status, reason, actor); err != nil {
+func (s *AsyncStatusStore) SetStatus(vendorID, key, status, reason, actor string) error {
+	if err := s.base.SetStatus(vendorID, key, status, reason, actor); err != nil {
 		return err
 	}
-	s.clearKeyPending(vendor, key)
+	s.clearKeyPending(vendorID, key)
 	return nil
 }
 
-func (s *AsyncStatusStore) SetRemark(vendor, key, remark string) error {
+func (s *AsyncStatusStore) SetRemark(vendorID, key, remark string) error {
 	store, ok := s.base.(RemarkStore)
 	if !ok {
 		return errors.New("base store does not support key remarks")
 	}
-	return store.SetRemark(vendor, key, remark)
+	return store.SetRemark(vendorID, key, remark)
 }
 
-func (s *AsyncStatusStore) SetStatusIfVersion(vendor, key string, expectedVersion int64, status, reason, actor string) error {
-	update, err := newPendingStatusUpdate(vendor, key, expectedVersion, status, reason, actor)
+func (s *AsyncStatusStore) SetStatusIfVersion(vendorID, key string, expectedVersion int64, status, reason, actor string) error {
+	update, err := newPendingStatusUpdate(vendorID, key, expectedVersion, status, reason, actor)
 	if err != nil {
 		return err
 	}
@@ -191,18 +191,18 @@ func (s *AsyncStatusStore) SetStatusIfVersion(vendor, key string, expectedVersio
 	}
 	s.nextID++
 	update.id = s.nextID
-	s.pending[pendingStatusKey(update.vendor, update.key)] = update
+	s.pending[pendingStatusKey(update.vendorID, update.key)] = update
 	s.mu.Unlock()
 
 	s.signalFlush()
 	return nil
 }
 
-func (s *AsyncStatusStore) DeleteVendor(vendor string) error {
-	if err := s.base.DeleteVendor(vendor); err != nil {
+func (s *AsyncStatusStore) DeleteVendor(vendorID string) error {
+	if err := s.base.DeleteVendor(vendorID); err != nil {
 		return err
 	}
-	s.clearVendorPending(vendor)
+	s.clearVendorPending(vendorID)
 	return nil
 }
 
@@ -296,7 +296,7 @@ func (s *AsyncStatusStore) flushPending() bool {
 			s.deletePendingIfMatch(update)
 		default:
 			allSynced = false
-			s.onError(fmt.Errorf("vendor=%s key=%s: %w", update.vendor, update.key, err))
+			s.onError(fmt.Errorf("vendor=%s key=%s: %w", update.vendorID, update.key, err))
 		}
 	}
 	return allSynced
@@ -315,7 +315,7 @@ func (s *AsyncStatusStore) flushPendingFinal() error {
 		case err == nil, errors.Is(err, ErrVersionMismatch), errors.Is(err, ErrKeyNotFound):
 			s.deletePendingIfMatch(update)
 		default:
-			errs = append(errs, fmt.Errorf("vendor=%s key=%s: %w", update.vendor, update.key, err))
+			errs = append(errs, fmt.Errorf("vendor=%s key=%s: %w", update.vendorID, update.key, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -325,9 +325,9 @@ func (s *AsyncStatusStore) applyPending(update pendingStatusUpdate) error {
 	if s.ctxAware != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 		defer cancel()
-		return s.ctxAware.SetStatusIfVersionContext(ctx, update.vendor, update.key, update.expectedVersion, update.status, update.reason, update.actor)
+		return s.ctxAware.SetStatusIfVersionContext(ctx, update.vendorID, update.key, update.expectedVersion, update.status, update.reason, update.actor)
 	}
-	return s.conditional.SetStatusIfVersion(update.vendor, update.key, update.expectedVersion, update.status, update.reason, update.actor)
+	return s.conditional.SetStatusIfVersion(update.vendorID, update.key, update.expectedVersion, update.status, update.reason, update.actor)
 }
 
 func (s *AsyncStatusStore) pendingSnapshot() []pendingStatusUpdate {
@@ -340,8 +340,8 @@ func (s *AsyncStatusStore) pendingSnapshot() []pendingStatusUpdate {
 	return out
 }
 
-func (s *AsyncStatusStore) effectivePendingForVendor(vendor string) ([]pendingStatusUpdate, error) {
-	records, err := s.base.List(vendor)
+func (s *AsyncStatusStore) effectivePendingForVendor(vendorID string) ([]pendingStatusUpdate, error) {
+	records, err := s.base.List(vendorID)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +354,7 @@ func (s *AsyncStatusStore) effectivePendingForVendor(vendor string) ([]pendingSt
 	updates := s.pendingSnapshot()
 	out := make([]pendingStatusUpdate, 0, len(updates))
 	for _, update := range updates {
-		if update.vendor != vendor {
+		if update.vendorID != vendorID {
 			continue
 		}
 		version, ok := versions[update.key]
@@ -366,8 +366,8 @@ func (s *AsyncStatusStore) effectivePendingForVendor(vendor string) ([]pendingSt
 	return out, nil
 }
 
-func (s *AsyncStatusStore) reconcilePendingAfterReplace(vendor string, carried []pendingStatusUpdate) error {
-	records, err := s.base.List(vendor)
+func (s *AsyncStatusStore) reconcilePendingAfterReplace(vendorID string, carried []pendingStatusUpdate) error {
+	records, err := s.base.List(vendorID)
 	if err != nil {
 		return err
 	}
@@ -387,10 +387,10 @@ func (s *AsyncStatusStore) reconcilePendingAfterReplace(vendor string, carried [
 		}
 	}
 	if len(missingDisabled) > 0 {
-		if _, err := s.base.Append(vendor, missingDisabled); err != nil {
+		if _, err := s.base.Append(vendorID, missingDisabled); err != nil {
 			return err
 		}
-		records, err = s.base.List(vendor)
+		records, err = s.base.List(vendorID)
 		if err != nil {
 			return err
 		}
@@ -404,7 +404,7 @@ func (s *AsyncStatusStore) reconcilePendingAfterReplace(vendor string, carried [
 	requeued := 0
 	s.mu.Lock()
 	for key, update := range s.pending {
-		if update.vendor == vendor {
+		if update.vendorID == vendorID {
 			delete(s.pending, key)
 		}
 	}
@@ -416,7 +416,7 @@ func (s *AsyncStatusStore) reconcilePendingAfterReplace(vendor string, carried [
 		update.expectedVersion = record.Version
 		s.nextID++
 		update.id = s.nextID
-		s.pending[pendingStatusKey(update.vendor, update.key)] = update
+		s.pending[pendingStatusKey(update.vendorID, update.key)] = update
 		requeued++
 	}
 	s.mu.Unlock()
@@ -437,7 +437,7 @@ func pendingUpdateReflected(record Record, update pendingStatusUpdate) bool {
 }
 
 func (s *AsyncStatusStore) deletePendingIfMatch(update pendingStatusUpdate) {
-	key := pendingStatusKey(update.vendor, update.key)
+	key := pendingStatusKey(update.vendorID, update.key)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, ok := s.pending[key]
@@ -447,21 +447,21 @@ func (s *AsyncStatusStore) deletePendingIfMatch(update pendingStatusUpdate) {
 	delete(s.pending, key)
 }
 
-func (s *AsyncStatusStore) clearVendorPending(vendor string) {
-	vendor = normalizeVendor(vendor)
+func (s *AsyncStatusStore) clearVendorPending(vendorID string) {
+	vendorID = normalizeVendor(vendorID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, update := range s.pending {
-		if update.vendor == vendor {
+		if update.vendorID == vendorID {
 			delete(s.pending, key)
 		}
 	}
 }
 
-func (s *AsyncStatusStore) clearKeyPending(vendor, key string) {
+func (s *AsyncStatusStore) clearKeyPending(vendorID, key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.pending, pendingStatusKey(normalizeVendor(vendor), strings.TrimSpace(key)))
+	delete(s.pending, pendingStatusKey(normalizeVendor(vendorID), strings.TrimSpace(key)))
 }
 
 func (s *AsyncStatusStore) signalFlush() {
@@ -471,17 +471,17 @@ func (s *AsyncStatusStore) signalFlush() {
 	}
 }
 
-func newPendingStatusUpdate(vendor, key string, expectedVersion int64, status, reason, actor string) (pendingStatusUpdate, error) {
-	vendor = normalizeVendor(vendor)
+func newPendingStatusUpdate(vendorID, key string, expectedVersion int64, status, reason, actor string) (pendingStatusUpdate, error) {
+	vendorID = normalizeVendor(vendorID)
 	key = strings.TrimSpace(key)
-	if vendor == "" {
-		return pendingStatusUpdate{}, errors.New("vendor is required")
+	if vendorID == "" {
+		return pendingStatusUpdate{}, errors.New("vendor id is required")
 	}
 	if key == "" {
 		return pendingStatusUpdate{}, errors.New("key is required")
 	}
 	return pendingStatusUpdate{
-		vendor:          vendor,
+		vendorID:        vendorID,
 		key:             key,
 		expectedVersion: expectedVersion,
 		status:          NormalizeStatus(status),
@@ -491,17 +491,17 @@ func newPendingStatusUpdate(vendor, key string, expectedVersion int64, status, r
 	}, nil
 }
 
-func pendingStatusKey(vendor, key string) string {
-	return vendor + "\x00" + key
+func pendingStatusKey(vendorID, key string) string {
+	return vendorID + "\x00" + key
 }
 
 func applyPendingRecord(all map[string][]Record, update pendingStatusUpdate) {
-	records := applyPendingVendorRecord(all[update.vendor], update)
+	records := applyPendingVendorRecord(all[update.vendorID], update)
 	if len(records) == 0 {
-		delete(all, update.vendor)
+		delete(all, update.vendorID)
 		return
 	}
-	all[update.vendor] = records
+	all[update.vendorID] = records
 }
 
 func applyPendingVendorRecord(records []Record, update pendingStatusUpdate) []Record {

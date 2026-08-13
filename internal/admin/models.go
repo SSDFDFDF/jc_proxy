@@ -16,9 +16,22 @@ type LoginResponse struct {
 	Username  string `json:"username"`
 }
 
-type VendorUpsertRequest struct {
-	Vendor string              `json:"vendor"`
+type VendorCreateRequest struct {
+	Name   string              `json:"name"`
 	Config config.VendorConfig `json:"config"`
+}
+
+type VendorCreateResponse struct {
+	VendorID string `json:"vendor_id"`
+	Name     string `json:"name"`
+}
+
+type VendorUpdateRequest struct {
+	Config config.VendorConfig `json:"config"`
+}
+
+type VendorRenameRequest struct {
+	Name string `json:"name"`
 }
 
 type VendorPatchRequest struct {
@@ -67,6 +80,7 @@ type UpstreamKeyRecordResponse struct {
 }
 
 type UpstreamKeyVendorSummary struct {
+	VendorID      string `json:"vendor_id"`
 	Vendor        string `json:"vendor"`
 	Count         int    `json:"count"`
 	ActiveCount   int    `json:"active_count"`
@@ -74,6 +88,8 @@ type UpstreamKeyVendorSummary struct {
 	Configured    bool   `json:"configured"`
 }
 
+// UpstreamKeysResponse.Items is keyed by vendor id, matching how the store
+// partitions records. Each summary carries the current display name.
 type UpstreamKeysResponse struct {
 	Storage keystore.Info                          `json:"storage"`
 	Vendors []UpstreamKeyVendorSummary             `json:"vendors"`
@@ -81,7 +97,9 @@ type UpstreamKeysResponse struct {
 }
 
 type RuntimeStatsQuery struct {
-	Vendor   string `json:"vendor,omitempty"`
+	// VendorID selects one vendor; runtime statistics are partitioned by the
+	// immutable vendor id, not by the display name.
+	VendorID string `json:"vendor_id,omitempty"`
 	Filter   string `json:"filter,omitempty"`
 	Q        string `json:"q,omitempty"`
 	Page     int    `json:"page,omitempty"`
@@ -89,7 +107,7 @@ type RuntimeStatsQuery struct {
 }
 
 type RuntimeStatsMeta struct {
-	Vendor   string `json:"vendor,omitempty"`
+	VendorID string `json:"vendor_id,omitempty"`
 	Filter   string `json:"filter,omitempty"`
 	Q        string `json:"q,omitempty"`
 	Page     int    `json:"page"`
@@ -105,6 +123,7 @@ type VendorTestPresetResponse struct {
 }
 
 type VendorTestMetaResponse struct {
+	VendorID            string                     `json:"vendor_id"`
 	Vendor              string                     `json:"vendor"`
 	Provider            string                     `json:"provider"`
 	BaseURL             string                     `json:"base_url"`
@@ -124,6 +143,7 @@ type VendorTestRequest struct {
 }
 
 type VendorTestResponse struct {
+	VendorID      string              `json:"vendor_id"`
 	Vendor        string              `json:"vendor"`
 	Provider      string              `json:"provider"`
 	BaseURL       string              `json:"base_url"`

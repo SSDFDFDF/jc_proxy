@@ -21,7 +21,11 @@ import (
 )
 
 type Router struct {
+	// vendors is indexed by vendor name because routing resolves the first
+	// request path segment. vendorsByID is the stable index used by every
+	// admin/runtime operation that must survive a rename.
 	vendors                map[string]*vendorGateway
+	vendorsByID            map[string]*vendorGateway
 	bufPool                sync.Pool
 	uiFS                   http.Handler
 	uiRead                 fs.FS
@@ -31,6 +35,10 @@ type Router struct {
 }
 
 type vendorGateway struct {
+	// id is the immutable vendor identifier and is what every stored artifact
+	// keys off: upstream key partitions and runtime statistics. name is the
+	// mutable display label that also forms the request path segment.
+	id                  string
 	name                string
 	provider            string
 	baseURL             *url.URL
@@ -59,6 +67,7 @@ type vendorGateway struct {
 // aggregateChildEntry holds a reference to a child vendor for aggregate routing.
 type aggregateChildEntry struct {
 	id       string
+	vendorID string
 	name     string
 	vendor   *vendorGateway
 	weight   int
@@ -82,7 +91,7 @@ func newAggregatePool(strategy string, entries []aggregateChildEntry) *aggregate
 	entries = append([]aggregateChildEntry(nil), entries...)
 	for i := range entries {
 		if entries[i].id == "" {
-			entries[i].id = fmt.Sprintf("%s#%d", entries[i].name, i)
+			entries[i].id = fmt.Sprintf("%s#%d", entries[i].vendorID, i)
 		}
 		if entries[i].weight <= 0 {
 			entries[i].weight = 1
@@ -319,6 +328,9 @@ func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]key
 	return newRouterWithUpstreamKeyRecords(cfg, upstreamKeys, keyCtrl, nil)
 }
 
+// newRouterWithUpstreamKeyRecords builds the routing table. upstreamKeys is
+// partitioned by vendor id, while the router itself is indexed by vendor name
+// because the gateway resolves the first request path segment to a vendor.
 func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry) (*Router, error) {
 	if cfg == nil {
 		return nil, errors.New("config is nil")
@@ -334,27 +346,33 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 	}
 
 	vendors := make(map[string]*vendorGateway, len(cfg.Vendors))
+	vendorsByID := make(map[string]*vendorGateway, len(cfg.Vendors))
 	// First pass: create all non-aggregate vendors
-	for name, vendor := range cfg.Vendors {
-		if config.NormalizeProvider(vendor.Provider, name) == "aggregate" {
+	for i := range cfg.Vendors {
+		entry := cfg.Vendors[i]
+		if config.NormalizeProvider(entry.Provider, entry.Name) == "aggregate" {
 			continue
 		}
-		vg, err := buildVendorGateway(name, vendor, upstreamKeys, keyCtrl, statsRegistry)
+		vg, err := buildVendorGateway(entry, upstreamKeys, keyCtrl, statsRegistry)
 		if err != nil {
 			return nil, err
 		}
-		vendors[name] = vg
+		vendors[entry.Name] = vg
+		vendorsByID[entry.ID] = vg
 	}
 	// Second pass: create aggregate vendors with references to child vendorGateways
-	for name, vendor := range cfg.Vendors {
+	for i := range cfg.Vendors {
+		entry := cfg.Vendors[i]
+		name := entry.Name
+		vendor := entry.VendorConfig
 		if config.NormalizeProvider(vendor.Provider, name) != "aggregate" {
 			continue
 		}
 		entries := make([]aggregateChildEntry, 0, len(vendor.Aggregate.Children))
 		for childIndex, child := range vendor.Aggregate.Children {
-			childVG, ok := vendors[child.Vendor]
+			childVG, ok := vendorsByID[child.VendorID]
 			if !ok {
-				return nil, fmt.Errorf("vendor %s aggregate child %q not found", name, child.Vendor)
+				return nil, fmt.Errorf("vendor %s aggregate child %q not found", name, child.VendorID)
 			}
 			var allowedKeyIndexes []int
 			if len(child.KeyIDs) > 0 {
@@ -370,8 +388,9 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 				}
 			}
 			entries = append(entries, aggregateChildEntry{
-				id:       fmt.Sprintf("%s#%d", child.Vendor, childIndex),
-				name:     child.Vendor,
+				id:       fmt.Sprintf("%s#%d", child.VendorID, childIndex),
+				vendorID: child.VendorID,
+				name:     childVG.name,
 				vendor:   childVG,
 				weight:   child.Weight,
 				priority: child.Priority,
@@ -386,7 +405,8 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			}
 		}
 
-		vendors[name] = &vendorGateway{
+		agg := &vendorGateway{
+			id:          entry.ID,
 			name:        name,
 			provider:    "aggregate",
 			isAggregate: true,
@@ -394,10 +414,13 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			aggPool:     newAggregatePool(vendor.LoadBalance, entries),
 			aggRetry:    vendor.Aggregate.Retry,
 		}
+		vendors[name] = agg
+		vendorsByID[entry.ID] = agg
 	}
 
 	return &Router{
-		vendors: vendors,
+		vendors:     vendors,
+		vendorsByID: vendorsByID,
 		bufPool: sync.Pool{
 			New: func() any {
 				buf := make([]byte, pooledResponseCopyBufferBytes)
@@ -412,37 +435,42 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 	}, nil
 }
 
+// VendorStats returns per-key statistics keyed by vendor id.
 func (r *Router) VendorStats() map[string][]map[string]any {
-	out := make(map[string][]map[string]any, len(r.vendors))
-	for name, v := range r.vendors {
+	out := make(map[string][]map[string]any, len(r.vendorsByID))
+	for id, v := range r.vendorsByID {
 		if v.pool == nil {
 			continue
 		}
-		out[name] = v.pool.Stats()
+		out[id] = v.pool.Stats()
 	}
 	return out
 }
 
+// VendorStateSnapshots returns per-key runtime state keyed by vendor id.
 func (r *Router) VendorStateSnapshots() map[string][]balancer.KeyState {
-	out := make(map[string][]balancer.KeyState, len(r.vendors))
-	for name, v := range r.vendors {
+	out := make(map[string][]balancer.KeyState, len(r.vendorsByID))
+	for id, v := range r.vendorsByID {
 		if v.pool == nil {
 			continue
 		}
-		out[name] = v.pool.Snapshot()
+		out[id] = v.pool.Snapshot()
 	}
 	return out
 }
 
+// MergeRuntimeStatsFrom carries in-memory key state (cooldown, backoff level,
+// consecutive failures) across a router rebuild. Matching on vendor id rather
+// than name is what lets a rename keep that state instead of resetting it.
 func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
 	if r == nil || prev == nil {
 		return
 	}
-	for name, vendor := range r.vendors {
+	for id, vendor := range r.vendorsByID {
 		if vendor == nil || vendor.pool == nil {
 			continue
 		}
-		prevVendor := prev.vendors[name]
+		prevVendor := prev.vendorsByID[id]
 		if prevVendor == nil || prevVendor.pool == nil {
 			continue
 		}
@@ -450,11 +478,11 @@ func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
 	}
 }
 
-func (r *Router) RecoverUpstreamKey(vendor, key string) bool {
+func (r *Router) RecoverUpstreamKey(vendorID, key string) bool {
 	if r == nil {
 		return false
 	}
-	v := r.vendors[strings.TrimSpace(vendor)]
+	v := r.vendorsByID[strings.TrimSpace(vendorID)]
 	if v == nil || v.pool == nil {
 		return false
 	}
@@ -475,7 +503,10 @@ func upstreamResponseHeaderTimeout(cfg config.UpstreamConfig) time.Duration {
 	return *cfg.ResponseHeaderTimeout
 }
 
-func buildVendorGateway(name string, vendor config.VendorConfig, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry) (*vendorGateway, error) {
+func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry) (*vendorGateway, error) {
+	name := entry.Name
+	vendorID := entry.ID
+	vendor := entry.VendorConfig
 	baseURL, err := url.Parse(strings.TrimRight(vendor.Upstream.BaseURL, "/"))
 	if err != nil {
 		return nil, fmt.Errorf("vendor %s parse upstream base_url: %w", name, err)
@@ -486,10 +517,10 @@ func buildVendorGateway(name string, vendor config.VendorConfig, upstreamKeys ma
 
 	keyConfigs := make([]balancer.KeyConfig, 0)
 	if upstreamKeys != nil {
-		for _, record := range upstreamKeys[name] {
+		for _, record := range upstreamKeys[vendorID] {
 			statsHandle := (*balancer.RuntimeStatsHandle)(nil)
 			if statsRegistry != nil {
-				statsHandle = statsRegistry.Handle(name, record.Key, record.RuntimeStats)
+				statsHandle = statsRegistry.Handle(vendorID, record.Key, record.RuntimeStats)
 			}
 			keyConfigs = append(keyConfigs, balancer.KeyConfig{
 				Key:           record.Key,
@@ -500,19 +531,6 @@ func buildVendorGateway(name string, vendor config.VendorConfig, upstreamKeys ma
 				RuntimeStats:  record.RuntimeStats,
 				Version:       record.Version,
 				Stats:         statsHandle,
-			})
-		}
-	}
-	if len(keyConfigs) == 0 {
-		for _, key := range vendor.Upstream.Keys {
-			statsHandle := (*balancer.RuntimeStatsHandle)(nil)
-			if statsRegistry != nil {
-				statsHandle = statsRegistry.Handle(name, key, keystore.RuntimeStats{})
-			}
-			keyConfigs = append(keyConfigs, balancer.KeyConfig{
-				Key:    key,
-				Status: keystore.KeyStatusActive,
-				Stats:  statsHandle,
 			})
 		}
 	}
@@ -563,6 +581,7 @@ func buildVendorGateway(name string, vendor config.VendorConfig, upstreamKeys ma
 	}
 
 	return &vendorGateway{
+		id:                  vendorID,
 		name:                name,
 		provider:            config.NormalizeProvider(vendor.Provider, name),
 		baseURL:             baseURL,

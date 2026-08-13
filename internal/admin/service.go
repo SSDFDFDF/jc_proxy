@@ -88,11 +88,11 @@ func (s *Service) GetConfigMasked() (*config.Config, error) {
 	if cfg.Admin.PasswordHash != "" {
 		cfg.Admin.PasswordHash = "******"
 	}
-	for name, v := range cfg.Vendors {
-		for i := range v.ClientAuth.Keys {
-			v.ClientAuth.Keys[i] = mask(v.ClientAuth.Keys[i])
+	for i := range cfg.Vendors {
+		keys := cfg.Vendors[i].ClientAuth.Keys
+		for j := range keys {
+			keys[j] = mask(keys[j])
 		}
-		cfg.Vendors[name] = v
 	}
 	return cfg, nil
 }
@@ -178,36 +178,92 @@ func adminSessionsNeedReset(prev, next *config.Config) bool {
 		prev.Admin.PasswordHash != next.Admin.PasswordHash
 }
 
-func (s *Service) UpsertVendor(actor, vendor string, vc config.VendorConfig) error {
-	vendor = strings.TrimSpace(vendor)
-	if vendor == "" {
-		return errors.New("vendor is required")
+// CreateVendor registers a brand new vendor and mints its immutable id.
+func (s *Service) CreateVendor(actor, name string, vc config.VendorConfig) (string, error) {
+	name = strings.TrimSpace(name)
+	if err := config.ValidateVendorName(name); err != nil {
+		return "", err
+	}
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		return "", err
+	}
+	if _, exists := cfg.VendorByName(name); exists {
+		return "", fmt.Errorf("vendor name %q already exists", name)
+	}
+	id, err := config.NewVendorID()
+	if err != nil {
+		return "", err
+	}
+	cfg.Vendors = append(cfg.Vendors, config.VendorEntry{ID: id, Name: name, VendorConfig: vc})
+	if err := s.UpdateConfig(actor, cfg); err != nil {
+		return "", err
+	}
+	s.audit.Log(actor, "vendor.create", map[string]any{"vendor_id": id, "vendor": name, "provider": vc.Provider})
+	return id, nil
+}
+
+// UpdateVendor replaces the configuration of an existing vendor addressed by
+// its immutable id. The name is untouched here; use RenameVendor for that.
+func (s *Service) UpdateVendor(actor, vendorID string, vc config.VendorConfig) error {
+	vendorID = strings.TrimSpace(vendorID)
+	if vendorID == "" {
+		return errors.New("vendor id is required")
 	}
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
 	}
-	if cfg.Vendors == nil {
-		cfg.Vendors = map[string]config.VendorConfig{}
+	idx := cfg.VendorIndexByID(vendorID)
+	if idx < 0 {
+		return fmt.Errorf("vendor %q not found", vendorID)
 	}
-	legacyKeys := keystore.NormalizeKeys(vc.Upstream.Keys)
-	vc.Upstream.Keys = nil
-	if prev, ok := cfg.Vendors[vendor]; ok {
-		vc = mergeVendorConfigForAdminUpsert(prev, vc)
+	prev := cfg.Vendors[idx]
+	cfg.Vendors[idx] = config.VendorEntry{
+		ID:           prev.ID,
+		Name:         prev.Name,
+		VendorConfig: mergeVendorConfigForAdminUpsert(prev.VendorConfig, vc),
 	}
-	cfg.Vendors[vendor] = vc
 	if err := s.UpdateConfig(actor, cfg); err != nil {
 		return err
 	}
-	if len(legacyKeys) > 0 {
-		if _, err := s.keyStore.Append(vendor, legacyKeys); err != nil {
-			return err
-		}
-		if err := s.runtime.RefreshKeys(); err != nil {
-			return err
-		}
+	s.audit.Log(actor, "vendor.update", map[string]any{"vendor_id": prev.ID, "vendor": prev.Name, "provider": vc.Provider})
+	return nil
+}
+
+// RenameVendor changes only the display/route name. Because every stored
+// reference keys off the immutable id, nothing else moves: upstream keys,
+// runtime statistics and aggregate topology are untouched. The one visible
+// effect is that clients must call the new path segment.
+func (s *Service) RenameVendor(actor, vendorID, newName string) error {
+	vendorID = strings.TrimSpace(vendorID)
+	if vendorID == "" {
+		return errors.New("vendor id is required")
 	}
-	s.audit.Log(actor, "vendor.upsert", map[string]any{"vendor": vendor, "provider": vc.Provider, "legacy_keys_imported": len(legacyKeys)})
+	newName = strings.TrimSpace(newName)
+	if err := config.ValidateVendorName(newName); err != nil {
+		return err
+	}
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		return err
+	}
+	idx := cfg.VendorIndexByID(vendorID)
+	if idx < 0 {
+		return fmt.Errorf("vendor %q not found", vendorID)
+	}
+	oldName := cfg.Vendors[idx].Name
+	if oldName == newName {
+		return nil
+	}
+	if existing := cfg.VendorIndexByName(newName); existing >= 0 {
+		return fmt.Errorf("vendor name %q already used by another vendor", newName)
+	}
+	cfg.Vendors[idx].Name = newName
+	if err := s.UpdateConfig(actor, cfg); err != nil {
+		return err
+	}
+	s.audit.Log(actor, "vendor.rename", map[string]any{"vendor_id": vendorID, "from": oldName, "to": newName})
 	return nil
 }
 
@@ -254,25 +310,37 @@ func mergeCooldownRuleForAdminUpsert(prev, next config.ErrorCooldownRule) config
 	return prev
 }
 
-func (s *Service) DeleteVendor(actor, vendor string) error {
+func (s *Service) DeleteVendor(actor, vendorID string) error {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
 	}
-	if _, ok := cfg.Vendors[vendor]; !ok {
-		return fmt.Errorf("vendor %q not found", vendor)
+	entry, ok := cfg.VendorByID(vendorID)
+	if !ok {
+		return fmt.Errorf("vendor %q not found", vendorID)
 	}
-	delete(cfg.Vendors, vendor)
+	// Refuse to strand an aggregate that still routes to this vendor.
+	for i := range cfg.Vendors {
+		if cfg.Vendors[i].ID == entry.ID {
+			continue
+		}
+		for _, child := range cfg.Vendors[i].Aggregate.Children {
+			if child.VendorID == entry.ID {
+				return fmt.Errorf("vendor %q is still referenced by aggregate vendor %q", entry.Name, cfg.Vendors[i].Name)
+			}
+		}
+	}
+	cfg.DeleteVendorByID(entry.ID)
 	if err := s.UpdateConfig(actor, cfg); err != nil {
 		return err
 	}
-	if err := s.keyStore.DeleteVendor(vendor); err != nil {
+	if err := s.keyStore.DeleteVendor(entry.ID); err != nil {
 		return err
 	}
 	if err := s.runtime.RefreshKeys(); err != nil {
 		return err
 	}
-	s.audit.Log(actor, "vendor.delete", map[string]any{"vendor": vendor})
+	s.audit.Log(actor, "vendor.delete", map[string]any{"vendor_id": entry.ID, "vendor": entry.Name})
 	return nil
 }
 
@@ -453,26 +521,36 @@ func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 	}
 
 	vendorSet := make(map[string]struct{}, len(cfg.Vendors)+len(all))
-	for vendor := range cfg.Vendors {
-		vendorSet[vendor] = struct{}{}
+	vendorNames := make(map[string]string, len(cfg.Vendors))
+	for i := range cfg.Vendors {
+		vendorSet[cfg.Vendors[i].ID] = struct{}{}
+		vendorNames[cfg.Vendors[i].ID] = cfg.Vendors[i].Name
 	}
-	for vendor := range all {
-		vendorSet[vendor] = struct{}{}
+	// Partitions with no matching config entry are orphans left behind by a
+	// failed delete; surface them so an operator can clean them up.
+	for vendorID := range all {
+		vendorSet[vendorID] = struct{}{}
 	}
 
 	vendors := make([]string, 0, len(vendorSet))
-	for vendor := range vendorSet {
-		vendors = append(vendors, vendor)
+	for vendorID := range vendorSet {
+		vendors = append(vendors, vendorID)
 	}
-	sort.Strings(vendors)
+	sort.Slice(vendors, func(i, j int) bool {
+		ni, nj := vendorNames[vendors[i]], vendorNames[vendors[j]]
+		if ni != nj {
+			return ni < nj
+		}
+		return vendors[i] < vendors[j]
+	})
 
 	resp := &UpstreamKeysResponse{
 		Storage: s.keyStore.Info(),
 		Vendors: make([]UpstreamKeyVendorSummary, 0, len(vendors)),
 		Items:   make(map[string][]UpstreamKeyRecordResponse, len(vendors)),
 	}
-	for _, vendor := range vendors {
-		records := all[vendor]
+	for _, vendorID := range vendors {
+		records := all[vendorID]
 		sort.Slice(records, func(i, j int) bool {
 			return records[i].Key < records[j].Key
 		})
@@ -502,58 +580,63 @@ func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 				UpdatedAt:     record.UpdatedAt.UTC().Format(time.RFC3339),
 			})
 		}
-		_, configured := cfg.Vendors[vendor]
+		name, configured := vendorNames[vendorID]
+		if !configured {
+			name = vendorID
+		}
 		resp.Vendors = append(resp.Vendors, UpstreamKeyVendorSummary{
-			Vendor:        vendor,
+			VendorID:      vendorID,
+			Vendor:        name,
 			Count:         len(items),
 			ActiveCount:   activeCount,
 			DisabledCount: disabledCount,
 			Configured:    configured,
 		})
-		resp.Items[vendor] = items
+		resp.Items[vendorID] = items
 	}
 	return resp, nil
 }
 
-func (s *Service) AddClientKey(actor, vendor, key string) error {
+func (s *Service) AddClientKey(actor, vendorID, key string) error {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
 	}
-	vc, ok := cfg.Vendors[vendor]
-	if !ok {
-		return fmt.Errorf("vendor %q not found", vendor)
+	idx := cfg.VendorIndexByID(vendorID)
+	if idx < 0 {
+		return fmt.Errorf("vendor %q not found", vendorID)
 	}
 	if strings.TrimSpace(key) == "" {
 		return errors.New("key is empty")
 	}
-	for _, existing := range vc.ClientAuth.Keys {
+	for _, existing := range cfg.Vendors[idx].ClientAuth.Keys {
 		if existing == key {
 			return errors.New("duplicate key")
 		}
 	}
-	vc.ClientAuth.Enabled = true
-	vc.ClientAuth.Keys = append(vc.ClientAuth.Keys, key)
-	cfg.Vendors[vendor] = vc
+	cfg.Vendors[idx].ClientAuth.Enabled = true
+	cfg.Vendors[idx].ClientAuth.Keys = append(cfg.Vendors[idx].ClientAuth.Keys, key)
+	name := cfg.Vendors[idx].Name
 	if err := s.UpdateConfig(actor, cfg); err != nil {
 		return err
 	}
-	s.audit.Log(actor, "client_key.add", map[string]any{"vendor": vendor})
+	s.audit.Log(actor, "client_key.add", map[string]any{"vendor_id": vendorID, "vendor": name})
 	return nil
 }
 
-func (s *Service) DeleteClientKey(actor, vendor, key string) error {
+func (s *Service) DeleteClientKey(actor, vendorID, key string) error {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
 	}
-	vc, ok := cfg.Vendors[vendor]
-	if !ok {
-		return fmt.Errorf("vendor %q not found", vendor)
+	idx := cfg.VendorIndexByID(vendorID)
+	if idx < 0 {
+		return fmt.Errorf("vendor %q not found", vendorID)
 	}
-	next := make([]string, 0, len(vc.ClientAuth.Keys))
+	current := cfg.Vendors[idx].ClientAuth.Keys
+	next := make([]string, 0, len(current))
 	found := false
-	for _, k := range vc.ClientAuth.Keys {
+	for _, k := range current {
 		if k == key {
 			found = true
 			continue
@@ -563,15 +646,15 @@ func (s *Service) DeleteClientKey(actor, vendor, key string) error {
 	if !found {
 		return errors.New("key not found")
 	}
-	vc.ClientAuth.Keys = next
+	cfg.Vendors[idx].ClientAuth.Keys = next
 	if len(next) == 0 {
-		vc.ClientAuth.Enabled = false
+		cfg.Vendors[idx].ClientAuth.Enabled = false
 	}
-	cfg.Vendors[vendor] = vc
+	name := cfg.Vendors[idx].Name
 	if err := s.UpdateConfig(actor, cfg); err != nil {
 		return err
 	}
-	s.audit.Log(actor, "client_key.delete", map[string]any{"vendor": vendor})
+	s.audit.Log(actor, "client_key.delete", map[string]any{"vendor_id": vendorID, "vendor": name})
 	return nil
 }
 
@@ -581,7 +664,7 @@ func (s *Service) Stats(query RuntimeStatsQuery) map[string]any {
 		return map[string]any{
 			"vendors": map[string][]map[string]any{},
 			"meta": RuntimeStatsMeta{
-				Vendor:   strings.TrimSpace(query.Vendor),
+				VendorID: strings.TrimSpace(query.VendorID),
 				Filter:   normalizeRuntimeStatsFilter(query.Filter),
 				Q:        strings.TrimSpace(query.Q),
 				Page:     normalizeRuntimeStatsPage(query.Page),
@@ -593,22 +676,23 @@ func (s *Service) Stats(query RuntimeStatsQuery) map[string]any {
 	return buildRuntimeStatsResponse(r.VendorStats(), query)
 }
 
-func (s *Service) VendorTestMeta(vendor string) (*VendorTestMetaResponse, error) {
-	if err := s.requireVendor(vendor); err != nil {
+func (s *Service) VendorTestMeta(vendorID string) (*VendorTestMetaResponse, error) {
+	if err := s.requireVendor(vendorID); err != nil {
 		return nil, err
 	}
 
-	meta, err := s.runtime.VendorTestMeta(vendor)
+	meta, err := s.runtime.VendorTestMeta(vendorID)
 	if err != nil {
 		return nil, err
 	}
 
-	defaultKey, err := s.firstAvailableUpstreamKey(vendor)
+	defaultKey, err := s.firstAvailableUpstreamKey(vendorID)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := &VendorTestMetaResponse{
+		VendorID:            meta.VendorID,
 		Vendor:              meta.Vendor,
 		Provider:            meta.Provider,
 		BaseURL:             meta.BaseURL,
@@ -630,17 +714,22 @@ func (s *Service) VendorTestMeta(vendor string) (*VendorTestMetaResponse, error)
 	return resp, nil
 }
 
-func (s *Service) RunVendorTest(ctx context.Context, vendor string, req VendorTestRequest) (*VendorTestResponse, error) {
-	if err := s.requireVendor(vendor); err != nil {
+func (s *Service) RunVendorTest(ctx context.Context, vendorID string, req VendorTestRequest) (*VendorTestResponse, error) {
+	if err := s.requireVendor(vendorID); err != nil {
 		return nil, err
 	}
+	cfg, err := s.store.GetConfig()
+	if err != nil {
+		return nil, err
+	}
+	vendorName, _ := cfg.VendorNameByID(vendorID)
 
 	selectedKey := strings.TrimSpace(req.Key)
 	keySource := "manual"
 	if selectedKey == "" {
 		keySource = "default"
 		var err error
-		selectedKey, err = s.firstAvailableUpstreamKey(vendor)
+		selectedKey, err = s.firstAvailableUpstreamKey(vendorID)
 		if err != nil {
 			return nil, err
 		}
@@ -658,7 +747,7 @@ func (s *Service) RunVendorTest(ctx context.Context, vendor string, req VendorTe
 		headers[key] = row.Value
 	}
 
-	result, err := s.runtime.ExecuteVendorTest(ctx, vendor, gateway.VendorTestRequest{
+	result, err := s.runtime.ExecuteVendorTest(ctx, vendorID, gateway.VendorTestRequest{
 		BaseURL:  req.BaseURL,
 		Method:   req.Method,
 		Endpoint: req.Endpoint,
@@ -671,7 +760,8 @@ func (s *Service) RunVendorTest(ctx context.Context, vendor string, req VendorTe
 	}
 
 	resp := &VendorTestResponse{
-		Vendor:        vendor,
+		VendorID:      vendorID,
+		Vendor:        vendorName,
 		Provider:      result.Provider,
 		BaseURL:       result.BaseURL,
 		Endpoint:      result.Endpoint,
@@ -690,19 +780,19 @@ func (s *Service) RunVendorTest(ctx context.Context, vendor string, req VendorTe
 	return resp, nil
 }
 
-func (s *Service) requireVendor(vendor string) error {
+func (s *Service) requireVendor(vendorID string) error {
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
 	}
-	if _, ok := cfg.Vendors[vendor]; !ok {
-		return fmt.Errorf("vendor %q not found", vendor)
+	if _, ok := cfg.VendorByID(vendorID); !ok {
+		return fmt.Errorf("vendor %q not found", vendorID)
 	}
 	return nil
 }
 
-func (s *Service) firstAvailableUpstreamKey(vendor string) (string, error) {
-	records, err := s.keyStore.List(vendor)
+func (s *Service) firstAvailableUpstreamKey(vendorID string) (string, error) {
+	records, err := s.keyStore.List(vendorID)
 	if err != nil {
 		return "", err
 	}
@@ -711,29 +801,20 @@ func (s *Service) firstAvailableUpstreamKey(vendor string) (string, error) {
 			return record.Key, nil
 		}
 	}
-
-	cfg, err := s.store.GetConfig()
-	if err != nil {
-		return "", err
-	}
-	legacy := keystore.NormalizeKeys(cfg.Vendors[vendor].Upstream.Keys)
-	if len(legacy) > 0 {
-		return legacy[0], nil
-	}
 	return "", nil
 }
 
 func buildRuntimeStatsResponse(vendors map[string][]map[string]any, query RuntimeStatsQuery) map[string]any {
-	vendor := strings.TrimSpace(query.Vendor)
+	vendorID := strings.TrimSpace(query.VendorID)
 	filter := normalizeRuntimeStatsFilter(query.Filter)
 	keyword := strings.ToLower(strings.TrimSpace(query.Q))
 	page := normalizeRuntimeStatsPage(query.Page)
 	pageSize := normalizeRuntimeStatsPageSize(query.PageSize)
 
-	if vendor == "" {
+	if vendorID == "" {
 		out := make(map[string][]map[string]any, len(vendors))
-		for name, items := range vendors {
-			out[name] = filterRuntimeStatsItems(items, filter, keyword)
+		for id, items := range vendors {
+			out[id] = filterRuntimeStatsItems(items, filter, keyword)
 		}
 		return map[string]any{
 			"vendors": out,
@@ -747,7 +828,7 @@ func buildRuntimeStatsResponse(vendors map[string][]map[string]any, query Runtim
 		}
 	}
 
-	items := filterRuntimeStatsItems(vendors[vendor], filter, keyword)
+	items := filterRuntimeStatsItems(vendors[vendorID], filter, keyword)
 	total := len(items)
 	if total == 0 {
 		page = 1
@@ -769,10 +850,10 @@ func buildRuntimeStatsResponse(vendors map[string][]map[string]any, query Runtim
 
 	return map[string]any{
 		"vendors": map[string][]map[string]any{
-			vendor: items[start:end],
+			vendorID: items[start:end],
 		},
 		"meta": RuntimeStatsMeta{
-			Vendor:   vendor,
+			VendorID: vendorID,
 			Filter:   filter,
 			Q:        strings.TrimSpace(query.Q),
 			Page:     page,

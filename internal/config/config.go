@@ -27,10 +27,17 @@ type AdminCredentialLayer struct {
 }
 
 type Config struct {
-	Server  ServerConfig            `yaml:"server" json:"server"`
-	Admin   AdminConfig             `yaml:"admin" json:"admin"`
-	Storage StorageConfig           `yaml:"storage" json:"-"`
-	Vendors map[string]VendorConfig `yaml:"vendors" json:"vendors"`
+	SchemaVersion int           `yaml:"schema_version" json:"schema_version"`
+	Server        ServerConfig  `yaml:"server" json:"server"`
+	Admin         AdminConfig   `yaml:"admin" json:"admin"`
+	Storage       StorageConfig `yaml:"storage" json:"-"`
+	Vendors       []VendorEntry `yaml:"vendors" json:"vendors"`
+
+	// mintedVendorIDs records that this instance generated ids for vendor
+	// entries that arrived without one. Unexported so no marshal ever carries
+	// it: a Clone() or a re-load of the persisted payload must not look like
+	// it minted anything.
+	mintedVendorIDs bool
 }
 
 type ServerConfig struct {
@@ -156,7 +163,6 @@ type VendorConfig struct {
 
 type UpstreamConfig struct {
 	BaseURL                 string         `yaml:"base_url" json:"base_url"`
-	Keys                    []string       `yaml:"keys,omitempty" json:"-"`
 	ResponseHeaderTimeout   *time.Duration `yaml:"response_header_timeout,omitempty" json:"response_header_timeout,omitempty"`
 	BodyTimeout             time.Duration  `yaml:"body_timeout,omitempty" json:"body_timeout,omitempty"`
 	InterimResponseInterval *time.Duration `yaml:"interim_response_interval,omitempty" json:"interim_response_interval,omitempty"`
@@ -241,7 +247,9 @@ type AggregateConfig struct {
 }
 
 type AggregateChild struct {
-	Vendor   string   `yaml:"vendor" json:"vendor"`
+	// VendorID references VendorEntry.ID, never the mutable name, so renaming a
+	// child vendor cannot break an aggregate topology.
+	VendorID string   `yaml:"vendor_id" json:"vendor_id"`
 	Weight   int      `yaml:"weight,omitempty" json:"weight,omitempty"`
 	Priority int      `yaml:"priority,omitempty" json:"priority,omitempty"`
 	KeyIDs   []string `yaml:"key_ids,omitempty" json:"key_ids,omitempty"`
@@ -337,6 +345,13 @@ func loadBytesWithEnv(b []byte, bootstrap bool) (*Config, error) {
 func loadBytes(b []byte, bootstrap bool, lookup envLookup) (*Config, error) {
 	var cfg Config
 	if len(b) > 0 {
+		// Probe the stored layout version before the real unmarshal. A v1
+		// payload has `vendors` as a map and would otherwise fail with an
+		// opaque type error instead of a message telling the operator to run
+		// the upgrade command.
+		if err := CheckSchemaVersion("config", b); err != nil {
+			return nil, err
+		}
 		if err := yaml.Unmarshal(b, &cfg); err != nil {
 			return nil, fmt.Errorf("parse config yaml: %w", err)
 		}
@@ -602,7 +617,6 @@ func EncodeYAML(cfg *Config) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	copyCfg.StripExternalizedData()
 	return yaml.Marshal(copyCfg)
 }
 
@@ -628,6 +642,9 @@ func (c *Config) PrepareAndValidate() error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
+	if err := c.ensureVendorIDs(); err != nil {
+		return err
+	}
 	c.applyDefaults()
 	return c.Validate()
 }
@@ -636,37 +653,66 @@ func (c *Config) PrepareBootstrap() error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
+	if err := c.ensureVendorIDs(); err != nil {
+		return err
+	}
 	c.applyDefaults()
 	return c.ValidateBootstrap()
 }
 
-func (c *Config) applyDefaults() {
-	if c.Server.Listen == "" {
-		c.Server.Listen = ":8092"
+// ensureVendorIDs mints an identifier for every vendor entry that arrived
+// without one, so operators hand-writing a config are not forced to invent
+// ids. Minting is recorded on the instance: ids that only live in memory
+// change on every restart and orphan the stored data keyed off them, so
+// whoever loaded this config must persist it (see admin.NewStore).
+func (c *Config) ensureVendorIDs() error {
+	for i := range c.Vendors {
+		c.Vendors[i].ID = strings.TrimSpace(c.Vendors[i].ID)
+		if c.Vendors[i].ID != "" {
+			continue
+		}
+		generated, err := NewVendorID()
+		if err != nil {
+			return fmt.Errorf("vendor %q: %w", c.Vendors[i].Name, err)
+		}
+		c.Vendors[i].ID = generated
+		c.mintedVendorIDs = true
 	}
-	if c.Server.ReadTimeout <= 0 {
-		c.Server.ReadTimeout = 30 * time.Second
-	}
-	if c.Server.WriteTimeout < 0 {
-		c.Server.WriteTimeout = 0
-	}
-	if c.Server.IdleTimeout <= 0 {
-		c.Server.IdleTimeout = 90 * time.Second
-	}
-	if c.Server.ShutdownTimeout <= 0 {
-		c.Server.ShutdownTimeout = 10 * time.Second
-	}
+	return nil
+}
 
-	if c.Admin.Username == "" {
-		c.Admin.Username = "admin"
-	}
-	if c.Admin.AuditLogPath == "" {
-		c.Admin.AuditLogPath = "./data/admin_audit.log"
-	}
-	if c.Admin.SessionTTL <= 0 {
-		c.Admin.SessionTTL = 12 * time.Hour
-	}
+// MintedVendorIDs reports whether this instance generated vendor ids during
+// preparation. Clones and re-loads of the persisted payload report false.
+func (c *Config) MintedVendorIDs() bool {
+	return c != nil && c.mintedVendorIDs
+}
 
+// LoadStorageOnly extracts just the storage section from a config payload,
+// applies its defaults, and layers critical environment overrides on top.
+//
+// It deliberately ignores every other section, including vendors, so tooling
+// can locate the config and key stores even when the stored payload is in a
+// layout this binary otherwise refuses to read. The upgrade command relies on
+// this to reach a v1 database.
+func LoadStorageOnly(payload []byte) (StorageConfig, error) {
+	var probe struct {
+		Storage StorageConfig `yaml:"storage"`
+	}
+	if len(payload) > 0 {
+		if err := yaml.Unmarshal(payload, &probe); err != nil {
+			return StorageConfig{}, fmt.Errorf("parse storage config: %w", err)
+		}
+	}
+	cfg := &Config{Storage: probe.Storage}
+	cfg.applyStorageDefaults()
+	if err := cfg.ApplyCriticalEnvOverrides(os.LookupEnv); err != nil {
+		return StorageConfig{}, err
+	}
+	cfg.applyStorageDefaults()
+	return cfg.Storage, nil
+}
+
+func (c *Config) applyStorageDefaults() {
 	if c.Storage.Config.Driver == "" {
 		c.Storage.Config.Driver = "file"
 	}
@@ -704,22 +750,61 @@ func (c *Config) applyDefaults() {
 	if c.Storage.UpstreamKeys.PGSQL.ConnMaxLifetime <= 0 {
 		c.Storage.UpstreamKeys.PGSQL.ConnMaxLifetime = 30 * time.Minute
 	}
+}
 
-	for name, v := range c.Vendors {
+func (c *Config) applyDefaults() {
+	if c.SchemaVersion == 0 {
+		c.SchemaVersion = CurrentSchemaVersion
+	}
+	if c.Server.Listen == "" {
+		c.Server.Listen = ":8092"
+	}
+	if c.Server.ReadTimeout <= 0 {
+		c.Server.ReadTimeout = 30 * time.Second
+	}
+	if c.Server.WriteTimeout < 0 {
+		c.Server.WriteTimeout = 0
+	}
+	if c.Server.IdleTimeout <= 0 {
+		c.Server.IdleTimeout = 90 * time.Second
+	}
+	if c.Server.ShutdownTimeout <= 0 {
+		c.Server.ShutdownTimeout = 10 * time.Second
+	}
+
+	if c.Admin.Username == "" {
+		c.Admin.Username = "admin"
+	}
+	if c.Admin.AuditLogPath == "" {
+		c.Admin.AuditLogPath = "./data/admin_audit.log"
+	}
+	if c.Admin.SessionTTL <= 0 {
+		c.Admin.SessionTTL = 12 * time.Hour
+	}
+
+	c.applyStorageDefaults()
+
+	for i := range c.Vendors {
+		entry := &c.Vendors[i]
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.Name = strings.TrimSpace(entry.Name)
+		name := entry.Name
+		v := entry.VendorConfig
 		v.Provider = NormalizeProvider(v.Provider, name)
 		if v.LoadBalance == "" {
 			v.LoadBalance = "round_robin"
 		}
 		// Aggregate vendors skip upstream-specific defaults
 		if v.Provider == "aggregate" {
-			for i := range v.Aggregate.Children {
-				if v.Aggregate.Children[i].Weight <= 0 {
-					v.Aggregate.Children[i].Weight = 1
+			for j := range v.Aggregate.Children {
+				if v.Aggregate.Children[j].Weight <= 0 {
+					v.Aggregate.Children[j].Weight = 1
 				}
-				v.Aggregate.Children[i].KeyIDs = normalizeStringList(v.Aggregate.Children[i].KeyIDs)
+				v.Aggregate.Children[j].VendorID = strings.TrimSpace(v.Aggregate.Children[j].VendorID)
+				v.Aggregate.Children[j].KeyIDs = normalizeStringList(v.Aggregate.Children[j].KeyIDs)
 			}
 			applyAggregateRetryDefaults(&v.Aggregate.Retry)
-			c.Vendors[name] = v
+			entry.VendorConfig = v
 			continue
 		}
 		if v.UpstreamAuth.Mode == "" {
@@ -759,7 +844,7 @@ func (c *Config) applyDefaults() {
 		if v.ClientHeaders.Drop == nil {
 			v.ClientHeaders.Drop = []string{}
 		}
-		c.Vendors[name] = v
+		entry.VendorConfig = v
 	}
 }
 
@@ -772,6 +857,9 @@ func (c *Config) ValidateBootstrap() error {
 }
 
 func (c *Config) validate(requireVendors bool) error {
+	if c.SchemaVersion != CurrentSchemaVersion {
+		return NewSchemaVersionError("config", c.SchemaVersion)
+	}
 	if requireVendors && len(c.Vendors) == 0 {
 		return errors.New("config vendors is empty")
 	}
@@ -811,7 +899,30 @@ func (c *Config) validate(requireVendors bool) error {
 		return errors.New("storage.upstream_keys.pgsql.dsn is required when storage.upstream_keys.driver=pgsql")
 	}
 
-	for vendorName, vendor := range c.Vendors {
+	seenVendorIDs := make(map[string]string, len(c.Vendors))
+	seenVendorNames := make(map[string]struct{}, len(c.Vendors))
+	for i := range c.Vendors {
+		entry := c.Vendors[i]
+		if err := ValidateVendorID(entry.ID); err != nil {
+			return fmt.Errorf("vendors[%d]: %w", i, err)
+		}
+		if prev, dup := seenVendorIDs[entry.ID]; dup {
+			return fmt.Errorf("duplicate vendor id %q (already used by %q)", entry.ID, prev)
+		}
+		if err := ValidateVendorName(entry.Name); err != nil {
+			return fmt.Errorf("vendor %s: %w", entry.ID, err)
+		}
+		if _, dup := seenVendorNames[entry.Name]; dup {
+			return fmt.Errorf("duplicate vendor name %q: names are request path segments and must be unique", entry.Name)
+		}
+		seenVendorIDs[entry.ID] = entry.Name
+		seenVendorNames[entry.Name] = struct{}{}
+	}
+
+	for i := range c.Vendors {
+		vendorName := c.Vendors[i].Name
+		vendorID := c.Vendors[i].ID
+		vendor := c.Vendors[i].VendorConfig
 		switch vendor.LoadBalance {
 		case "round_robin", "random", "least_used", "least_requests":
 		default:
@@ -821,21 +932,21 @@ func (c *Config) validate(requireVendors bool) error {
 		case "openai", "anthropic", "gemini", "deepseek", "azure_openai", "generic":
 		case "aggregate":
 			for _, child := range vendor.Aggregate.Children {
-				if strings.TrimSpace(child.Vendor) == "" {
-					return fmt.Errorf("vendor %q has empty aggregate child vendor name", vendorName)
+				if strings.TrimSpace(child.VendorID) == "" {
+					return fmt.Errorf("vendor %q has empty aggregate child vendor_id", vendorName)
 				}
-				if child.Vendor == vendorName {
+				if child.VendorID == vendorID {
 					return fmt.Errorf("vendor %q aggregate child cannot reference itself", vendorName)
 				}
-				childVendor, ok := c.Vendors[child.Vendor]
+				childEntry, ok := c.VendorByID(child.VendorID)
 				if !ok {
-					return fmt.Errorf("vendor %q aggregate child %q not found", vendorName, child.Vendor)
+					return fmt.Errorf("vendor %q aggregate child %q not found", vendorName, child.VendorID)
 				}
-				if NormalizeProvider(childVendor.Provider, child.Vendor) == "aggregate" {
-					return fmt.Errorf("vendor %q aggregate child %q cannot be aggregate (nesting not allowed)", vendorName, child.Vendor)
+				if NormalizeProvider(childEntry.Provider, childEntry.Name) == "aggregate" {
+					return fmt.Errorf("vendor %q aggregate child %q cannot be aggregate (nesting not allowed)", vendorName, childEntry.Name)
 				}
-				if len(child.KeyIDs) > 0 && childVendor.UpstreamAuth.Mode == "passthrough" {
-					return fmt.Errorf("vendor %q aggregate child %q cannot select keys in passthrough mode", vendorName, child.Vendor)
+				if len(child.KeyIDs) > 0 && childEntry.UpstreamAuth.Mode == "passthrough" {
+					return fmt.Errorf("vendor %q aggregate child %q cannot select keys in passthrough mode", vendorName, childEntry.Name)
 				}
 			}
 			if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
@@ -850,11 +961,6 @@ func (c *Config) validate(requireVendors bool) error {
 		}
 		if strings.TrimSpace(vendor.Upstream.BaseURL) == "" {
 			return fmt.Errorf("vendor %q upstream.base_url is required", vendorName)
-		}
-		for _, key := range vendor.Upstream.Keys {
-			if strings.TrimSpace(key) == "" {
-				return fmt.Errorf("vendor %q has empty upstream key", vendorName)
-			}
 		}
 		if vendor.Upstream.BodyTimeout < 0 {
 			return fmt.Errorf("vendor %q upstream.body_timeout must be >= 0", vendorName)
@@ -1069,28 +1175,6 @@ func hasNonEmptyString(items []string) bool {
 	return false
 }
 
-func (c *Config) StripExternalizedData() {
-	if c == nil {
-		return
-	}
-	for name, vendor := range c.Vendors {
-		vendor.Upstream.Keys = nil
-		c.Vendors[name] = vendor
-	}
-}
-
-func (c *Config) HasLegacyUpstreamKeys() bool {
-	if c == nil {
-		return false
-	}
-	for _, vendor := range c.Vendors {
-		if len(vendor.Upstream.Keys) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func normalizeStringList(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -1107,15 +1191,6 @@ func normalizeStringList(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func VendorNames(vendors map[string]VendorConfig) []string {
-	out := make([]string, 0, len(vendors))
-	for name := range vendors {
-		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out

@@ -30,12 +30,12 @@ func makeHandlerForTest(t *testing.T) *Handler {
 				FilePath: filepath.Join(tmpDir, "upstream_keys.json"),
 			},
 		},
-		Vendors: map[string]config.VendorConfig{
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
 			"openai": {
-				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com", Keys: []string{"k1"}},
+				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
 				LoadBalance: "round_robin",
 			},
-		},
+		}),
 	}
 	_ = cfg.PrepareAndValidate()
 	keyStore, err := keystore.New(cfg.Storage.UpstreamKeys)
@@ -43,7 +43,7 @@ func makeHandlerForTest(t *testing.T) *Handler {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = keyStore.Close() })
-	if _, err := keystore.BootstrapLegacyKeys(keyStore, cfg); err != nil {
+	if _, err := keyStore.Append(vendorIDForTest(t, cfg, "openai"), []string{"k1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,9 +107,9 @@ func TestAdminEndpoints(t *testing.T) {
 	}
 
 	vr, _ := json.Marshal(map[string]any{
-		"vendor": "anthropic",
+		"name": "anthropic",
 		"config": map[string]any{
-			"upstream":     map[string]any{"base_url": "https://api.anthropic.com", "keys": []string{"a1"}},
+			"upstream":     map[string]any{"base_url": "https://api.anthropic.com"},
 			"load_balance": "round_robin",
 		},
 	})
@@ -120,10 +120,18 @@ func TestAdminEndpoints(t *testing.T) {
 	if cr.Code != http.StatusOK {
 		t.Fatalf("vendor create failed: %d %s", cr.Code, cr.Body.String())
 	}
+	var created VendorCreateResponse
+	if err := json.Unmarshal(cr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.VendorID == "" {
+		t.Fatal("vendor create did not return an id")
+	}
+	anthropicID := created.VendorID
 
 	kr, _ := json.Marshal(map[string]string{"key": "a2"})
 	akr := httptest.NewRecorder()
-	akreq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/anthropic/keys", bytes.NewReader(kr))
+	akreq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/"+anthropicID+"/keys", bytes.NewReader(kr))
 	akreq.Header.Set("Authorization", "Bearer "+token)
 	mux.ServeHTTP(akr, akreq)
 	if akr.Code != http.StatusOK {
@@ -188,15 +196,16 @@ func TestAdminVendorTestingEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vendorCfg := cfg.Vendors["openai"]
-	vendorCfg.Upstream.BaseURL = upstreamA.URL
-	vendorCfg.InjectedHeader = map[string]string{
-		"X-Test-Vendor": "{{vendor}}",
-	}
-	vendorCfg.PathRewrites = map[string]string{
-		"/alias/*": "/v1/*",
-	}
-	cfg.Vendors["openai"] = vendorCfg
+	openaiID := vendorIDForTest(t, cfg, "openai")
+	mutateVendorForTest(t, cfg, "openai", func(vc *config.VendorConfig) {
+		vc.Upstream.BaseURL = upstreamA.URL
+		vc.InjectedHeader = map[string]string{
+			"X-Test-Vendor": "{{vendor}}",
+		}
+		vc.PathRewrites = map[string]string{
+			"/alias/*": "/v1/*",
+		}
+	})
 	if err := h.service.UpdateConfig("tester", cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +214,7 @@ func TestAdminVendorTestingEndpoints(t *testing.T) {
 	h.Register(mux)
 	token := loginAdminToken(t, mux)
 
-	metaReq := makeLoopbackRequest(http.MethodGet, "/admin/vendors/openai/test-meta", nil)
+	metaReq := makeLoopbackRequest(http.MethodGet, "/admin/vendors/"+openaiID+"/test-meta", nil)
 	metaReq.Header.Set("Authorization", "Bearer "+token)
 	metaResp := httptest.NewRecorder()
 	mux.ServeHTTP(metaResp, metaReq)
@@ -234,7 +243,7 @@ func TestAdminVendorTestingEndpoints(t *testing.T) {
 		"method":   http.MethodGet,
 		"endpoint": "/alias/models?limit=20",
 	})
-	runReq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/openai/test", bytes.NewReader(runBody))
+	runReq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/"+openaiID+"/test", bytes.NewReader(runBody))
 	runReq.Header.Set("Authorization", "Bearer "+token)
 	runResp := httptest.NewRecorder()
 	mux.ServeHTTP(runResp, runReq)
@@ -280,7 +289,7 @@ func TestAdminVendorTestingEndpoints(t *testing.T) {
 		"body":     "{\"model\":\"manual\"}",
 		"key":      "manual-secret",
 	})
-	overrideReq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/openai/test", bytes.NewReader(overrideBody))
+	overrideReq := makeLoopbackRequest(http.MethodPost, "/admin/vendors/"+openaiID+"/test", bytes.NewReader(overrideBody))
 	overrideReq.Header.Set("Authorization", "Bearer "+token)
 	overrideResp := httptest.NewRecorder()
 	mux.ServeHTTP(overrideResp, overrideReq)
