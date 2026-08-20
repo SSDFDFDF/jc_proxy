@@ -54,6 +54,7 @@ type vendorGateway struct {
 	upstreamBodyTimeout time.Duration
 	interimInterval     time.Duration
 	errorPolicy         config.ErrorPolicyConfig
+	maxAttemptsBudget   int
 	rewrites            rewriteMatcher
 	resinRuntime        *resin.RuntimeConfig
 	keyCtrl             UpstreamKeyController
@@ -406,13 +407,14 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 		}
 
 		agg := &vendorGateway{
-			id:          entry.ID,
-			name:        name,
-			provider:    "aggregate",
-			isAggregate: true,
-			clientAuth:  clientAuthSet,
-			aggPool:     newAggregatePool(vendor.LoadBalance, entries),
-			aggRetry:    vendor.Aggregate.Retry,
+			id:                entry.ID,
+			name:              name,
+			provider:          "aggregate",
+			isAggregate:       true,
+			clientAuth:        clientAuthSet,
+			aggPool:           newAggregatePool(vendor.LoadBalance, entries),
+			aggRetry:          vendor.Aggregate.Retry,
+			maxAttemptsBudget: vendor.MaxUpstreamAttempts,
 		}
 		vendors[name] = agg
 		vendorsByID[entry.ID] = agg
@@ -597,8 +599,16 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 		upstreamBodyTimeout: vendor.Upstream.BodyTimeout,
 		interimInterval:     upstreamInterimInterval(vendor.Upstream),
 		errorPolicy:         vendor.ErrorPolicy,
+		maxAttemptsBudget:   vendor.MaxUpstreamAttempts,
 		rewrites:            newRewriteMatcher(vendor.PathRewrites),
 		resinRuntime:        rr,
 		keyCtrl:             keyCtrl,
 	}, nil
+}
+
+func (v *vendorGateway) maxUpstreamAttempts() int {
+	if v == nil || v.maxAttemptsBudget <= 0 {
+		return config.DefaultMaxUpstreamAttempts
+	}
+	return v.maxAttemptsBudget
 }

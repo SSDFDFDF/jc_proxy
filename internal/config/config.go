@@ -148,17 +148,20 @@ type UpstreamKeyStorePGSQLConfig struct {
 }
 
 type VendorConfig struct {
-	Provider       string              `yaml:"provider" json:"provider"`
-	Upstream       UpstreamConfig      `yaml:"upstream" json:"upstream"`
-	Aggregate      AggregateConfig     `yaml:"aggregate,omitempty" json:"aggregate,omitempty"`
-	LoadBalance    string              `yaml:"load_balance" json:"load_balance"`
-	UpstreamAuth   UpstreamAuthConfig  `yaml:"upstream_auth" json:"upstream_auth"`
-	ClientAuth     ClientAuthConfig    `yaml:"client_auth" json:"client_auth"`
-	ClientHeaders  ClientHeadersConfig `yaml:"client_headers" json:"client_headers"`
-	InjectedHeader map[string]string   `yaml:"inject_headers" json:"inject_headers"`
-	PathRewrites   map[string]string   `yaml:"path_rewrites" json:"path_rewrites"`
-	ErrorPolicy    ErrorPolicyConfig   `yaml:"error_policy" json:"error_policy"`
-	Resin          ResinConfig         `yaml:"resin" json:"resin"`
+	Provider string `yaml:"provider" json:"provider"`
+	// MaxUpstreamAttempts is the request-level hard budget shared by key
+	// failover and aggregate child switching.
+	MaxUpstreamAttempts int                 `yaml:"max_upstream_attempts" json:"max_upstream_attempts"`
+	Upstream            UpstreamConfig      `yaml:"upstream" json:"upstream"`
+	Aggregate           AggregateConfig     `yaml:"aggregate,omitempty" json:"aggregate,omitempty"`
+	LoadBalance         string              `yaml:"load_balance" json:"load_balance"`
+	UpstreamAuth        UpstreamAuthConfig  `yaml:"upstream_auth" json:"upstream_auth"`
+	ClientAuth          ClientAuthConfig    `yaml:"client_auth" json:"client_auth"`
+	ClientHeaders       ClientHeadersConfig `yaml:"client_headers" json:"client_headers"`
+	InjectedHeader      map[string]string   `yaml:"inject_headers" json:"inject_headers"`
+	PathRewrites        map[string]string   `yaml:"path_rewrites" json:"path_rewrites"`
+	ErrorPolicy         ErrorPolicyConfig   `yaml:"error_policy" json:"error_policy"`
+	Resin               ResinConfig         `yaml:"resin" json:"resin"`
 }
 
 type UpstreamConfig struct {
@@ -263,6 +266,12 @@ type AggregateRetryConfig struct {
 	NetworkError *bool `yaml:"network_error" json:"network_error"`
 	StatusCodes  []int `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
 }
+
+const (
+	DefaultMaxUpstreamAttempts = 10
+	MaxUpstreamAttemptsLimit   = 100
+	MaxFailoverAttempts        = 20
+)
 
 func boolValue(v *bool, fallback bool) bool {
 	if v == nil {
@@ -790,6 +799,9 @@ func (c *Config) applyDefaults() {
 		entry.Name = strings.TrimSpace(entry.Name)
 		name := entry.Name
 		v := entry.VendorConfig
+		if v.MaxUpstreamAttempts <= 0 {
+			v.MaxUpstreamAttempts = DefaultMaxUpstreamAttempts
+		}
 		v.Provider = NormalizeProvider(v.Provider, name)
 		if v.LoadBalance == "" {
 			v.LoadBalance = "round_robin"
@@ -923,6 +935,9 @@ func (c *Config) validate(requireVendors bool) error {
 		vendorName := c.Vendors[i].Name
 		vendorID := c.Vendors[i].ID
 		vendor := c.Vendors[i].VendorConfig
+		if vendor.MaxUpstreamAttempts < 1 || vendor.MaxUpstreamAttempts > MaxUpstreamAttemptsLimit {
+			return fmt.Errorf("vendor %q max_upstream_attempts must be between 1 and %d", vendorName, MaxUpstreamAttemptsLimit)
+		}
 		switch vendor.LoadBalance {
 		case "round_robin", "random", "least_used", "least_requests":
 		default:
@@ -1080,6 +1095,9 @@ func applyAggregateRetryDefaults(retry *AggregateRetryConfig) {
 }
 
 func validateErrorPolicy(policy ErrorPolicyConfig) error {
+	if policy.Failover.MaxAttempts < 1 || policy.Failover.MaxAttempts > MaxFailoverAttempts {
+		return fmt.Errorf("failover.max_attempts must be between 1 and %d", MaxFailoverAttempts)
+	}
 	if err := validateStatusCodes("auto_disable.invalid_key_status_codes", policy.AutoDisable.InvalidKeyStatusCodes); err != nil {
 		return err
 	}
@@ -1132,6 +1150,11 @@ func validateAggregateRetry(retry AggregateRetryConfig, vendorName string) error
 	}
 	if err := validateStatusCodes("aggregate.retry.status_codes", retry.StatusCodes); err != nil {
 		return err
+	}
+	for _, code := range retry.StatusCodes {
+		if code < http.StatusBadRequest {
+			return fmt.Errorf("vendor %q aggregate.retry.status_codes cannot retry non-error status %d", vendorName, code)
+		}
 	}
 	return nil
 }

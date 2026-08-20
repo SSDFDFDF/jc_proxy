@@ -58,6 +58,8 @@ storage:
 vendors:
   - name: "openai"
     provider: "openai"
+    # 单个下游请求最多允许产生的上游请求数（包含切号和聚合 child 切换）
+    max_upstream_attempts: 10
     upstream:
       base_url: "https://api.openai.com"
       response_header_timeout: 300s
@@ -116,6 +118,7 @@ vendors:
             retry_after: "max"
       failover:
         request_error: true
+        max_attempts: 5
         response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
     resin:
       enabled: true
@@ -125,6 +128,7 @@ vendors:
 
   - name: "anthropic"
     provider: "anthropic"
+    max_upstream_attempts: 10
     upstream:
       base_url: "https://api.anthropic.com"
     load_balance: "least_requests"
@@ -166,6 +170,7 @@ vendors:
             duration: 2s
       failover:
         request_error: true
+        max_attempts: 5
         response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
     resin:
       enabled: false

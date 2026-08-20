@@ -220,6 +220,11 @@ func aggregateRetryable(statusCode int, err error, retry config.AggregateRetryCo
 	if err != nil {
 		return boolOrDefault(retry.NetworkError, true)
 	}
+	// Aggregate retries are failure recovery only; never discard a successful
+	// response because a custom status list is overly broad.
+	if statusCode < http.StatusBadRequest {
+		return false
+	}
 	switch statusCode {
 	case http.StatusTooManyRequests:
 		return boolOrDefault(retry.RateLimit, true)

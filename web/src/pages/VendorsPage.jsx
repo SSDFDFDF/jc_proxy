@@ -725,6 +725,21 @@ export function VendorsPage({
                       <option value="least_requests">least_requests</option>
                     </select>
                   </label>
+                  <label className="field-wrap">
+                    <span className="field-label">单请求上游最大次数</span>
+                    <input
+                      className="input-base"
+                      type="number"
+                      min="1"
+                      max="100"
+                      placeholder="默认 10"
+                      value={vendorDraft.max_upstream_attempts || ''}
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10)
+                        onMutateVendorDraft((draft) => { draft.max_upstream_attempts = v > 0 ? v : 0 })
+                      }}
+                    />
+                  </label>
                   {isAggregate && (
                     <>
                       <label className="field-wrap">

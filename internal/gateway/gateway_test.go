@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -2258,6 +2259,126 @@ func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
 	}
 }
 
+func TestRouterAggregateDoesNotRetrySameKeyAcrossOverlappingChildren(t *testing.T) {
+	var seen []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			"child": {
+				Provider:    "generic",
+				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
+				LoadBalance: "round_robin",
+				ErrorPolicy: config.ErrorPolicyConfig{
+					Cooldown: config.ErrorCooldownConfig{NoDefaultBackoff: true},
+					Failover: config.ErrorFailoverConfig{MaxAttempts: 3},
+				},
+			},
+			"agg": {
+				Provider:    "aggregate",
+				LoadBalance: "round_robin",
+				Aggregate: config.AggregateConfig{
+					Children: []config.AggregateChild{
+						{VendorID: "vid_child", KeyIDs: []string{keystore.KeyID("k1"), keystore.KeyID("k2")}},
+						{VendorID: "vid_child", KeyIDs: []string{keystore.KeyID("k2"), keystore.KeyID("k3")}},
+					},
+					Retry: config.AggregateRetryConfig{MaxAttempts: 2},
+				},
+			},
+		}),
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	router, err := newTestRouter(cfg, map[string][]string{"child": {"k1", "k2", "k3"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agg/v1/chat/completions", strings.NewReader(`{"model":"gpt"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	want := []string{"Bearer k1", "Bearer k2", "Bearer k3"}
+	if len(seen) != len(want) {
+		t.Fatalf("attempts = %#v, want %#v", seen, want)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("attempts = %#v, want %#v", seen, want)
+		}
+	}
+}
+
+func TestRouterAggregateHonorsGlobalUpstreamAttemptBudget(t *testing.T) {
+	var attempts int
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{MaxAttempts: 2})
+	mutateTestVendor(t, cfg, "agg", func(vc *config.VendorConfig) {
+		vc.MaxUpstreamAttempts = 3
+	})
+	seed := aggregateTestSeed()
+	seed["child_a"] = []string{"a1", "a2", "a3"}
+	seed["child_b"] = []string{"b1", "b2", "b3"}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	router, err := newTestRouter(cfg, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("rate limited")),
+		}, nil
+	})
+	router.vendors["child_a"].client = &http.Client{Transport: transport}
+	router.vendors["child_b"].client = &http.Client{Transport: transport}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if attempts != 3 {
+		t.Fatalf("upstream attempts = %d, want global budget 3", attempts)
+	}
+}
+
+func TestRouterAggregateNeverRetriesSuccessfulResponseFromCustomStatusList(t *testing.T) {
+	attempts := 0
+	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	router, err := newTestRouter(cfg, aggregateTestSeed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.vendors["agg"].aggRetry.StatusCodes = []int{http.StatusOK}
+	router.vendors["child_a"].client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	router.vendors["child_b"].client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("second child must not receive a request after success")
+		return nil, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodGet, "/agg/v1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || w.Body.String() != "ok" || attempts != 1 {
+		t.Fatalf("successful aggregate response was retried: status=%d body=%q attempts=%d", w.Code, w.Body.String(), attempts)
+	}
+}
+
 func TestRouterAggregateSkipsChildWhenSelectedKeysUnavailable(t *testing.T) {
 	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
 	seed := aggregateTestSeed()
@@ -3383,6 +3504,109 @@ func TestRouterDoesNotFollowUpstreamRedirects(t *testing.T) {
 	}
 	if len(attempts) != 1 || attempts[0] != "/redirect" {
 		t.Fatalf("redirect should not be followed upstream, got %#v", attempts)
+	}
+}
+
+// clientDisconnectBody simulates a client that drops the connection midway
+// through uploading the request body.
+type clientDisconnectBody struct{}
+
+func (clientDisconnectBody) Read([]byte) (int, error) { return 0, syscall.ECONNRESET }
+func (clientDisconnectBody) Close() error             { return nil }
+
+// prepareNonAggregateRequest reports a client disconnect as (nil, nil), which
+// ServeHTTP forwards to serveVendorRequest. That must not be dereferenced.
+func TestRouterClientDisconnectDuringBodyUploadDoesNotPanic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8095"},
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			"solo": {
+				Provider:    "generic",
+				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
+				LoadBalance: "round_robin",
+			},
+		}),
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	// Two keys make shouldBufferRequestBody() true, so the body is read during
+	// preparation and the disconnect surfaces there.
+	router, err := newTestRouter(cfg, map[string][]string{"solo": {"k1", "k2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/solo/v1/messages", io.ReadCloser(clientDisconnectBody{}))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = 64
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("client disconnect during body upload panicked: %v", rec)
+		}
+	}()
+	router.ServeHTTP(httptest.NewRecorder(), req)
+}
+
+// When the upstream-attempt budget runs out mid-failover the client must still
+// receive the real upstream status and its Retry-After, not a synthetic 502
+// that would destroy the backoff signal.
+func TestRouterBudgetExhaustionForwardsUpstreamStatus(t *testing.T) {
+	var hits int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.Header().Set("Retry-After", "42")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8089"},
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			"child_a": {
+				Provider:            "generic",
+				Upstream:            config.UpstreamConfig{BaseURL: upstream.URL},
+				LoadBalance:         "round_robin",
+				MaxUpstreamAttempts: 3,
+			},
+			"agg": {
+				Provider:            "aggregate",
+				LoadBalance:         "round_robin",
+				MaxUpstreamAttempts: 3,
+				Aggregate: config.AggregateConfig{
+					Children: []config.AggregateChild{{VendorID: "vid_child_a"}},
+				},
+			},
+		}),
+	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		t.Fatal(err)
+	}
+	// Five usable keys against a budget of three: the budget runs out first.
+	router, err := newTestRouter(cfg, map[string][]string{"child_a": {"k1", "k2", "k3", "k4", "k5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/agg/v1/messages", strings.NewReader(`{"a":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if got := atomic.LoadInt64(&hits); got != 3 {
+		t.Fatalf("upstream attempts = %d, want 3 (the configured budget)", got)
+	}
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("downstream status = %d, want %d: %s", w.Code, http.StatusTooManyRequests, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "42" {
+		t.Fatalf("Retry-After = %q, want %q", got, "42")
 	}
 }
 

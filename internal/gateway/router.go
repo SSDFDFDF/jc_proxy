@@ -19,6 +19,87 @@ type preparedProxyRequest struct {
 	aggregateChildID string
 }
 
+// requestExecution owns state that must live for the entire downstream
+// request, including all aggregate child switches. Keeping this state outside
+// the per-vendor loop prevents a key from being retried after control moves to
+// another aggregate child and provides one hard upstream-attempt budget.
+type requestExecution struct {
+	maxAttempts int
+	attempts    int
+	tried       map[string]struct{}
+}
+
+func newRequestExecution(maxAttempts int) *requestExecution {
+	if maxAttempts <= 0 {
+		maxAttempts = config.DefaultMaxUpstreamAttempts
+	}
+	return &requestExecution{maxAttempts: maxAttempts, tried: make(map[string]struct{})}
+}
+
+func (e *requestExecution) consumeAttempt() bool {
+	if e == nil {
+		return true
+	}
+	if e.attempts >= e.maxAttempts {
+		return false
+	}
+	e.attempts++
+	return true
+}
+
+// hasBudget reports whether one more upstream attempt is still allowed. Retry
+// decisions consult this so an exhausted budget makes the gateway deliver the
+// upstream response it already holds instead of discarding it for a synthetic
+// gateway error.
+func (e *requestExecution) hasBudget() bool {
+	if e == nil {
+		return true
+	}
+	return e.attempts < e.maxAttempts
+}
+
+func executionTargetKey(v *vendorGateway, selectedKey string) string {
+	if v == nil {
+		return ""
+	}
+	return v.id + "\x00" + selectedKey
+}
+
+func (e *requestExecution) hasTried(v *vendorGateway, selectedKey string) bool {
+	if e == nil {
+		return false
+	}
+	_, ok := e.tried[executionTargetKey(v, selectedKey)]
+	return ok
+}
+
+func (e *requestExecution) triedKeyIndexes(v *vendorGateway) map[int]struct{} {
+	// Snapshot() copies every key state, so skip it entirely while nothing has
+	// been tried yet — that is the whole happy path.
+	if e == nil || len(e.tried) == 0 || v == nil || !v.usesManagedUpstreamKeys() || v.pool == nil {
+		return nil
+	}
+	var result map[int]struct{}
+	for idx, state := range v.pool.Snapshot() {
+		if _, ok := e.tried[executionTargetKey(v, state.Key)]; ok {
+			if result == nil {
+				result = make(map[int]struct{}, len(e.tried))
+			}
+			result[idx] = struct{}{}
+		}
+	}
+	return result
+}
+
+func (e *requestExecution) markTried(v *vendorGateway, selectedKey string) {
+	if e == nil {
+		return
+	}
+	if key := executionTargetKey(v, selectedKey); key != "" {
+		e.tried[key] = struct{}{}
+	}
+}
+
 type upstreamAttempt struct {
 	idx             int
 	selectedVersion int64
@@ -178,8 +259,8 @@ func (r *Router) prepareNonAggregateRequest(req *http.Request, vg *vendorGateway
 	}, nil
 }
 
-func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, path string, exclude map[string]struct{}, bodySource *requestBodySource) (*preparedProxyRequest, *proxyError) {
-	child := agg.aggPool.PickAvailable(aggregateChildAvailable, exclude)
+func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, path string, exclude map[string]struct{}, bodySource *requestBodySource, execution *requestExecution) (*preparedProxyRequest, *proxyError) {
+	child := agg.aggPool.PickAvailable(aggregateChildAvailableForExecution(req, execution), exclude)
 	if child == nil {
 		return nil, &proxyError{statusCode: http.StatusServiceUnavailable, message: "no available child vendor"}
 	}
@@ -218,6 +299,21 @@ func aggregateChildAvailable(e *aggregateChildEntry) bool {
 	return e.vendor.hasAvailableKey(nil, e.keyIdxs)
 }
 
+func aggregateChildAvailableForExecution(req *http.Request, execution *requestExecution) func(*aggregateChildEntry) bool {
+	return func(child *aggregateChildEntry) bool {
+		if !aggregateChildAvailable(child) {
+			return false
+		}
+		if execution == nil || child == nil {
+			return true
+		}
+		if child.vendor.usesManagedUpstreamKeys() {
+			return child.vendor.hasAvailableKey(execution.triedKeyIndexes(child.vendor), child.keyIdxs)
+		}
+		return !execution.hasTried(child.vendor, child.vendor.passthroughUpstreamKey(req))
+	}
+}
+
 func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request, agg *vendorGateway, path string) {
 	if err := agg.authorizeClient(req); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -227,12 +323,13 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 	retry := agg.aggRetry
 	if !boolOrDefault(retry.Enabled, true) {
 		// Retry disabled — behave like a single-attempt aggregate.
-		prepared, proxyErr := r.prepareAggregateRequest(req, agg, path, nil, nil)
+		execution := newRequestExecution(agg.maxUpstreamAttempts())
+		prepared, proxyErr := r.prepareAggregateRequest(req, agg, path, nil, nil, execution)
 		if proxyErr != nil {
 			http.Error(w, proxyErr.message, proxyErr.statusCode)
 			return
 		}
-		r.serveVendorRequest(w, req, prepared)
+		_ = r.serveVendorRequestWithAggregateHook(w, req, prepared, nil, execution)
 		return
 	}
 
@@ -240,12 +337,13 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 	if maxAttempts <= 0 {
 		maxAttempts = 2
 	}
+	execution := newRequestExecution(agg.maxUpstreamAttempts())
 
 	exclude := make(map[string]struct{})
 	var bodySource *requestBodySource
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		prepared, proxyErr := r.prepareAggregateRequest(req, agg, path, exclude, bodySource)
+		prepared, proxyErr := r.prepareAggregateRequest(req, agg, path, exclude, bodySource, execution)
 		if proxyErr != nil {
 			http.Error(w, proxyErr.message, proxyErr.statusCode)
 			return
@@ -263,6 +361,12 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 			if attempt >= maxAttempts-1 || source == nil {
 				return false
 			}
+			// Switching children still costs an upstream attempt, so refuse
+			// once the request-level budget is spent. Returning false here lets
+			// the caller deliver the upstream response instead.
+			if !execution.hasBudget() {
+				return false
+			}
 			if !aggregateRetryable(statusCode, err, retry) {
 				return false
 			}
@@ -274,9 +378,9 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 				nextExclude[name] = struct{}{}
 			}
 			nextExclude[prepared.aggregateChildID] = struct{}{}
-			return agg.aggPool.HasAvailable(aggregateChildAvailable, nextExclude)
+			return agg.aggPool.HasAvailable(aggregateChildAvailableForExecution(req, execution), nextExclude)
 		}
-		if r.serveVendorRequestWithAggregateHook(w, req, prepared, shouldRetryAggregate) == vendorRequestRetryAggregateChild {
+		if r.serveVendorRequestWithAggregateHook(w, req, prepared, shouldRetryAggregate, execution) == vendorRequestRetryAggregateChild {
 			exclude[prepared.aggregateChildID] = struct{}{}
 			continue
 		}
@@ -286,10 +390,17 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 }
 
 func (r *Router) serveVendorRequest(w http.ResponseWriter, req *http.Request, prepared *preparedProxyRequest) {
-	_ = r.serveVendorRequestWithAggregateHook(w, req, prepared, nil)
+	// prepareNonAggregateRequest reports a client disconnect as (nil, nil), so
+	// prepared can legitimately be nil here. Guard before touching it: the
+	// budget argument is evaluated at the call site, ahead of the callee's own
+	// nil check.
+	if prepared == nil || prepared.vendor == nil {
+		return
+	}
+	_ = r.serveVendorRequestWithAggregateHook(w, req, prepared, nil, newRequestExecution(prepared.vendor.maxUpstreamAttempts()))
 }
 
-func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req *http.Request, prepared *preparedProxyRequest, aggregateHook aggregateRetryHook) vendorRequestOutcome {
+func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req *http.Request, prepared *preparedProxyRequest, aggregateHook aggregateRetryHook, execution *requestExecution) vendorRequestOutcome {
 	if prepared == nil || prepared.vendor == nil {
 		return vendorRequestDone
 	}
@@ -299,6 +410,9 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 	defer interim.stop()
 
 	triedManagedKeyIdx := make(map[int]struct{})
+	for idx := range execution.triedKeyIndexes(vg) {
+		triedManagedKeyIdx[idx] = struct{}{}
+	}
 	maxAttempts := vg.errorPolicy.Failover.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -308,10 +422,11 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 	for {
 		attempts++
 		if attempts > maxAttempts {
+			// Unreachable: every retry site below is gated on retryRemaining.
+			// Kept as a guard so a future edit cannot spin this loop.
 			writeHTTPError(w, interim, "exceeded maximum failover attempts", http.StatusBadGateway)
 			return vendorRequestDone
 		}
-
 		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs)
 		if proxyErr != nil {
 			writeHTTPError(w, interim, proxyErr.message, proxyErr.statusCode)
@@ -320,6 +435,18 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		if attempt == nil {
 			return vendorRequestDone
 		}
+		if !execution.consumeAttempt() {
+			// Also unreachable: retryRemaining and the aggregate hook both
+			// require remaining budget before another attempt is started.
+			if vg.usesManagedUpstreamKeys() {
+				vg.pool.Release(attempt.idx)
+			}
+			writeHTTPError(w, interim, "exceeded maximum upstream attempts", http.StatusBadGateway)
+			return vendorRequestDone
+		}
+		execution.markTried(vg, attempt.selectedKey)
+		// Budget is consumed, so this reflects whether attempt N+1 is allowed.
+		retryRemaining := attempts < maxAttempts && execution.hasBudget()
 
 		resp, err := vg.client.Do(attempt.request)
 		if err != nil {
@@ -331,22 +458,18 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			}
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream request failed: %v", err))
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-			if prepared.bodySource.canRetryRequestError(decision) && vg.usesManagedUpstreamKeys() {
+			canRetry := prepared.bodySource.canRetryRequestError(decision)
+			if canRetry && vg.usesManagedUpstreamKeys() {
 				triedManagedKeyIdx[attempt.idx] = struct{}{}
 			}
-			if prepared.bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx, prepared.allowedKeyIdxs) {
-				if attempts >= maxAttempts {
-					if aggregateHook != nil && aggregateHook(0, err, prepared.bodySource) {
-						return vendorRequestRetryAggregateChild
-					}
-					writeHTTPError(w, interim, "exceeded maximum failover attempts", http.StatusBadGateway)
-					return vendorRequestDone
-				}
+			if canRetry && retryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, prepared.allowedKeyIdxs) {
 				continue
 			}
 			if aggregateHook != nil && aggregateHook(0, err, prepared.bodySource) {
 				return vendorRequestRetryAggregateChild
 			}
+			// No upstream response exists to forward, so a gateway error is the
+			// only honest answer here.
 			writeHTTPError(w, interim, "upstream request failed", http.StatusBadGateway)
 			return vendorRequestDone
 		}
@@ -355,7 +478,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			resp.Body = newIdleTimeoutReadCloser(resp.Body, vg.upstreamBodyTimeout)
 		}
 
-		switch r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs, interim, aggregateHook, attempts < maxAttempts) {
+		switch r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs, interim, aggregateHook, retryRemaining) {
 		case upstreamResponseRetryVendorKey:
 			continue
 		case upstreamResponseRetryAggregateChild:
@@ -379,22 +502,18 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			}
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("read upstream response failed: %v", err))
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-			if bodySource.canRetryRequestError(decision) && vg.usesManagedUpstreamKeys() {
+			canRetry := bodySource.canRetryRequestError(decision)
+			if canRetry && vg.usesManagedUpstreamKeys() {
 				triedManagedKeyIdx[attempt.idx] = struct{}{}
 			}
-			if bodySource.canRetryRequestError(decision) && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
-				if !vendorRetryRemaining {
-					if aggregateHook != nil && aggregateHook(0, err, bodySource) {
-						return upstreamResponseRetryAggregateChild
-					}
-					writeHTTPError(w, interim, "exceeded maximum failover attempts", http.StatusBadGateway)
-					return upstreamResponseDone
-				}
+			if canRetry && vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 				return upstreamResponseRetryVendorKey
 			}
 			if aggregateHook != nil && aggregateHook(0, err, bodySource) {
 				return upstreamResponseRetryAggregateChild
 			}
+			// The response body could not be read, so there is nothing to
+			// forward downstream.
 			writeHTTPError(w, interim, "upstream request failed", http.StatusBadGateway)
 			return upstreamResponseDone
 		}
@@ -405,16 +524,7 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			if vg.usesManagedUpstreamKeys() {
 				triedManagedKeyIdx[attempt.idx] = struct{}{}
 			}
-			if vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
-				if !vendorRetryRemaining {
-					if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource) {
-						_ = resp.Body.Close()
-						return upstreamResponseRetryAggregateChild
-					}
-					_ = resp.Body.Close()
-					writeHTTPError(w, interim, "exceeded maximum failover attempts", http.StatusBadGateway)
-					return upstreamResponseDone
-				}
+			if vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 				_ = resp.Body.Close()
 				return upstreamResponseRetryVendorKey
 			}
@@ -422,6 +532,10 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 				_ = resp.Body.Close()
 				return upstreamResponseRetryAggregateChild
 			}
+			// Out of keys, attempts or budget: forward the upstream response we
+			// already hold. Synthesizing a 502 here would discard the real
+			// status and its Retry-After, which is exactly the signal a
+			// rate-limited client needs.
 			if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true, interim); errors.Is(err, errAbortDownstreamResponse) {
 				panic(http.ErrAbortHandler)
 			}

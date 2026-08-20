@@ -374,6 +374,52 @@ vendors:
 	}
 }
 
+func TestPrepareAndValidateRejectsExcessiveRetryBudgets(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Server: ServerConfig{Listen: ":8092"},
+			Vendors: VendorsFromMap(map[string]VendorConfig{
+				"openai": {
+					Upstream: UpstreamConfig{BaseURL: "https://api.openai.com"},
+				},
+			}),
+		}
+	}
+
+	cfg := base()
+	cfg.Vendors[0].MaxUpstreamAttempts = MaxUpstreamAttemptsLimit + 1
+	if err := cfg.PrepareAndValidate(); err == nil || !strings.Contains(err.Error(), "max_upstream_attempts") {
+		t.Fatalf("PrepareAndValidate() error = %v, want max_upstream_attempts validation", err)
+	}
+
+	cfg = base()
+	cfg.Vendors[0].ErrorPolicy.Failover.MaxAttempts = MaxFailoverAttempts + 1
+	if err := cfg.PrepareAndValidate(); err == nil || !strings.Contains(err.Error(), "failover.max_attempts") {
+		t.Fatalf("PrepareAndValidate() error = %v, want failover.max_attempts validation", err)
+	}
+}
+
+func TestPrepareAndValidateRejectsAggregateSuccessfulRetryStatus(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Listen: ":8092"},
+		Vendors: VendorsFromMap(map[string]VendorConfig{
+			"child": {
+				Upstream: UpstreamConfig{BaseURL: "https://api.openai.com"},
+			},
+			"agg": {
+				Provider: "aggregate",
+				Aggregate: AggregateConfig{
+					Children: []AggregateChild{{VendorID: "vid_child"}},
+					Retry:    AggregateRetryConfig{StatusCodes: []int{http.StatusOK}},
+				},
+			},
+		}),
+	}
+	if err := cfg.PrepareAndValidate(); err == nil || !strings.Contains(err.Error(), "cannot retry non-error status") {
+		t.Fatalf("PrepareAndValidate() error = %v, want non-error status validation", err)
+	}
+}
+
 func TestLoadAllowsBootstrapAdminWithoutCredentials(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
 schema_version: 2

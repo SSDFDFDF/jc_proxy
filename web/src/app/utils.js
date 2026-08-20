@@ -123,6 +123,7 @@ export function recommendedClientHeaderPreset(provider) {
 export function emptyVendorConfig() {
   return {
     provider: 'generic',
+    max_upstream_attempts: 10,
     upstream: {
       base_url: '',
       response_header_timeout: 300_000_000_000,
@@ -158,6 +159,7 @@ export function emptyVendorConfig() {
       },
       failover: {
         request_error: true,
+        max_attempts: 5,
         response_status_codes: []
       }
     },
@@ -170,6 +172,7 @@ export function withVendorDefaults(vendor) {
   const next = clone(vendor || {})
   return {
     provider: next.provider || base.provider,
+    max_upstream_attempts: next.max_upstream_attempts > 0 ? next.max_upstream_attempts : base.max_upstream_attempts,
     upstream: {
       ...base.upstream,
       ...(next.upstream || {})
@@ -230,6 +233,9 @@ export function withVendorDefaults(vendor) {
       },
       failover: {
         request_error: next.error_policy?.failover?.request_error ?? base.error_policy.failover.request_error,
+        max_attempts: next.error_policy?.failover?.max_attempts > 0
+          ? next.error_policy.failover.max_attempts
+          : base.error_policy.failover.max_attempts,
         response_status_codes: Array.isArray(next.error_policy?.failover?.response_status_codes)
           ? [...next.error_policy.failover.response_status_codes]
           : [...base.error_policy.failover.response_status_codes]
@@ -290,5 +296,3 @@ export function storageSummary(info) {
   if (info.driver === 'pgsql') return `pgsql · ${info.table || 'default'}`
   return `file · ${info.file_path || '--'}`
 }
-
-
