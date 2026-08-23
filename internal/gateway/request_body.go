@@ -39,15 +39,7 @@ func (s *requestBodySource) canRetryResponse(statusCode int, decision keyDecisio
 	if s == nil || !s.replayable || !shouldRetryDecision(decision) {
 		return false
 	}
-	if s.safeRetry {
-		return true
-	}
-	switch statusCode {
-	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
-		return true
-	default:
-		return false
-	}
+	return s.safeRetry || isRetryableStatusForUnsafeMethod(statusCode)
 }
 
 func (s *requestBodySource) canRetryAggregate(statusCode int, err error) bool {
@@ -57,9 +49,13 @@ func (s *requestBodySource) canRetryAggregate(statusCode int, err error) bool {
 	if s == nil || !s.replayable {
 		return false
 	}
-	if s.safeRetry {
-		return true
-	}
+	return s.safeRetry || isRetryableStatusForUnsafeMethod(statusCode)
+}
+
+// isRetryableStatusForUnsafeMethod reports whether the status code indicates
+// the upstream rejected the request without processing it, making retry safe
+// even for non-idempotent methods (POST, PUT, etc.).
+func isRetryableStatusForUnsafeMethod(statusCode int) bool {
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusTooManyRequests:
 		return true

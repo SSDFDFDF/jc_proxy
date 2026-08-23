@@ -24,16 +24,21 @@ type preparedProxyRequest struct {
 // the per-vendor loop prevents a key from being retried after control moves to
 // another aggregate child and provides one hard upstream-attempt budget.
 type requestExecution struct {
-	maxAttempts int
-	attempts    int
-	tried       map[string]struct{}
+	maxAttempts  int
+	attempts     int
+	tried        map[string]struct{}
+	triedIndexes map[string]map[int]struct{} // vendorID → tried key indexes
 }
 
 func newRequestExecution(maxAttempts int) *requestExecution {
 	if maxAttempts <= 0 {
 		maxAttempts = config.DefaultMaxUpstreamAttempts
 	}
-	return &requestExecution{maxAttempts: maxAttempts, tried: make(map[string]struct{})}
+	return &requestExecution{
+		maxAttempts:  maxAttempts,
+		tried:        make(map[string]struct{}),
+		triedIndexes: make(map[string]map[int]struct{}),
+	}
 }
 
 func (e *requestExecution) consumeAttempt() bool {
@@ -74,29 +79,41 @@ func (e *requestExecution) hasTried(v *vendorGateway, selectedKey string) bool {
 }
 
 func (e *requestExecution) triedKeyIndexes(v *vendorGateway) map[int]struct{} {
-	// Snapshot() copies every key state, so skip it entirely while nothing has
-	// been tried yet — that is the whole happy path.
-	if e == nil || len(e.tried) == 0 || v == nil || !v.usesManagedUpstreamKeys() || v.pool == nil {
+	if e == nil || v == nil {
 		return nil
 	}
-	var result map[int]struct{}
-	for idx, state := range v.pool.Snapshot() {
-		if _, ok := e.tried[executionTargetKey(v, state.Key)]; ok {
-			if result == nil {
-				result = make(map[int]struct{}, len(e.tried))
-			}
-			result[idx] = struct{}{}
-		}
-	}
-	return result
+	return e.triedIndexes[v.id]
 }
 
-func (e *requestExecution) markTried(v *vendorGateway, selectedKey string) {
+// getOrCreateTriedKeyIndexes returns (or creates) the live set of tried key
+// indexes for vendor v. The caller may hold the returned map as a local
+// variable; subsequent markTried calls write to the same map.
+func (e *requestExecution) getOrCreateTriedKeyIndexes(v *vendorGateway) map[int]struct{} {
+	if e == nil || v == nil {
+		return nil
+	}
+	idxs := e.triedIndexes[v.id]
+	if idxs == nil {
+		idxs = make(map[int]struct{})
+		e.triedIndexes[v.id] = idxs
+	}
+	return idxs
+}
+
+func (e *requestExecution) markTried(v *vendorGateway, selectedKey string, idx int) {
 	if e == nil {
 		return
 	}
 	if key := executionTargetKey(v, selectedKey); key != "" {
 		e.tried[key] = struct{}{}
+	}
+	if idx >= 0 && v != nil && v.usesManagedUpstreamKeys() {
+		idxs := e.triedIndexes[v.id]
+		if idxs == nil {
+			idxs = make(map[int]struct{})
+			e.triedIndexes[v.id] = idxs
+		}
+		idxs[idx] = struct{}{}
 	}
 }
 
@@ -301,16 +318,22 @@ func aggregateChildAvailable(e *aggregateChildEntry) bool {
 
 func aggregateChildAvailableForExecution(req *http.Request, execution *requestExecution) func(*aggregateChildEntry) bool {
 	return func(child *aggregateChildEntry) bool {
-		if !aggregateChildAvailable(child) {
+		if child == nil || child.vendor == nil {
 			return false
 		}
-		if execution == nil || child == nil {
+		if !child.vendor.usesManagedUpstreamKeys() {
+			if execution != nil {
+				return !execution.hasTried(child.vendor, child.vendor.passthroughUpstreamKey(req))
+			}
 			return true
 		}
-		if child.vendor.usesManagedUpstreamKeys() {
+		// For managed keys the execution-aware check (which excludes
+		// already-tried indexes) is strictly more restrictive than the
+		// base aggregateChildAvailable check, so skip straight to it.
+		if execution != nil {
 			return child.vendor.hasAvailableKey(execution.triedKeyIndexes(child.vendor), child.keyIdxs)
 		}
-		return !execution.hasTried(child.vendor, child.vendor.passthroughUpstreamKey(req))
+		return child.vendor.hasAvailableKey(nil, child.keyIdxs)
 	}
 }
 
@@ -409,10 +432,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 	interim := newInterimResponseSender(w, vg.interimInterval)
 	defer interim.stop()
 
-	triedManagedKeyIdx := make(map[int]struct{})
-	for idx := range execution.triedKeyIndexes(vg) {
-		triedManagedKeyIdx[idx] = struct{}{}
-	}
+	triedManagedKeyIdx := execution.getOrCreateTriedKeyIndexes(vg)
 	maxAttempts := vg.errorPolicy.Failover.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 5
@@ -444,7 +464,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			writeHTTPError(w, interim, "exceeded maximum upstream attempts", http.StatusBadGateway)
 			return vendorRequestDone
 		}
-		execution.markTried(vg, attempt.selectedKey)
+		execution.markTried(vg, attempt.selectedKey, attempt.idx)
 		// Budget is consumed, so this reflects whether attempt N+1 is allowed.
 		retryRemaining := attempts < maxAttempts && execution.hasBudget()
 
@@ -459,9 +479,6 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream request failed: %v", err))
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
 			canRetry := prepared.bodySource.canRetryRequestError(decision)
-			if canRetry && vg.usesManagedUpstreamKeys() {
-				triedManagedKeyIdx[attempt.idx] = struct{}{}
-			}
 			if canRetry && retryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, prepared.allowedKeyIdxs) {
 				continue
 			}
@@ -503,9 +520,6 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("read upstream response failed: %v", err))
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
 			canRetry := bodySource.canRetryRequestError(decision)
-			if canRetry && vg.usesManagedUpstreamKeys() {
-				triedManagedKeyIdx[attempt.idx] = struct{}{}
-			}
 			if canRetry && vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 				return upstreamResponseRetryVendorKey
 			}
@@ -521,9 +535,6 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 		decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview)
 		if bodySource.canRetryResponse(resp.StatusCode, decision) {
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-			if vg.usesManagedUpstreamKeys() {
-				triedManagedKeyIdx[attempt.idx] = struct{}{}
-			}
 			if vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 				_ = resp.Body.Close()
 				return upstreamResponseRetryVendorKey
@@ -554,11 +565,6 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 	}
 
 	decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
-	if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource) {
-		vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-		_ = resp.Body.Close()
-		return upstreamResponseRetryAggregateChild
-	}
 	if err := r.writeUpstreamResponse(w, req, resp, resp.Body, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false, interim); errors.Is(err, errAbortDownstreamResponse) {
 		panic(http.ErrAbortHandler)
 	}
