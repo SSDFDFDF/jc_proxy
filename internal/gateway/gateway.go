@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -326,15 +325,18 @@ func New(cfg *config.Config) (*Router, error) {
 }
 
 func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController) (*Router, error) {
-	return newRouterWithUpstreamKeyRecords(cfg, upstreamKeys, keyCtrl, nil)
+	return newRouterWithUpstreamKeyRecords(cfg, upstreamKeys, keyCtrl, nil, newTransportManager())
 }
 
 // newRouterWithUpstreamKeyRecords builds the routing table. upstreamKeys is
 // partitioned by vendor id, while the router itself is indexed by vendor name
 // because the gateway resolves the first request path segment to a vendor.
-func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry) (*Router, error) {
+func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry, transports *transportManager) (*Router, error) {
 	if cfg == nil {
 		return nil, errors.New("config is nil")
+	}
+	if transports == nil {
+		transports = newTransportManager()
 	}
 
 	adminCIDRs, err := config.ParseAdminAllowedCIDRs(cfg.Admin.AllowedCIDRs)
@@ -354,7 +356,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 		if config.NormalizeProvider(entry.Provider, entry.Name) == "aggregate" {
 			continue
 		}
-		vg, err := buildVendorGateway(entry, upstreamKeys, keyCtrl, statsRegistry)
+		vg, err := buildVendorGateway(entry, upstreamKeys, keyCtrl, statsRegistry, transports)
 		if err != nil {
 			return nil, err
 		}
@@ -449,6 +451,22 @@ func (r *Router) VendorStats() map[string][]map[string]any {
 	return out
 }
 
+func (r *Router) upstreamTransports() map[*http.Transport]struct{} {
+	active := make(map[*http.Transport]struct{})
+	if r == nil {
+		return active
+	}
+	for _, vendor := range r.vendorsByID {
+		if vendor == nil || vendor.client == nil {
+			continue
+		}
+		if transport, ok := vendor.client.Transport.(*http.Transport); ok && transport != nil {
+			active[transport] = struct{}{}
+		}
+	}
+	return active
+}
+
 // VendorStateSnapshots returns per-key runtime state keyed by vendor id.
 func (r *Router) VendorStateSnapshots() map[string][]balancer.KeyState {
 	out := make(map[string][]balancer.KeyState, len(r.vendorsByID))
@@ -505,7 +523,7 @@ func upstreamResponseHeaderTimeout(cfg config.UpstreamConfig) time.Duration {
 	return *cfg.ResponseHeaderTimeout
 }
 
-func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry) (*vendorGateway, error) {
+func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController, statsRegistry *runtimeStatsRegistry, transports *transportManager) (*vendorGateway, error) {
 	name := entry.Name
 	vendorID := entry.ID
 	vendor := entry.VendorConfig
@@ -542,21 +560,8 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 		return nil, fmt.Errorf("vendor %s init key pool: %w", name, err)
 	}
 
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          512,
-		MaxIdleConnsPerHost:   128,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: upstreamResponseHeaderTimeout(vendor.Upstream),
-		ReadBufferSize:        16 << 10,
-		WriteBufferSize:       16 << 10,
-	}
 	client := &http.Client{
-		Transport: transport,
+		Transport: transports.Transport(vendor.Upstream),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

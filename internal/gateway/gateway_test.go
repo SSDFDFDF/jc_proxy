@@ -957,6 +957,99 @@ func TestRouterCanDisableResponseHeaderTimeout(t *testing.T) {
 	}
 }
 
+func TestRuntimeSharesTransportForEquivalentUpstreamSettings(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			"openai": {
+				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
+				LoadBalance: "round_robin",
+			},
+			"compatible": {
+				Upstream:    config.UpstreamConfig{BaseURL: "https://other.example.com"},
+				LoadBalance: "round_robin",
+			},
+		}),
+	}
+	rt, err := NewRuntime(cfg, nil)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+	defer rt.Close()
+
+	router := rt.Snapshot()
+	left := router.vendors["openai"].client.Transport
+	right := router.vendors["compatible"].client.Transport
+	if left != right {
+		t.Fatalf("equivalent upstream settings should share transport: %p != %p", left, right)
+	}
+}
+
+func TestRuntimeRefreshKeysReusesTransport(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			"openai": {
+				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
+				LoadBalance: "round_robin",
+			},
+		}),
+	}
+	rt, err := NewRuntime(cfg, nil)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+	defer rt.Close()
+
+	before := rt.Snapshot().vendors["openai"].client.Transport
+	if err := rt.RefreshKeys(); err != nil {
+		t.Fatalf("refresh keys failed: %v", err)
+	}
+	after := rt.Snapshot().vendors["openai"].client.Transport
+	if before != after {
+		t.Fatalf("router refresh replaced transport: %p != %p", before, after)
+	}
+}
+
+func TestRuntimeSeparatesTransportsWhenUpstreamSettingsChange(t *testing.T) {
+	firstTimeout := 5 * time.Second
+	secondTimeout := 15 * time.Second
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: ":8092"},
+		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			"openai": {
+				Upstream: config.UpstreamConfig{
+					BaseURL:               "https://api.openai.com",
+					ResponseHeaderTimeout: &firstTimeout,
+				},
+				LoadBalance: "round_robin",
+			},
+		}),
+	}
+	rt, err := NewRuntime(cfg, nil)
+	if err != nil {
+		t.Fatalf("init runtime failed: %v", err)
+	}
+	defer rt.Close()
+
+	before := rt.Snapshot().vendors["openai"].client.Transport.(*http.Transport)
+	next, err := cfg.Clone()
+	if err != nil {
+		t.Fatalf("clone config failed: %v", err)
+	}
+	next.Vendors[0].Upstream.ResponseHeaderTimeout = &secondTimeout
+	if err := rt.Update(next); err != nil {
+		t.Fatalf("update runtime failed: %v", err)
+	}
+	after := rt.Snapshot().vendors["openai"].client.Transport.(*http.Transport)
+	if before == after {
+		t.Fatal("different response header timeouts must not share a transport")
+	}
+	if before.ResponseHeaderTimeout != firstTimeout || after.ResponseHeaderTimeout != secondTimeout {
+		t.Fatalf("transport timeouts = (%v, %v), want (%v, %v)", before.ResponseHeaderTimeout, after.ResponseHeaderTimeout, firstTimeout, secondTimeout)
+	}
+}
+
 func TestRouterSendsInterimProcessingBeforeDelayedFinalResponse(t *testing.T) {
 	release := make(chan struct{})
 	interimInterval := 10 * time.Millisecond

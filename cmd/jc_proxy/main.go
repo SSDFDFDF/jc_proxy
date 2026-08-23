@@ -74,6 +74,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("init gateway runtime failed: %v", err)
 	}
+	defer runtime.Close()
 	statsStore, ok := any(keyStore).(keystore.RuntimeStatsStore)
 	if !ok {
 		log.Fatalf("upstream key store does not support runtime stats persistence")

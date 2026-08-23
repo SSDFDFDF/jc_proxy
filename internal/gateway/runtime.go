@@ -21,12 +21,13 @@ type UpstreamKeyController interface {
 }
 
 type Runtime struct {
-	updateMu  sync.Mutex
-	router    atomic.Pointer[Router]
-	cfg       atomic.Pointer[config.Config]
-	keySource UpstreamKeySource
-	keyCtrl   UpstreamKeyController
-	stats     *runtimeStatsRegistry
+	updateMu   sync.Mutex
+	router     atomic.Pointer[Router]
+	cfg        atomic.Pointer[config.Config]
+	keySource  UpstreamKeySource
+	keyCtrl    UpstreamKeyController
+	stats      *runtimeStatsRegistry
+	transports *transportManager
 }
 
 func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, error) {
@@ -34,7 +35,7 @@ func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, erro
 	if err != nil {
 		return nil, err
 	}
-	rt := &Runtime{keySource: keySource, stats: newRuntimeStatsRegistry()}
+	rt := &Runtime{keySource: keySource, stats: newRuntimeStatsRegistry(), transports: newTransportManager()}
 	if ctrl, ok := keySource.(UpstreamKeyController); ok {
 		rt.keyCtrl = ctrl
 	}
@@ -44,6 +45,7 @@ func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, erro
 		return nil, err
 	}
 	rt.router.Store(r)
+	rt.transports.Retain(r.upstreamTransports())
 	return rt, nil
 }
 
@@ -72,6 +74,7 @@ func (rt *Runtime) Update(cfg *config.Config) error {
 	}
 	rt.router.Store(r)
 	rt.cfg.Store(cloned)
+	rt.transports.Retain(r.upstreamTransports())
 	return nil
 }
 
@@ -87,6 +90,13 @@ func (rt *Runtime) Snapshot() *Router {
 	return rt.router.Load()
 }
 
+func (rt *Runtime) Close() error {
+	if rt != nil {
+		rt.transports.CloseIdleConnections()
+	}
+	return nil
+}
+
 func (rt *Runtime) RecoverUpstreamKey(vendorID, key string) bool {
 	r := rt.router.Load()
 	if r == nil {
@@ -97,11 +107,11 @@ func (rt *Runtime) RecoverUpstreamKey(vendorID, key string) bool {
 
 func (rt *Runtime) buildRouter(cfg *config.Config) (*Router, error) {
 	if rt.keySource == nil {
-		return newRouterWithUpstreamKeyRecords(cfg, nil, rt.keyCtrl, rt.stats)
+		return newRouterWithUpstreamKeyRecords(cfg, nil, rt.keyCtrl, rt.stats, rt.transports)
 	}
 	keys, err := rt.keySource.ListAll()
 	if err != nil {
 		return nil, fmt.Errorf("load upstream keys: %w", err)
 	}
-	return newRouterWithUpstreamKeyRecords(cfg, keys, rt.keyCtrl, rt.stats)
+	return newRouterWithUpstreamKeyRecords(cfg, keys, rt.keyCtrl, rt.stats, rt.transports)
 }
