@@ -72,6 +72,8 @@ function App() {
           onDeleteKey={upstream.deleteUpstreamKey}
           onDeleteKeys={upstream.deleteUpstreamKeys}
           onSetRemark={upstream.setUpstreamKeyRemark}
+          onExportBackup={upstream.exportUpstreamKeysBackup}
+          onImportBackup={upstream.importUpstreamKeysBackup}
           onTestKey={(vendorID, key) => {
             sessionStorage.setItem('jc_proxy_test_key', key)
             config.selectVendor(vendorID)

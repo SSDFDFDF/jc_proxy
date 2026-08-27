@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { buttonClass, panelClass, parseKeysText } from '../app/utils'
 
@@ -198,6 +198,8 @@ export function KeyHubPage({
   onDeleteKeys,
   onSetRemark,
   onTestKey,
+  onExportBackup,
+  onImportBackup,
   vendorRows,
   runtimeStats,
   autoRefreshStats,
@@ -216,6 +218,11 @@ export function KeyHubPage({
   const [sortState, setSortState] = useState({ key: 'index', direction: 'asc' })
   const [selectedKeys, setSelectedKeys] = useState(new Set())
   const [remarkEditor, setRemarkEditor] = useState(null)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importBackup, setImportBackup] = useState(null)
+  const [importHint, setImportHint] = useState('')
+  const [importReport, setImportReport] = useState(null)
+  const fileInputRef = useRef(null)
 
   const allItems = upstreamKeysData.items?.[selectedKeyVendorID] || []
   const runtimeKeys = runtimeStats?.vendors?.[selectedKeyVendorID] || []
@@ -305,6 +312,10 @@ export function KeyHubPage({
     setShowAddModal(false)
     setModalHint('')
     setRemarkEditor(null)
+    setShowImportModal(false)
+    setImportBackup(null)
+    setImportHint('')
+    setImportReport(null)
   }, [selectedKeyVendorID])
 
   useEffect(() => {
@@ -410,6 +421,103 @@ export function KeyHubPage({
     setShowAddModal(false)
   }
 
+  /* ── Backup import preview ──
+   * Analyse a parsed backup against the live vendor set (from vendorRows, which
+   * is the union of configured vendors and any orphan key partitions). Vendors
+   * missing from the live set are flagged and their keys are excluded from the
+   * pending import set. This preview is recomputed whenever either the backup
+   * or the vendor list changes, so the operator sees the consequences before
+   * committing. */
+  const importAnalysis = useMemo(() => {
+    if (!importBackup) return null
+    const liveVendorIDs = new Set(vendorRows.map((row) => row.id).filter(Boolean))
+    const liveItems = upstreamKeysData.items || {}
+    const backupVendors = Array.isArray(importBackup.vendors) ? importBackup.vendors : []
+    const valid = []
+    const skipped = []
+    let totalKeys = 0
+    let validKeys = 0
+    for (const block of backupVendors) {
+      const vendorID = String(block?.vendor_id || '').trim()
+      const keys = Array.isArray(block?.keys) ? block.keys : []
+      totalKeys += keys.length
+      if (!vendorID) {
+        skipped.push({ vendor_id: '(空)', vendor_name: block?.vendor_name || '', count: keys.length, reason: '备份中缺少供应商 ID' })
+        continue
+      }
+      if (!liveVendorIDs.has(vendorID)) {
+        skipped.push({ vendor_id: vendorID, vendor_name: block?.vendor_name || vendorID, count: keys.length, reason: '供应商不存在，将跳过该供应商下全部 key' })
+        continue
+      }
+      const existing = new Set((liveItems[vendorID] || []).map((item) => item.key))
+      let newCount = 0
+      let dupCount = 0
+      for (const entry of keys) {
+        const key = String(entry?.key || '').trim()
+        if (!key) continue
+        if (existing.has(key)) dupCount += 1
+        else newCount += 1
+      }
+      validKeys += keys.length
+      valid.push({
+        vendor_id: vendorID,
+        vendor_name: block?.vendor_name || vendorID,
+        count: keys.length,
+        new_count: newCount,
+        dup_count: dupCount
+      })
+    }
+    return { valid, skipped, totalKeys, validKeys, schema: importBackup.schema, version: importBackup.version, exportedAt: importBackup.exported_at }
+  }, [importBackup, vendorRows, upstreamKeysData.items])
+
+  const handleBackupFile = (file) => {
+    setImportHint('')
+    setImportReport(null)
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || ''))
+        if (!Array.isArray(parsed?.vendors) || !parsed.vendors.length) {
+          setImportHint('备份文件无效：未找到 vendors 字段或为空。')
+          setImportBackup(null)
+          return
+        }
+        setImportBackup(parsed)
+      } catch (err) {
+        setImportHint(`解析备份失败：${String(err?.message || err)}`)
+        setImportBackup(null)
+      }
+    }
+    reader.onerror = () => {
+      setImportHint('读取文件失败，请重试。')
+      setImportBackup(null)
+    }
+    reader.readAsText(file)
+  }
+
+  const submitImportBackup = async () => {
+    if (!importBackup) {
+      setImportHint('请先选择备份文件。')
+      return
+    }
+    if (!importAnalysis?.valid.length) {
+      setImportHint('备份中不存在可导入的供应商，请先在系统中创建对应供应商。')
+      return
+    }
+    const skippedNames = importAnalysis.skipped.map((item) => item.vendor_name || item.vendor_id).join('、')
+    const msg = importAnalysis.skipped.length
+      ? `将导入 ${importAnalysis.valid.length} 个供应商，跳过 ${importAnalysis.skipped.length} 个不存在的供应商${skippedNames ? `（${skippedNames}）` : ''}。确认继续？`
+      : `将导入 ${importAnalysis.valid.length} 个供应商、共 ${importAnalysis.validKeys} 条密钥。确认继续？`
+    if (!window.confirm(msg)) return
+    const report = await onImportBackup?.(importBackup)
+    setImportReport(report || null)
+    if (report?.ok) {
+      setImportBackup(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
   const renderSortableHeader = (label, sortKey, alignClass = 'justify-start') => {
     const active = sortState.key === sortKey
     const indicator = active ? (sortState.direction === 'asc' ? '↑' : '↓') : '↕'
@@ -436,6 +544,34 @@ export function KeyHubPage({
         <div>
           <h3 className="section-title">密钥中心</h3>
           <p className="mt-1 text-xs text-[var(--text-muted)]">管理各供应商上游 API 密钥，监控运行状态与异常情况。</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className={buttonClass('ghost')}
+            disabled={busy}
+            onClick={() => onExportBackup?.()}
+            title="将全部供应商的上游密钥导出为 JSON 备份文件"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            全体导出
+          </button>
+          <button
+            className={buttonClass('ghost')}
+            disabled={busy}
+            onClick={() => { setShowImportModal(true); setImportHint(''); setImportReport(null); setImportBackup(null); if (fileInputRef.current) fileInputRef.current.value = '' }}
+            title="从备份文件导入密钥，不存在的供应商会跳过"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            导入备份
+          </button>
         </div>
       </div>
 
@@ -808,6 +944,140 @@ export function KeyHubPage({
                 const ok = await onSetRemark?.(remarkEditor.key, remarkEditor.value)
                 if (ok) setRemarkEditor(null)
               }}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Import Backup Modal ═══ */}
+      {showImportModal && (
+        <div className="modal-overlay animate-fade-in">
+          <div className="modal-panel animate-slide-in max-w-2xl">
+            <div className="modal-header">
+              <div>
+                <h3>导入密钥备份</h3>
+                <p>从全体导出的 JSON 备份恢复密钥。不存在的供应商会被跳过，不会自动创建。</p>
+              </div>
+              <button className="modal-close" onClick={() => setShowImportModal(false)}>✕</button>
+            </div>
+            <div className="modal-body space-y-4">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={(e) => handleBackupFile(e.target.files?.[0])}
+              />
+              {importHint && (
+                <div className="rounded-lg border border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.05)] px-3 py-2 text-xs text-[var(--danger)]">
+                  {importHint}
+                </div>
+              )}
+              {importAnalysis && (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] p-3 text-xs">
+                    <div className="flex flex-wrap gap-x-6 gap-y-1">
+                      <span>备份总计：<strong className="font-mono text-[var(--text-secondary)]">{importAnalysis.totalKeys}</strong> 条</span>
+                      <span>可导入供应商：<strong className="font-mono text-[var(--success)]">{importAnalysis.valid.length}</strong></span>
+                      <span className={importAnalysis.skipped.length ? 'text-[var(--warning)]' : ''}>跳过供应商：<strong className="font-mono">{importAnalysis.skipped.length}</strong></span>
+                    </div>
+                  </div>
+
+                  {importAnalysis.valid.length > 0 && (
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-[var(--text-secondary)]">可导入的供应商</div>
+                      <div className="table-shell">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr>
+                              <th className="text-left">供应商</th>
+                              <th className="text-right">备份</th>
+                              <th className="text-right">新增</th>
+                              <th className="text-right">已存在</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importAnalysis.valid.map((row) => (
+                              <tr key={row.vendor_id}>
+                                <td>
+                                  <div className="font-medium text-[var(--text-primary)]">{row.vendor_name}</div>
+                                  <div className="font-mono text-[10px] text-[var(--text-faint)]">{row.vendor_id}</div>
+                                </td>
+                                <td className="text-right font-mono">{row.count}</td>
+                                <td className="text-right font-mono text-[var(--success)]">{row.new_count}</td>
+                                <td className="text-right font-mono text-[var(--text-muted)]">{row.dup_count}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {importAnalysis.skipped.length > 0 && (
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-[var(--warning)]">将跳过的供应商（系统中不存在）</div>
+                      <div className="table-shell">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr>
+                              <th className="text-left">供应商</th>
+                              <th className="text-right">跳过 key</th>
+                              <th>原因</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importAnalysis.skipped.map((row) => (
+                              <tr key={`${row.vendor_id}-skipped`} className="text-[var(--text-muted)]">
+                                <td>
+                                  <div className="font-medium">{row.vendor_name}</div>
+                                  <div className="font-mono text-[10px] text-[var(--text-faint)]">{row.vendor_id}</div>
+                                </td>
+                                <td className="text-right font-mono">{row.count}</td>
+                                <td className="text-[var(--warning)]">{row.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {importReport && (
+                <div className={`rounded-lg border px-3 py-2 text-xs ${importReport.ok ? 'border-[rgba(34,197,94,0.3)] bg-[var(--success-soft)] text-[var(--success)]' : 'border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.05)] text-[var(--danger)]'}`}>
+                  <div className="font-medium">
+                    {importReport.ok
+                      ? `导入完成：新增 ${importReport.totalAdded} 条，跳过 ${importReport.totalSkipped} 条`
+                      : `导入失败：${importReport.fatalError || '未知错误'}`}
+                  </div>
+                  {importReport.vendors?.length > 0 && (
+                    <ul className="mt-1 list-inside list-disc space-y-0.5 text-[11px] opacity-90">
+                      {importReport.vendors.map((row) => (
+                        <li key={row.vendor_id}>
+                          {row.vendor_id}：新增 {row.added} · 备注 {row.remarks} · 禁用 {row.disabled}
+                          {row.failed ? ` · 失败: ${row.failed}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {importReport.skippedVendors?.length > 0 && (
+                    <div className="mt-1 text-[11px] opacity-80">
+                      跳过的供应商：{importReport.skippedVendors.map((item) => item.vendor_name || item.vendor_id).join('、')}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className={buttonClass()} onClick={() => setShowImportModal(false)}>关闭</button>
+              <button
+                className={buttonClass('primary')}
+                disabled={busy || !importBackup || !importAnalysis?.valid.length}
+                onClick={submitImportBackup}
+              >
+                确认导入
+              </button>
             </div>
           </div>
         </div>

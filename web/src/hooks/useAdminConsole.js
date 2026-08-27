@@ -761,6 +761,217 @@ export function useAdminConsole() {
     }
   }
 
+  // Export every upstream key (all vendors) as a self-contained JSON backup.
+  // The backup is intentionally pure-data: it stores the immutable vendor id, the
+  // current display name (for human readers), and each key's plaintext plus
+  // remark/status/disable_reason. Runtime counters and timestamps are excluded
+  // because they are meaningless on another deployment.
+  const exportUpstreamKeysBackup = async () => {
+    setBusy(true)
+    try {
+      // Re-fetch the freshest data so the backup reflects the current store,
+      // not whatever the UI happens to have cached.
+      const fresh = await api('/admin/upstream-keys')
+      const freshConfig = await api('/admin/config/raw')
+      const vendors = fresh?.vendors || []
+      const items = fresh?.items || {}
+      const nameByID = new Map()
+      for (const entry of vendorList(freshConfig)) {
+        if (entry?.id) nameByID.set(entry.id, entry.name || entry.id)
+      }
+      const exportedVendors = []
+      for (const summary of vendors) {
+        const vendorID = summary.vendor_id
+        const records = items[vendorID] || []
+        if (!records.length) continue
+        exportedVendors.push({
+          vendor_id: vendorID,
+          vendor_name: nameByID.get(vendorID) || summary.vendor || vendorID,
+          keys: records.map((record) => ({
+            key: record.key,
+            remark: record.remark || '',
+            status: record.status || 'active',
+            disable_reason: record.disable_reason || ''
+          }))
+        })
+      }
+      const payload = {
+        schema: 'jc_proxy.upstream_keys.backup',
+        version: 1,
+        exported_at: new Date().toISOString(),
+        storage: fresh?.storage || null,
+        vendors: exportedVendors
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `jc_proxy_upstream_keys_backup_${stamp}.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      const total = exportedVendors.reduce((sum, item) => sum + item.keys.length, 0)
+      setStatus('success', `已导出 ${exportedVendors.length} 个供应商、共 ${total} 条密钥`)
+      return true
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Import a backup produced by exportUpstreamKeysBackup. Only vendors that
+  // still exist in the target config are touched; keys for unknown vendors are
+  // skipped and reported. For each surviving vendor we add the keys that do not
+  // exist yet, then restore their remark / status so a backup taken before a
+  // key was disabled is faithfully re-applied. Returns a structured report so
+  // the caller can show a per-vendor breakdown in the UI.
+  const importUpstreamKeysBackup = async (backup) => {
+    const rawBackup = backup || {}
+    const backupVendors = Array.isArray(rawBackup.vendors) ? rawBackup.vendors : []
+    if (!backupVendors.length) {
+      setStatus('warn', '备份文件中没有可导入的供应商密钥')
+      return { ok: false, skippedVendors: [], vendors: [], totalAdded: 0, totalSkipped: 0 }
+    }
+    // Resolve the live vendor set from the freshest config, not the cached
+    // state, so vendors created after the last refresh are recognised too.
+    let liveConfig
+    setBusy(true)
+    try {
+      liveConfig = await api('/admin/config/raw')
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+      setBusy(false)
+      return { ok: false, skippedVendors: [], vendors: [], totalAdded: 0, totalSkipped: 0 }
+    }
+    const liveVendorIDs = new Set(vendorList(liveConfig).map((entry) => entry?.id).filter(Boolean))
+    const report = {
+      ok: true,
+      skippedVendors: [],
+      vendors: [],
+      totalAdded: 0,
+      totalSkipped: 0
+    }
+    try {
+      for (const vendorBlock of backupVendors) {
+        const vendorID = String(vendorBlock.vendor_id || '').trim()
+        const backupKeys = Array.isArray(vendorBlock.keys) ? vendorBlock.keys : []
+        if (!vendorID || !backupKeys.length) continue
+        if (!liveVendorIDs.has(vendorID)) {
+          report.skippedVendors.push({
+            vendor_id: vendorID,
+            vendor_name: vendorBlock.vendor_name || vendorID,
+            count: backupKeys.length,
+            reason: '供应商不存在'
+          })
+          report.totalSkipped += backupKeys.length
+          continue
+        }
+        // 1) Add every key from the backup. The server silently skips keys
+        //    that already exist, so duplicates are safe.
+        const keysToAdd = normalizeKeys(backupKeys.map((item) => String(item?.key || '').trim()))
+        let added = 0
+        if (keysToAdd.length) {
+          try {
+            await api(`/admin/upstream-keys/${encodeURIComponent(vendorID)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ keys: keysToAdd })
+            })
+            added = keysToAdd.length
+          } catch (err) {
+            // If the bulk add fails, surface it but keep going so other
+            // vendors in the backup are not lost.
+            report.vendors.push({
+              vendor_id: vendorID,
+              added: 0,
+              remarks: 0,
+              disabled: 0,
+              enabled: 0,
+              failed: String(err?.message || err)
+            })
+            report.totalSkipped += keysToAdd.length
+            continue
+          }
+        }
+        // 2) Restore remark and disabled_manual status. We deliberately do
+        //    not re-create disabled_auto, because that status is set by the
+        //    runtime in response to live traffic and should not be faked.
+        let remarksApplied = 0
+        let disabledApplied = 0
+        let enabledApplied = 0
+        for (const entry of backupKeys) {
+          const key = String(entry?.key || '').trim()
+          if (!key) continue
+          const remark = String(entry?.remark || '').trim()
+          const status = String(entry?.status || 'active').trim()
+          if (remark) {
+            try {
+              await api(`/admin/upstream-keys/${encodeURIComponent(vendorID)}/remark`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key, remark })
+              })
+              remarksApplied += 1
+            } catch (err) {
+              // Remark failures are non-fatal; the key is already added.
+            }
+          }
+          if (status === 'disabled_manual') {
+            const reason = String(entry?.disable_reason || 'imported from backup').trim()
+            try {
+              await api(`/admin/upstream-keys/${encodeURIComponent(vendorID)}/disable`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keys: [key], reason })
+              })
+              disabledApplied += 1
+            } catch (err) {
+              // ignore: key stays active, which is a safe superset
+            }
+          } else if (status === 'active') {
+            try {
+              await api(`/admin/upstream-keys/${encodeURIComponent(vendorID)}/enable`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keys: [key] })
+              })
+              enabledApplied += 1
+            } catch (err) {
+              // ignore: freshly added keys are already active
+            }
+          }
+        }
+        report.vendors.push({
+          vendor_id: vendorID,
+          added,
+          remarks: remarksApplied,
+          disabled: disabledApplied,
+          enabled: enabledApplied,
+          failed: ''
+        })
+        report.totalAdded += added
+      }
+      await refreshAll(selectedVendorID, selectedKeyVendorID || selectedVendorID)
+      const parts = []
+      parts.push(`已导入 ${report.totalAdded} 条密钥`)
+      if (report.totalSkipped > 0) parts.push(`跳过 ${report.totalSkipped} 条（供应商不存在）`)
+      if (report.vendors.length) parts.push(`覆盖 ${report.vendors.length} 个供应商`)
+      setStatus('success', parts.join(' · '))
+      return report
+    } catch (err) {
+      setStatus('error', String(err?.message || err))
+      report.ok = false
+      report.fatalError = String(err?.message || err)
+      return report
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const saveSystem = async () => {
     setBusy(true)
     try {
@@ -1053,7 +1264,9 @@ export function useAdminConsole() {
       recoverUpstreamKeys,
       deleteUpstreamKey,
       deleteUpstreamKeys,
-      setUpstreamKeyRemark
+      setUpstreamKeyRemark,
+      exportUpstreamKeysBackup,
+      importUpstreamKeysBackup
     },
     statsView: {
       stats,
