@@ -161,6 +161,10 @@ export function emptyVendorConfig() {
         request_error: true,
         max_attempts: 5,
         response_status_codes: []
+      },
+      masking: {
+        enabled: true,
+        rules: []
       }
     },
     resin: { enabled: false, url: '', platform: 'Default', mode: 'reverse' }
@@ -239,6 +243,16 @@ export function withVendorDefaults(vendor) {
         response_status_codes: Array.isArray(next.error_policy?.failover?.response_status_codes)
           ? [...next.error_policy.failover.response_status_codes]
           : [...base.error_policy.failover.response_status_codes]
+      },
+      masking: {
+        enabled: next.error_policy?.masking?.enabled ?? base.error_policy.masking.enabled,
+        rules: Array.isArray(next.error_policy?.masking?.rules)
+          ? next.error_policy.masking.rules.map((rule) => ({
+              ...rule,
+              status_codes: Array.isArray(rule?.status_codes) ? [...rule.status_codes] : [],
+              keywords: Array.isArray(rule?.keywords) ? [...rule.keywords] : []
+            }))
+          : [...base.error_policy.masking.rules]
       }
     },
     resin: { ...base.resin, ...(next.resin || {}) }

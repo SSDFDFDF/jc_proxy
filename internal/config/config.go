@@ -192,6 +192,7 @@ type ErrorPolicyConfig struct {
 	AutoDisable ErrorAutoDisableConfig `yaml:"auto_disable" json:"auto_disable"`
 	Cooldown    ErrorCooldownConfig    `yaml:"cooldown" json:"cooldown"`
 	Failover    ErrorFailoverConfig    `yaml:"failover" json:"failover"`
+	Masking     ErrorMaskingConfig     `yaml:"masking" json:"masking"`
 }
 
 type ErrorAutoDisableConfig struct {
@@ -235,6 +236,45 @@ type ErrorFailoverConfig struct {
 	ServerError         *bool `yaml:"server_error" json:"server_error"`
 	ResponseStatusCodes []int `yaml:"response_status_codes,omitempty" json:"response_status_codes,omitempty"`
 	MaxAttempts         int   `yaml:"max_attempts" json:"max_attempts"`
+}
+
+// ErrorMaskingConfig defines error masking: matched upstream error responses
+// (and gateway-synthesized upstream failures) are replaced with a uniform
+// synthetic response before they reach the client. Masking is
+// presentation-only for the client; key health decisions (auto-disable,
+// cooldown, failover) still run on the real upstream response.
+type ErrorMaskingConfig struct {
+	Enabled *bool              `yaml:"enabled" json:"enabled"`
+	Rules   []ErrorMaskingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// ErrorMaskingRule matches upstream errors the same way cooldown
+// response_rules do (status codes and/or body keywords, first match wins) and
+// prescribes the replacement the client sees instead.
+type ErrorMaskingRule struct {
+	// Matching. At least one of StatusCodes / Keywords must be non-empty.
+	// Both set means both must match.
+	StatusCodes []int    `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
+	Keywords    []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
+
+	// Replacement response delivered to the client. StatusCode is required
+	// and must be an error status (400-599) so masking can never turn an
+	// error into a fake success.
+	StatusCode  int    `yaml:"status_code" json:"status_code"`
+	Body        string `yaml:"body,omitempty" json:"body,omitempty"`                 // exact replacement body; overrides Message
+	Message     string `yaml:"message,omitempty" json:"message,omitempty"`           // default JSON body: {"error":{"message":...,"type":"gateway_error"}}
+	ContentType string `yaml:"content_type,omitempty" json:"content_type,omitempty"` // default application/json
+
+	// RetryAfter controls the Retry-After header of the masked response:
+	//   "" / "preserve" (default) - forward the upstream Retry-After value when present
+	//   "ignore"                 - never set Retry-After
+	//   a duration like "30s"     - set a synthetic Retry-After (>= 1s)
+	RetryAfter string `yaml:"retry_after,omitempty" json:"retry_after,omitempty"`
+
+	// Cooldown optionally puts the upstream key into backoff for this
+	// duration when the rule matches. It extends the classified backoff (the
+	// longer of the two wins) and never downgrades a disable decision.
+	Cooldown time.Duration `yaml:"cooldown,omitempty" json:"cooldown,omitempty"`
 }
 
 type ResinConfig struct {
@@ -1059,6 +1099,10 @@ func applyErrorPolicyDefaults(policy *ErrorPolicyConfig) {
 	if policy.Failover.MaxAttempts <= 0 {
 		policy.Failover.MaxAttempts = 5
 	}
+
+	if policy.Masking.Enabled == nil {
+		policy.Masking.Enabled = boolPtr(true)
+	}
 }
 
 func applyCooldownRuleDefaults(rule *ErrorCooldownRule, duration time.Duration) {
@@ -1128,7 +1172,7 @@ func validateErrorPolicy(policy ErrorPolicyConfig) error {
 	if err := validateStatusCodes("failover.response_status_codes", policy.Failover.ResponseStatusCodes); err != nil {
 		return err
 	}
-	return nil
+	return validateErrorMaskingRules(policy.Masking)
 }
 
 func validateCooldownRule(name string, rule ErrorCooldownRule) error {
@@ -1176,6 +1220,49 @@ func validateResponseCooldownRules(rules []ErrorResponseCooldownRule) error {
 		default:
 			return fmt.Errorf("%s.retry_after must be one of ignore, override, max", name)
 		}
+	}
+	return nil
+}
+
+func validateErrorMaskingRules(masking ErrorMaskingConfig) error {
+	if !boolValue(masking.Enabled, true) {
+		return nil
+	}
+	for i, rule := range masking.Rules {
+		name := fmt.Sprintf("masking.rules[%d]", i)
+		if len(rule.StatusCodes) == 0 && !hasNonEmptyString(rule.Keywords) {
+			return fmt.Errorf("%s must define status_codes or keywords", name)
+		}
+		if err := validateStatusCodes(name+".status_codes", rule.StatusCodes); err != nil {
+			return err
+		}
+		// Masking replaces an error response; the replacement must stay an
+		// error so a rule can never fake a success or inject a redirect.
+		if rule.StatusCode < http.StatusBadRequest || rule.StatusCode > 599 {
+			return fmt.Errorf("%s.status_code must be an error status between 400 and 599", name)
+		}
+		if rule.Cooldown < 0 {
+			return fmt.Errorf("%s.cooldown must be >= 0", name)
+		}
+		if err := validateMaskingRetryAfter(name+".retry_after", rule.RetryAfter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateMaskingRetryAfter(name, raw string) error {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
+	case "", "preserve", "ignore":
+		return nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf(`%s must be "preserve", "ignore", or a duration like "30s"`, name)
+	}
+	if d < time.Second {
+		return fmt.Errorf("%s duration must be >= 1s", name)
 	}
 	return nil
 }

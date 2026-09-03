@@ -120,6 +120,35 @@ vendors:
         request_error: true
         max_attempts: 5
         response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
+      # 错误屏蔽：命中规则的上游错误响应（以及网关自产的上游失败错误，如 502
+      # "upstream request failed"、503 "all vendor keys in cooldown or disabled"）
+      # 在下发客户端前被统一替换，隐藏上游真实状态码、响应头与错误体。
+      # 匹配语义与 cooldown.response_rules 相同（status_codes / keywords，
+      # 先配置先命中）；key 健康决策（禁用/退避/故障转移）仍基于真实响应。
+      masking:
+        enabled: true
+        rules:
+          # 例：上游 405 统一替换为 429，并让 key 退避 45s
+          - status_codes: [405]
+            status_code: 429
+            # 可选：自定义响应体，不配则默认 {"error":{"message":...,"type":"gateway_error"}}
+            # body: '{"error":{"message":"rate limited"}}'
+            # 可选：message 填入默认 JSON 响应体的 message 字段
+            # message: "rate limited, retry later"
+            # 可选：响应 Content-Type，默认 application/json
+            # content_type: "application/json"
+            # 可选：Retry-After 处理：preserve（默认，透传上游值）/ ignore / 固定时长如 "30s"
+            retry_after: "30s"
+            # 可选：命中时将 key 退避该时长（与分类退避取较长者，不会降级禁用决策）
+            cooldown: 45s
+          # 例：按关键字屏蔽（隐藏上游敏感错误详情），统一替换为 500
+          - keywords: ["hard limited", "internal error"]
+            status_code: 500
+          # 例：status_codes + keywords 同时命中才生效
+          - status_codes: [400]
+            keywords: ["sensitive keyword"]
+            status_code: 418
+            retry_after: "ignore"
     resin:
       enabled: true
       url: "http://127.0.0.1:2260/my-token"

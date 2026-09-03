@@ -449,7 +449,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		}
 		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs)
 		if proxyErr != nil {
-			writeHTTPError(w, interim, proxyErr.message, proxyErr.statusCode)
+			writeMaskableGatewayError(w, interim, vg, proxyErr.message, proxyErr.statusCode)
 			return vendorRequestDone
 		}
 		if attempt == nil {
@@ -486,8 +486,9 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 				return vendorRequestRetryAggregateChild
 			}
 			// No upstream response exists to forward, so a gateway error is the
-			// only honest answer here.
-			writeHTTPError(w, interim, "upstream request failed", http.StatusBadGateway)
+			// only honest answer here. Masking rules can still normalize what the
+			// client sees (e.g. 502 -> 500).
+			writeMaskableGatewayError(w, interim, vg, "upstream request failed", http.StatusBadGateway)
 			return vendorRequestDone
 		}
 
@@ -528,11 +529,23 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			}
 			// The response body could not be read, so there is nothing to
 			// forward downstream.
-			writeHTTPError(w, interim, "upstream request failed", http.StatusBadGateway)
+			writeMaskableGatewayError(w, interim, vg, "upstream request failed", http.StatusBadGateway)
 			return upstreamResponseDone
 		}
 
 		decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview)
+		// Masking is evaluated on the real upstream response but only applied
+		// at delivery time: failover still runs first, and key health decisions
+		// still see the true status code and body.
+		maskRule, maskMatched := matchUpstreamErrorMask(vg.errorPolicy, resp.StatusCode, resp.Header, preview)
+		if maskMatched {
+			decision = extendDecisionCooldown(decision, maskRule)
+		}
+		deliverMasked := func() {
+			drainMaskedUpstreamBody(bodyReader)
+			_ = resp.Body.Close()
+			writeMaskedResponse(w, interim, buildMaskedResponse(maskRule, resp.Header.Get("Retry-After")))
+		}
 		if bodySource.canRetryResponse(resp.StatusCode, decision) {
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
 			if vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
@@ -543,10 +556,15 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 				_ = resp.Body.Close()
 				return upstreamResponseRetryAggregateChild
 			}
-			// Out of keys, attempts or budget: forward the upstream response we
-			// already hold. Synthesizing a 502 here would discard the real
-			// status and its Retry-After, which is exactly the signal a
-			// rate-limited client needs.
+			// Out of keys, attempts or budget: deliver the outcome we already
+			// hold. A masking rule replaces the client-visible error with a
+			// uniform response; otherwise the upstream response is forwarded
+			// verbatim because its real status and Retry-After are exactly the
+			// signal a rate-limited client needs.
+			if maskMatched {
+				deliverMasked()
+				return upstreamResponseDone
+			}
 			if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true, interim); errors.Is(err, errAbortDownstreamResponse) {
 				panic(http.ErrAbortHandler)
 			}
@@ -557,6 +575,14 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
 			_ = resp.Body.Close()
 			return upstreamResponseRetryAggregateChild
+		}
+		if maskMatched {
+			// The masked body is synthesized, so the key decision is applied
+			// here; writeUpstreamResponse would otherwise apply it once the
+			// real body finished relaying.
+			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
+			deliverMasked()
+			return upstreamResponseDone
 		}
 		if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false, interim); errors.Is(err, errAbortDownstreamResponse) {
 			panic(http.ErrAbortHandler)

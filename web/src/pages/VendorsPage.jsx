@@ -34,6 +34,19 @@ function countConfiguredResponseRules(rows) {
   )).length
 }
 
+function countConfiguredMaskingRules(rows) {
+  return (rows || []).filter((row) => (
+    String(row?.statusCodesText || '').trim() ||
+    String(row?.keywordsText || '').trim() ||
+    String(row?.statusCodeText || '').trim() ||
+    String(row?.bodyText || '').trim() ||
+    String(row?.messageText || '').trim() ||
+    String(row?.contentTypeText || '').trim() ||
+    String(row?.retryAfterText || '').trim() ||
+    String(row?.cooldownText || '').trim()
+  )).length
+}
+
 function CollapsibleSection({
   title,
   description,
@@ -86,6 +99,7 @@ export function VendorsPage({
   invalidKeyStatusCodesText,
   invalidKeyKeywordsText,
   responseRuleRows,
+  maskingRuleRows,
   failoverResponseStatusCodesText,
   aggregateRetryStatusCodesText,
   upstreamResponseHeaderTimeoutText,
@@ -108,6 +122,7 @@ export function VendorsPage({
   onInvalidKeyStatusCodesTextChange,
   onInvalidKeyKeywordsTextChange,
   setResponseRuleRows,
+  setMaskingRuleRows,
   onFailoverResponseStatusCodesTextChange,
   onAggregateRetryStatusCodesTextChange,
   onUpstreamResponseHeaderTimeoutTextChange,
@@ -132,6 +147,7 @@ export function VendorsPage({
   const allowlistCount = countTextItems(allowlistText)
   const dropHeadersCount = countTextItems(dropHeadersText)
   const responseRuleCount = countConfiguredResponseRules(responseRuleRows)
+  const maskingRuleCount = countConfiguredMaskingRules(maskingRuleRows)
   const injectHeaderCount = countFilledRows(injectRows, ['key', 'value'])
   const rewriteRuleCount = countFilledRows(rewriteRows, ['key', 'value'])
 
@@ -241,6 +257,43 @@ export function VendorsPage({
     setResponseRuleRows((prev) => {
       const next = (prev || []).filter((_, idx) => idx !== index)
       return next.length ? next : [{ statusCodesText: '', keywordsText: '', durationText: '', retryAfter: '' }]
+    })
+  }
+
+  const updateMaskingRuleRow = (index, patch) => {
+    setMaskingRuleRows((prev) => {
+      const next = clone(prev || [])
+      next[index] = { ...next[index], ...patch }
+      return next
+    })
+  }
+
+  const addMaskingRuleRow = () => {
+    setMaskingRuleRows((prev) => [...(prev || []), {
+      statusCodesText: '',
+      keywordsText: '',
+      statusCodeText: '',
+      bodyText: '',
+      messageText: '',
+      contentTypeText: '',
+      retryAfterText: '',
+      cooldownText: ''
+    }])
+  }
+
+  const removeMaskingRuleRow = (index) => {
+    setMaskingRuleRows((prev) => {
+      const next = (prev || []).filter((_, idx) => idx !== index)
+      return next.length ? next : [{
+        statusCodesText: '',
+        keywordsText: '',
+        statusCodeText: '',
+        bodyText: '',
+        messageText: '',
+        contentTypeText: '',
+        retryAfterText: '',
+        cooldownText: ''
+      }]
     })
   }
 
@@ -972,8 +1025,8 @@ export function VendorsPage({
             {!isAggregate && (<>
             <CollapsibleSection
               title="错误适配"
-              description="无效密钥检测、退避规则和请求切换统一配置。"
-              summary={`${responseRuleCount} 条退避规则`}
+              description="无效密钥检测、退避规则、错误屏蔽和请求切换统一配置。"
+              summary={`${responseRuleCount} 条退避规则 · ${maskingRuleCount} 条屏蔽规则`}
               open={expandedSections.errorPolicy}
               onToggle={() => toggleSection('errorPolicy')}
             >
@@ -1091,6 +1144,124 @@ export function VendorsPage({
                             <option value="override">override</option>
                             <option value="max">max</option>
                           </select>
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="section-card">
+                <div className="section-card-header">
+                  <div>
+                    <h4>错误屏蔽</h4>
+                    <p>命中规则的上游错误（响应码 / 关键字，先配先中）在下发客户端前统一替换，隐藏上游真实状态码、响应头与错误体；可顺带把密钥退避指定时长。密钥健康统计仍记录真实上游状态。</p>
+                  </div>
+                  <div className="field-inline">
+                    <span className="field-label">屏蔽开关</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft?.error_policy?.masking?.enabled === false ? 'false' : 'true'}
+                      onChange={(e) => onMutateVendorDraft((draft) => {
+                        if (!draft.error_policy.masking) draft.error_policy.masking = { enabled: true, rules: [] }
+                        draft.error_policy.masking.enabled = e.target.value === 'true'
+                      })}
+                    >
+                      <option value="true">开启</option>
+                      <option value="false">关闭</option>
+                    </select>
+                  </div>
+                  <button className={buttonClass('ghost')} onClick={addMaskingRuleRow}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    新增规则
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {maskingRuleRows.map((row, index) => (
+                    <div key={index} className="section-card" style={{ background: 'var(--bg-surface)' }}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-[var(--text-muted)]">规则 {index + 1}</span>
+                        <button className={buttonClass('danger')} onClick={() => removeMaskingRuleRow(index)}>删除</button>
+                      </div>
+                      <div className="grid gap-3 xl:grid-cols-3">
+                        <label className="field-wrap">
+                          <span className="field-label">匹配响应码</span>
+                          <input
+                            className="input-base"
+                            placeholder="逗号分隔，例如：405"
+                            value={row.statusCodesText}
+                            onChange={(e) => updateMaskingRuleRow(index, { statusCodesText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">匹配关键字</span>
+                          <input
+                            className="input-base"
+                            placeholder="逗号分隔，可留空，例如：hard limited"
+                            value={row.keywordsText}
+                            onChange={(e) => updateMaskingRuleRow(index, { keywordsText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">替换状态码（400-599）</span>
+                          <input
+                            className="input-base"
+                            placeholder="例如：429 或 500"
+                            value={row.statusCodeText}
+                            onChange={(e) => updateMaskingRuleRow(index, { statusCodeText: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <div className="grid gap-3 xl:grid-cols-2">
+                        <label className="field-wrap">
+                          <span className="field-label">响应体（可选，优先生效）</span>
+                          <input
+                            className="input-base"
+                            placeholder='自定义完整响应体，例如：{"error":"rate limited"}'
+                            value={row.bodyText}
+                            onChange={(e) => updateMaskingRuleRow(index, { bodyText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">消息（可选，填入默认 JSON 响应体）</span>
+                          <input
+                            className="input-base"
+                            placeholder="留空则用替换状态码的默认文案"
+                            value={row.messageText}
+                            onChange={(e) => updateMaskingRuleRow(index, { messageText: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <div className="grid gap-3 xl:grid-cols-3">
+                        <label className="field-wrap">
+                          <span className="field-label">Content-Type（可选）</span>
+                          <input
+                            className="input-base"
+                            placeholder="默认 application/json"
+                            value={row.contentTypeText}
+                            onChange={(e) => updateMaskingRuleRow(index, { contentTypeText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">Retry-After（可选）</span>
+                          <input
+                            className="input-base"
+                            placeholder="默认透传上游值；ignore 或 30s"
+                            value={row.retryAfterText}
+                            onChange={(e) => updateMaskingRuleRow(index, { retryAfterText: e.target.value })}
+                          />
+                        </label>
+                        <label className="field-wrap">
+                          <span className="field-label">密钥退避时长（可选）</span>
+                          <input
+                            className="input-base"
+                            placeholder="例如 45s / 5m，留空不退避"
+                            value={row.cooldownText}
+                            onChange={(e) => updateMaskingRuleRow(index, { cooldownText: e.target.value })}
+                          />
                         </label>
                       </div>
                     </div>

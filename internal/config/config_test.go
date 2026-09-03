@@ -283,6 +283,12 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 	if len(policy.Failover.ResponseStatusCodes) != 0 {
 		t.Fatalf("len(ErrorPolicy.Failover.ResponseStatusCodes) = %d, want 0", len(policy.Failover.ResponseStatusCodes))
 	}
+	if policy.Masking.Enabled == nil || !*policy.Masking.Enabled {
+		t.Fatalf("ErrorPolicy.Masking.Enabled = %#v, want true by default", policy.Masking.Enabled)
+	}
+	if len(policy.Masking.Rules) != 0 {
+		t.Fatalf("len(ErrorPolicy.Masking.Rules) = %d, want 0", len(policy.Masking.Rules))
+	}
 }
 
 func TestLoadBytesSupportsCustomErrorPolicyRules(t *testing.T) {
@@ -371,6 +377,182 @@ vendors:
 	}
 	if !strings.Contains(err.Error(), "invalid status code") {
 		t.Fatalf("LoadBytes() error = %v, want invalid status code", err)
+	}
+}
+
+// TestExampleConfigStaysLoadable guards the shipped config.example.yaml
+// (including the documented error_policy.masking section) against drift: if
+// the example stops parsing or fails validation, documentation is lying about
+// what the binary accepts.
+func TestExampleConfigStaysLoadable(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("read config.example.yaml: %v", err)
+	}
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes(config.example.yaml) failed: %v", err)
+	}
+	vendor, ok := cfg.VendorByName("openai")
+	if !ok {
+		t.Fatal("openai vendor missing from config.example.yaml")
+	}
+	if vendor.ErrorPolicy.Masking.Enabled == nil || !*vendor.ErrorPolicy.Masking.Enabled {
+		t.Fatalf("openai masking.Enabled = %#v, want true", vendor.ErrorPolicy.Masking.Enabled)
+	}
+	if len(vendor.ErrorPolicy.Masking.Rules) == 0 {
+		t.Fatal("config.example.yaml documents no masking rules")
+	}
+	first := vendor.ErrorPolicy.Masking.Rules[0]
+	if len(first.StatusCodes) != 1 || first.StatusCodes[0] != http.StatusMethodNotAllowed || first.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("first documented masking rule = %#v, want 405 -> 429", first)
+	}
+}
+
+func TestLoadBytesSupportsErrorMaskingRules(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+schema_version: 2
+server:
+  listen: ":8092"
+
+storage:
+  config:
+    driver: "file"
+  upstream_keys:
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+
+vendors:
+  - id: "vid_openai"
+    name: "openai"
+    upstream:
+      base_url: "https://api.openai.com"
+    error_policy:
+      masking:
+        rules:
+          - status_codes: [405]
+            status_code: 429
+            retry_after: "30s"
+            cooldown: 45s
+          - keywords: ["hard limited"]
+            status_code: 500
+            body: "upstream rejected"
+            content_type: "text/plain"
+          - status_codes: [400]
+            keywords: ["sensitive"]
+            status_code: 418
+            message: "custom masked message"
+            retry_after: "ignore"
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes() error = %v", err)
+	}
+
+	masking := mustVendor(t, cfg, "openai").ErrorPolicy.Masking
+	if masking.Enabled == nil || !*masking.Enabled {
+		t.Fatalf("Masking.Enabled = %#v, want true default materialized", masking.Enabled)
+	}
+	if len(masking.Rules) != 3 {
+		t.Fatalf("len(masking.rules) = %d, want 3", len(masking.Rules))
+	}
+	first := masking.Rules[0]
+	if len(first.StatusCodes) != 1 || first.StatusCodes[0] != 405 || first.StatusCode != 429 {
+		t.Fatalf("first rule = %#v", first)
+	}
+	if first.RetryAfter != "30s" || first.Cooldown != 45*time.Second {
+		t.Fatalf("first rule retry_after/cooldown = %q/%v", first.RetryAfter, first.Cooldown)
+	}
+	second := masking.Rules[1]
+	if len(second.Keywords) != 1 || second.Keywords[0] != "hard limited" || second.StatusCode != 500 || second.Body != "upstream rejected" || second.ContentType != "text/plain" {
+		t.Fatalf("second rule = %#v", second)
+	}
+	third := masking.Rules[2]
+	if len(third.StatusCodes) != 1 || len(third.Keywords) != 1 || third.Message != "custom masked message" || third.RetryAfter != "ignore" {
+		t.Fatalf("third rule = %#v", third)
+	}
+}
+
+func TestLoadBytesRejectsInvalidErrorMaskingRules(t *testing.T) {
+	base := func(rules string) string {
+		return `
+schema_version: 2
+server:
+  listen: ":8092"
+
+storage:
+  config:
+    driver: "file"
+  upstream_keys:
+    driver: "file"
+    file_path: "./data/upstream_keys.json"
+
+vendors:
+  - id: "vid_openai"
+    name: "openai"
+    upstream:
+      base_url: "https://api.openai.com"
+    error_policy:
+      masking:
+        rules:
+` + rules
+	}
+
+	cases := []struct {
+		name  string
+		rules string
+		want  string
+	}{
+		{
+			"rule without match criteria",
+			"          - status_code: 500\n",
+			"must define status_codes or keywords",
+		},
+		{
+			"invalid match status code",
+			"          - status_codes: [700]\n            status_code: 500\n",
+			"invalid status code",
+		},
+		{
+			"success replacement status",
+			"          - status_codes: [405]\n            status_code: 200\n",
+			"between 400 and 599",
+		},
+		{
+			"replacement status below range",
+			"          - status_codes: [405]\n            status_code: 302\n",
+			"between 400 and 599",
+		},
+		{
+			"replacement status missing range",
+			"          - status_codes: [405]\n            status_code: 600\n",
+			"between 400 and 599",
+		},
+		{
+			"unknown retry_after mode",
+			"          - status_codes: [405]\n            status_code: 500\n            retry_after: \"sometimes\"\n",
+			"must be \"preserve\", \"ignore\", or a duration",
+		},
+		{
+			"retry_after duration below one second",
+			"          - status_codes: [405]\n            status_code: 500\n            retry_after: \"500ms\"\n",
+			">= 1s",
+		},
+		{
+			"negative cooldown",
+			"          - status_codes: [405]\n            status_code: 500\n            cooldown: -5s\n",
+			">= 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadBytes([]byte(base(tc.rules)))
+			if err == nil {
+				t.Fatal("LoadBytes() error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadBytes() error = %v, want it to contain %q", err, tc.want)
+			}
+		})
 	}
 }
 

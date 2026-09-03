@@ -53,6 +53,19 @@ function emptyResponseRuleRow() {
   }
 }
 
+function emptyMaskingRuleRow() {
+  return {
+    statusCodesText: '',
+    keywordsText: '',
+    statusCodeText: '',
+    bodyText: '',
+    messageText: '',
+    contentTypeText: '',
+    retryAfterText: '',
+    cooldownText: ''
+  }
+}
+
 function buildResponseRuleRows(policy) {
   const rows = (policy?.cooldown?.response_rules || []).map((rule) => ({
     statusCodesText: statusCodesToText(rule?.status_codes || []),
@@ -95,6 +108,90 @@ function parseResponseRuleRows(rows) {
       duration
     }
     if (retryAfter) next.retry_after = retryAfter
+    out.push(next)
+  }
+  return out
+}
+
+function buildMaskingRuleRows(policy) {
+  const rows = (policy?.masking?.rules || []).map((rule) => ({
+    statusCodesText: statusCodesToText(rule?.status_codes || []),
+    keywordsText: listToText(rule?.keywords || []),
+    statusCodeText: rule?.status_code ? String(rule.status_code) : '',
+    bodyText: String(rule?.body || ''),
+    messageText: String(rule?.message || ''),
+    contentTypeText: String(rule?.content_type || ''),
+    retryAfterText: String(rule?.retry_after || '').trim(),
+    cooldownText: rule?.cooldown ? nsToText(rule.cooldown) : ''
+  }))
+  return rows.length ? rows : [emptyMaskingRuleRow()]
+}
+
+// parseMaskingRuleRows mirrors the gateway's masking semantics: match by
+// status codes and/or keywords, replace with an error status (400-599).
+// retry_after accepts empty (preserve), "ignore", or a fixed duration >= 1s.
+function parseMaskingRuleRows(rows) {
+  const out = []
+  for (const [index, row] of (rows || []).entries()) {
+    const statusCodesText = String(row?.statusCodesText || '').trim()
+    const keywordsText = String(row?.keywordsText || '').trim()
+    const statusCodeText = String(row?.statusCodeText || '').trim()
+    const bodyText = String(row?.bodyText || '')
+    const messageText = String(row?.messageText || '').trim()
+    const contentTypeText = String(row?.contentTypeText || '').trim()
+    const retryAfterText = String(row?.retryAfterText || '').trim()
+    const cooldownText = String(row?.cooldownText || '').trim()
+    if (
+      !statusCodesText && !keywordsText && !statusCodeText &&
+      !bodyText.trim() && !messageText && !contentTypeText &&
+      !retryAfterText && !cooldownText
+    ) {
+      continue
+    }
+
+    const statusCodes = parseStatusCodesText(statusCodesText)
+    const keywords = textToList(keywordsText)
+    if (!statusCodes.length && !keywords.length) {
+      throw new Error(`屏蔽规则第 ${index + 1} 行至少填写响应码或关键字`)
+    }
+
+    if (!/^\d+$/.test(statusCodeText)) {
+      throw new Error(`屏蔽规则第 ${index + 1} 行需填写替换状态码（数字）`)
+    }
+    const statusCode = Number(statusCodeText)
+    if (statusCode < 400 || statusCode > 599) {
+      throw new Error(`屏蔽规则第 ${index + 1} 行替换状态码必须在 400-599 之间`)
+    }
+
+    let retryAfter = ''
+    if (retryAfterText && retryAfterText !== 'ignore' && retryAfterText !== 'preserve') {
+      const ns = parseDurationToNs(retryAfterText, 0)
+      if (!ns || ns < 1_000_000_000) {
+        throw new Error(`屏蔽规则第 ${index + 1} 行 Retry-After 需为 ignore、preserve 或 >= 1s 的时长（如 30s）`)
+      }
+      retryAfter = retryAfterText
+    } else if (retryAfterText === 'ignore' || retryAfterText === 'preserve') {
+      retryAfter = retryAfterText
+    }
+
+    let cooldown = 0
+    if (cooldownText) {
+      cooldown = parseDurationToNs(cooldownText, 0)
+      if (cooldown < 0) {
+        throw new Error(`屏蔽规则第 ${index + 1} 行退避时长不能为负`)
+      }
+    }
+
+    const next = {
+      status_codes: statusCodes,
+      keywords,
+      status_code: statusCode
+    }
+    if (bodyText.trim()) next.body = bodyText
+    if (messageText) next.message = messageText
+    if (contentTypeText) next.content_type = contentTypeText
+    if (retryAfter) next.retry_after = retryAfter
+    if (cooldown > 0) next.cooldown = cooldown
     out.push(next)
   }
   return out
@@ -181,6 +278,7 @@ export function useAdminConsole() {
   const [invalidKeyStatusCodesText, setInvalidKeyStatusCodesText] = useState('')
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
+  const [maskingRuleRows, setMaskingRuleRows] = useState(buildMaskingRuleRows(buildNewVendorConfig('').error_policy))
   const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
   const [aggregateRetryStatusCodesText, setAggregateRetryStatusCodesText] = useState('')
   const [upstreamResponseHeaderTimeoutText, setUpstreamResponseHeaderTimeoutText] = useState('300s')
@@ -268,6 +366,7 @@ export function useAdminConsole() {
       setInvalidKeyStatusCodesText('')
       setInvalidKeyKeywordsText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
+      setMaskingRuleRows(buildMaskingRuleRows(buildNewVendorConfig('').error_policy))
       setFailoverResponseStatusCodesText('')
       setAggregateRetryStatusCodesText('')
       setUpstreamResponseHeaderTimeoutText('300s')
@@ -286,6 +385,7 @@ export function useAdminConsole() {
     setInvalidKeyStatusCodesText(statusCodesToText(draft.error_policy?.auto_disable?.invalid_key_status_codes || []))
     setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
+    setMaskingRuleRows(buildMaskingRuleRows(draft.error_policy))
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
     setAggregateRetryStatusCodesText(statusCodesToText(draft.aggregate?.retry?.status_codes || []))
     setUpstreamResponseHeaderTimeoutText(nsToText(draft.upstream?.response_header_timeout || 0))
@@ -446,6 +546,10 @@ export function useAdminConsole() {
       next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
       next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
       next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
+      next.error_policy.masking = {
+        enabled: next.error_policy?.masking?.enabled ?? true,
+        rules: parseMaskingRuleRows(maskingRuleRows)
+      }
       next.error_policy.failover.response_status_codes = parseStatusCodesText(failoverResponseStatusCodesText)
       if (next.provider === 'aggregate') {
         if (!next.aggregate) next.aggregate = { children: [] }
@@ -1212,6 +1316,7 @@ export function useAdminConsole() {
       invalidKeyStatusCodesText,
       invalidKeyKeywordsText,
       responseRuleRows,
+      maskingRuleRows,
       failoverResponseStatusCodesText,
       aggregateRetryStatusCodesText,
       upstreamResponseHeaderTimeoutText,
@@ -1227,6 +1332,7 @@ export function useAdminConsole() {
       setInvalidKeyStatusCodesText,
       setInvalidKeyKeywordsText,
       setResponseRuleRows,
+      setMaskingRuleRows,
       setFailoverResponseStatusCodesText,
       setAggregateRetryStatusCodesText,
       setUpstreamResponseHeaderTimeoutText,

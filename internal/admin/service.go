@@ -293,6 +293,13 @@ func mergeErrorPolicyForAdminUpsert(prev, next config.ErrorPolicyConfig) config.
 	next.Failover.RateLimit = mergeBoolPtrForAdminUpsert(prev.Failover.RateLimit, next.Failover.RateLimit)
 	next.Failover.ServerError = mergeBoolPtrForAdminUpsert(prev.Failover.ServerError, next.Failover.ServerError)
 
+	// Masking is editable in the console, so an explicit payload wins. The
+	// preservation branch remains as a safety net for API clients (and older
+	// console builds) whose payload carries no masking state at all.
+	if next.Masking.Enabled == nil && len(next.Masking.Rules) == 0 {
+		next.Masking = prev.Masking
+	}
+
 	return next
 }
 

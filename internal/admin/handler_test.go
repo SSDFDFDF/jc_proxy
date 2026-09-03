@@ -92,7 +92,6 @@ func TestAdminEndpoints(t *testing.T) {
 	h := makeHandlerForTest(t)
 	mux := http.NewServeMux()
 	h.Register(mux)
-
 	token := loginAdminToken(t, mux)
 
 	cases := []string{"/admin/me", "/admin/config", "/admin/stats", "/admin/vendors"}
@@ -459,5 +458,103 @@ func TestAdminLoginRateLimitedAndAudited(t *testing.T) {
 	}
 	if !strings.Contains(text, `"action":"admin.login.rate_limited"`) {
 		t.Fatalf("audit log missing rate limited login entry: %s", text)
+	}
+}
+
+// TestAdminVendorUpdateCarriesErrorMasking drives the exact console payload
+// shape (PUT /admin/vendors/{id} with a config JSON that contains
+// error_policy.masking) through the real HTTP handler, then reads the config
+// back and verifies the masking rules survived the round trip. This is the
+// contract the rebuilt console UI depends on.
+func TestAdminVendorUpdateCarriesErrorMasking(t *testing.T) {
+	h := makeHandlerForTest(t)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	token := loginAdminToken(t, mux)
+
+	// 1) Fetch the current config to learn the vendor id.
+	rr := httptest.NewRecorder()
+	req := makeLoopbackRequest(http.MethodGet, "/admin/config/raw", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get raw config failed: %d %s", rr.Code, rr.Body.String())
+	}
+	var raw struct {
+		Vendors []config.VendorEntry `json:"vendors"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Vendors) == 0 {
+		t.Fatal("no vendors in config")
+	}
+	vendorID := raw.Vendors[0].ID
+
+	// 2) PUT the console payload: full vendor config with masking rules.
+	updated := raw.Vendors[0].VendorConfig
+	updated.ErrorPolicy.Masking = config.ErrorMaskingConfig{
+		Enabled: testBoolPtr(true),
+		Rules: []config.ErrorMaskingRule{
+			{
+				StatusCodes: []int{http.StatusMethodNotAllowed},
+				StatusCode:  http.StatusTooManyRequests,
+				RetryAfter:  "30s",
+				Cooldown:    45 * time.Second,
+			},
+			{
+				Keywords:   []string{"hard limited"},
+				StatusCode: http.StatusInternalServerError,
+				RetryAfter: "ignore",
+			},
+		},
+	}
+	body, _ := json.Marshal(map[string]any{"config": updated})
+	rr = httptest.NewRecorder()
+	req = makeLoopbackRequest(http.MethodPut, "/admin/vendors/"+vendorID, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update vendor failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// 3) Read the config back and verify the masking rules round-tripped.
+	rr = httptest.NewRecorder()
+	req = makeLoopbackRequest(http.MethodGet, "/admin/config/raw", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get raw config after update failed: %d %s", rr.Code, rr.Body.String())
+	}
+	raw = struct {
+		Vendors []config.VendorEntry `json:"vendors"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var stored *config.ErrorMaskingConfig
+	for _, entry := range raw.Vendors {
+		if entry.ID == vendorID {
+			stored = &entry.ErrorPolicy.Masking
+		}
+	}
+	if stored == nil {
+		t.Fatal("vendor missing after update")
+	}
+	if stored.Enabled == nil || !*stored.Enabled {
+		t.Fatalf("masking.enabled = %#v, want true", stored.Enabled)
+	}
+	if len(stored.Rules) != 2 {
+		t.Fatalf("masking rules = %#v, want 2", stored.Rules)
+	}
+	first := stored.Rules[0]
+	if len(first.StatusCodes) != 1 || first.StatusCodes[0] != http.StatusMethodNotAllowed ||
+		first.StatusCode != http.StatusTooManyRequests || first.RetryAfter != "30s" || first.Cooldown != 45*time.Second {
+		t.Fatalf("first masking rule = %#v", first)
+	}
+	second := stored.Rules[1]
+	if len(second.Keywords) != 1 || second.Keywords[0] != "hard limited" || second.StatusCode != http.StatusInternalServerError || second.RetryAfter != "ignore" {
+		t.Fatalf("second masking rule = %#v", second)
 	}
 }

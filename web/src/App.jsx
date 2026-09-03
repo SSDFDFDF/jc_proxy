@@ -104,6 +104,7 @@ function App() {
           invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           responseRuleRows={config.responseRuleRows}
+          maskingRuleRows={config.maskingRuleRows}
           failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
           aggregateRetryStatusCodesText={config.aggregateRetryStatusCodesText}
           upstreamResponseHeaderTimeoutText={config.upstreamResponseHeaderTimeoutText}
@@ -126,6 +127,7 @@ function App() {
           onInvalidKeyStatusCodesTextChange={config.setInvalidKeyStatusCodesText}
           onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
           setResponseRuleRows={config.setResponseRuleRows}
+          setMaskingRuleRows={config.setMaskingRuleRows}
           onFailoverResponseStatusCodesTextChange={config.setFailoverResponseStatusCodesText}
           onAggregateRetryStatusCodesTextChange={config.setAggregateRetryStatusCodesText}
           onUpstreamResponseHeaderTimeoutTextChange={config.setUpstreamResponseHeaderTimeoutText}

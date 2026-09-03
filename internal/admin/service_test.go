@@ -196,6 +196,11 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 			RateLimit:    testBoolPtr(false),
 			ServerError:  testBoolPtr(false),
 		},
+		Masking: config.ErrorMaskingConfig{
+			Rules: []config.ErrorMaskingRule{
+				{StatusCodes: []int{http.StatusMethodNotAllowed}, StatusCode: http.StatusTooManyRequests, Cooldown: 45 * time.Second},
+			},
+		},
 	}
 	mutateVendorForTest(t, cfg, "openai", func(vc *config.VendorConfig) { *vc = currentVC })
 	if err := s.UpdateConfig("admin", cfg); err != nil {
@@ -204,6 +209,9 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 
 	update := currentVC
 	update.LoadBalance = "least_used"
+	// The console editor does not surface masking; an update payload without
+	// masking state must not wipe the configured rules.
+	update.ErrorPolicy.Masking = config.ErrorMaskingConfig{}
 	update.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
 			InvalidKey:            testBoolPtr(false),
@@ -263,6 +271,45 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	}
 	if len(got.ErrorPolicy.Cooldown.ResponseRules) != 1 || got.ErrorPolicy.Cooldown.ResponseRules[0].StatusCodes[0] != http.StatusTeapot {
 		t.Fatalf("Cooldown.ResponseRules = %#v, want updated visible rule", got.ErrorPolicy.Cooldown.ResponseRules)
+	}
+	if len(got.ErrorPolicy.Masking.Rules) != 1 {
+		t.Fatalf("Masking.Rules = %#v, want preserved masking rule", got.ErrorPolicy.Masking.Rules)
+	}
+	rule := got.ErrorPolicy.Masking.Rules[0]
+	if len(rule.StatusCodes) != 1 || rule.StatusCodes[0] != http.StatusMethodNotAllowed || rule.StatusCode != http.StatusTooManyRequests || rule.Cooldown != 45*time.Second {
+		t.Fatalf("Masking.Rules[0] = %#v, want 405->429 rule with 45s cooldown", rule)
+	}
+
+	// The console editor now surfaces masking, so a payload that explicitly
+	// carries masking state must replace the previous rules instead of being
+	// silently merged back to the stored ones.
+	withMasking := got.VendorConfig
+	withMasking.ErrorPolicy.Masking = config.ErrorMaskingConfig{
+		Enabled: testBoolPtr(true),
+		Rules: []config.ErrorMaskingRule{
+			{Keywords: []string{"hard limited"}, StatusCode: http.StatusInternalServerError, RetryAfter: "ignore"},
+		},
+	}
+	if err := s.UpdateVendor("admin", openaiID, withMasking); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err = s.store.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok = reloaded.VendorByID(openaiID)
+	if !ok {
+		t.Fatal("vendor missing after masking update")
+	}
+	if got.ErrorPolicy.Masking.Enabled == nil || !*got.ErrorPolicy.Masking.Enabled {
+		t.Fatalf("Masking.Enabled = %#v, want true", got.ErrorPolicy.Masking.Enabled)
+	}
+	if len(got.ErrorPolicy.Masking.Rules) != 1 {
+		t.Fatalf("Masking.Rules = %#v, want exactly the updated rule", got.ErrorPolicy.Masking.Rules)
+	}
+	updated := got.ErrorPolicy.Masking.Rules[0]
+	if len(updated.Keywords) != 1 || updated.Keywords[0] != "hard limited" || updated.StatusCode != http.StatusInternalServerError || updated.RetryAfter != "ignore" {
+		t.Fatalf("updated masking rule = %#v, want keyword hard limited -> 500 with retry_after ignore", updated)
 	}
 }
 
