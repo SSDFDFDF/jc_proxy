@@ -271,6 +271,12 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 	if !boolValue(policy.AutoDisable.InvalidKey, false) {
 		t.Fatal("ErrorPolicy.AutoDisable.InvalidKey = false, want true")
 	}
+	if boolValue(policy.AutoDisable.PaymentRequired, true) {
+		t.Fatal("ErrorPolicy.AutoDisable.PaymentRequired = true, want false by default")
+	}
+	if boolValue(policy.AutoDisable.QuotaExhausted, true) {
+		t.Fatal("ErrorPolicy.AutoDisable.QuotaExhausted = true, want false by default")
+	}
 	if !boolValue(policy.Cooldown.RequestError.Enabled, false) || policy.Cooldown.RequestError.Duration != 2*time.Second {
 		t.Fatalf("request_error cooldown = (%v, %v)", boolValue(policy.Cooldown.RequestError.Enabled, false), policy.Cooldown.RequestError.Duration)
 	}

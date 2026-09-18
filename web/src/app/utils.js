@@ -151,7 +151,9 @@ export function emptyVendorConfig() {
       auto_disable: {
         invalid_key: true,
         invalid_key_status_codes: [],
-        invalid_key_keywords: []
+        invalid_key_keywords: [],
+        payment_required: false,
+        quota_exhausted: false
       },
       cooldown: {
         no_default_backoff: false,
@@ -216,6 +218,8 @@ export function withVendorDefaults(vendor) {
     error_policy: {
       auto_disable: {
         invalid_key: next.error_policy?.auto_disable?.invalid_key ?? base.error_policy.auto_disable.invalid_key,
+        payment_required: next.error_policy?.auto_disable?.payment_required ?? base.error_policy.auto_disable.payment_required,
+        quota_exhausted: next.error_policy?.auto_disable?.quota_exhausted ?? base.error_policy.auto_disable.quota_exhausted,
         invalid_key_status_codes: Array.isArray(next.error_policy?.auto_disable?.invalid_key_status_codes)
           ? [...next.error_policy.auto_disable.invalid_key_status_codes]
           : [...base.error_policy.auto_disable.invalid_key_status_codes],

@@ -74,19 +74,8 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), reasonBody)
 	responseFailover := shouldFailoverResponse(statusCode, policy)
 
-	if shouldAutoDisableInvalidKey(provider, policy.AutoDisable, statusCode, body) {
-		return disableDecision(statusCode, compactReason("auto disabled: invalid key", reasonBody), responseFailover)
-	}
-
-	switch statusCode {
-	case http.StatusPaymentRequired:
-		if boolOrDefault(policy.AutoDisable.PaymentRequired, true) {
-			return disableDecision(statusCode, compactReason("auto disabled: billing or quota exhausted", reasonBody), responseFailover)
-		}
-	case http.StatusTooManyRequests:
-		if isQuotaExhausted(provider, body) && boolOrDefault(policy.AutoDisable.QuotaExhausted, true) {
-			return disableDecision(statusCode, compactReason("auto disabled: quota exhausted", reasonBody), responseFailover)
-		}
+	if shouldDisable, autoReason := classifyAutoDisable(provider, policy.AutoDisable, statusCode, body); shouldDisable {
+		return disableDecision(statusCode, compactReason("auto disabled: "+autoReason, reasonBody), responseFailover)
 	}
 
 	if rule, ok := matchResponseCooldownRule(statusCode, body, policy.Cooldown.ResponseRules); ok {
@@ -194,14 +183,30 @@ func boolOrDefault(v *bool, fallback bool) bool {
 	return *v
 }
 
-func shouldAutoDisableInvalidKey(provider string, auto config.ErrorAutoDisableConfig, statusCode int, body string) bool {
-	if !boolOrDefault(auto.InvalidKey, true) {
-		return false
-	}
+func classifyAutoDisable(provider string, auto config.ErrorAutoDisableConfig, statusCode int, body string) (bool, string) {
+	// 1. Custom status codes and keywords
 	if len(auto.InvalidKeyStatusCodes) > 0 || hasNonEmptyPattern(auto.InvalidKeyKeywords) {
-		return containsStatusCode(auto.InvalidKeyStatusCodes, statusCode) || containsAnyKeyword(body, auto.InvalidKeyKeywords)
+		if containsStatusCode(auto.InvalidKeyStatusCodes, statusCode) || containsAnyKeyword(body, auto.InvalidKeyKeywords) {
+			return true, "invalid key"
+		}
 	}
-	return statusCode == http.StatusUnauthorized && isInvalidKey(provider, body)
+
+	// 2. Built-in Invalid Key (HTTP 401)
+	if boolOrDefault(auto.InvalidKey, true) && statusCode == http.StatusUnauthorized && isInvalidKey(provider, body) {
+		return true, "invalid key"
+	}
+
+	// 3. Built-in Payment Required (HTTP 402)
+	if boolOrDefault(auto.PaymentRequired, false) && statusCode == http.StatusPaymentRequired {
+		return true, "billing or quota exhausted"
+	}
+
+	// 4. Built-in Quota Exhausted (HTTP 429)
+	if boolOrDefault(auto.QuotaExhausted, false) && statusCode == http.StatusTooManyRequests && isQuotaExhausted(provider, body) {
+		return true, "quota exhausted"
+	}
+
+	return false, ""
 }
 
 func shouldFailoverResponse(statusCode int, policy config.ErrorPolicyConfig) bool {

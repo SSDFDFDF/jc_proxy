@@ -94,6 +94,7 @@ code, .font-mono {
 .shell-layout {
   width: 100%;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   overflow: hidden;
   background: var(--bg-base);
@@ -356,6 +357,12 @@ code, .font-mono {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* 移动端抽屉导航控件，默认隐藏，仅 ≤1024px 启用 */
+.header-menu-btn,
+.sidebar-backdrop {
+  display: none;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1130,6 +1137,7 @@ code, .font-mono {
    ═══════════════════════════════════════════════════ */
 .login-bg {
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
   display: flex;
   align-items: center;
@@ -1326,23 +1334,112 @@ code, .font-mono {
 /* ═══════════════════════════════════════════════════
    Responsive
    ═══════════════════════════════════════════════════ */
+/* 平板及以下：侧边栏转为抽屉导航 */
 @media (max-width: 1024px) {
+  .header-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .header-menu-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
   .shell-sidebar {
-    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 60;
+    width: min(280px, 84vw);
+    transform: translateX(-105%);
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+  }
+
+  .shell-sidebar-open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .sidebar-backdrop-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* 堆叠布局下限制供应商列表高度，避免把主内容推得太远 */
+  .vendor-list {
+    max-height: 40vh;
+    overflow-y: auto;
   }
 }
 
+/* 手机：压缩留白与次要信息 */
 @media (max-width: 768px) {
   .shell-content {
     padding: 16px;
+    gap: 16px;
+  }
+
+  .header-top {
+    padding: 0 16px;
+  }
+
+  .header-meta {
+    display: none;
   }
 
   .page-title {
     font-size: 15px;
   }
 
-  .btn {
-    width: 100%;
+  .stat-card {
+    padding: 16px;
+  }
+
+  /* 防止 iOS Safari 聚焦小字号输入框自动放大页面 */
+  .input-base,
+  .select-base,
+  .textarea-base {
+    font-size: 16px;
+  }
+
+  .table-shell th,
+  .table-shell td {
+    padding: 8px 10px;
+  }
+
+  .pagination-btn {
+    height: 32px;
+  }
+
+  .modal-overlay {
+    padding: 12px;
+  }
+
+  .modal-footer {
+    flex-wrap: wrap;
   }
 }
 

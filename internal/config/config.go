@@ -1064,10 +1064,10 @@ func applyErrorPolicyDefaults(policy *ErrorPolicyConfig) {
 		policy.AutoDisable.InvalidKey = boolPtr(true)
 	}
 	if policy.AutoDisable.PaymentRequired == nil {
-		policy.AutoDisable.PaymentRequired = boolPtr(true)
+		policy.AutoDisable.PaymentRequired = boolPtr(false)
 	}
 	if policy.AutoDisable.QuotaExhausted == nil {
-		policy.AutoDisable.QuotaExhausted = boolPtr(true)
+		policy.AutoDisable.QuotaExhausted = boolPtr(false)
 	}
 
 	applyCooldownRuleDefaults(&policy.Cooldown.RequestError, 2*time.Second)

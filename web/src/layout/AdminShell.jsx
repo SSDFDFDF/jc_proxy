@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 import { buttonClass, formatClock, panelClass, storageSummary, tokenPreview } from '../app/utils'
 import logoImg from '../../logo/logo.png'
 
@@ -71,10 +73,34 @@ export function AdminShell({
   onLogout,
   children
 }) {
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  // 移动端抽屉导航打开时，支持 Escape 关闭
+  useEffect(() => {
+    if (!drawerOpen) return undefined
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [drawerOpen])
+
+  const handleNavChange = (id) => {
+    onNavChange(id)
+    setDrawerOpen(false)
+  }
+
   return (
     <div className="shell-layout">
+      {/* 移动端抽屉遮罩 */}
+      <div
+        className={`sidebar-backdrop ${drawerOpen ? 'sidebar-backdrop-open' : ''}`}
+        aria-hidden="true"
+        onClick={() => setDrawerOpen(false)}
+      />
+
       {/* Sidebar */}
-      <aside className="shell-sidebar">
+      <aside className={`shell-sidebar ${drawerOpen ? 'shell-sidebar-open' : ''}`}>
         <div className="sidebar-header">
           <img src={logoImg} alt="JCProxy" className="sidebar-logo" />
           <h1 className="sidebar-brand-title">JCProxy</h1>
@@ -85,7 +111,7 @@ export function AdminShell({
             <button
               key={item.id}
               className={`nav-item ${nav === item.id ? 'nav-item-active' : ''}`}
-              onClick={() => onNavChange(item.id)}
+              onClick={() => handleNavChange(item.id)}
             >
               <span className="nav-item-icon">{NAV_ICONS[item.icon] || null}</span>
               <span className="nav-item-label">{item.label}</span>
@@ -99,10 +125,10 @@ export function AdminShell({
             <span className="sidebar-sync">{formatClock(lastSyncAt)}</span>
           </div>
           <div className="sidebar-footer-actions">
-            <button className="sidebar-footer-btn sidebar-footer-btn--sync" disabled={busy} onClick={onRefreshAll}>
+            <button className="sidebar-footer-btn sidebar-footer-btn--sync" disabled={busy} onClick={() => { setDrawerOpen(false); onRefreshAll() }}>
               同步配置
             </button>
-            <button className="sidebar-footer-btn sidebar-footer-btn--logout" disabled={busy} onClick={onLogout}>
+            <button className="sidebar-footer-btn sidebar-footer-btn--logout" disabled={busy} onClick={() => { setDrawerOpen(false); onLogout() }}>
               退出登录
             </button>
           </div>
@@ -112,7 +138,16 @@ export function AdminShell({
       {/* Main Workspace */}
       <main className="shell-main">
         <header className="header-top">
-          <div className="page-title">{currentPageMeta.title}</div>
+          <div className="flex min-w-0 items-center gap-3">
+            <button type="button" className="header-menu-btn" aria-label="打开导航菜单" onClick={() => setDrawerOpen(true)}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+            <div className="page-title truncate">{currentPageMeta.title}</div>
+          </div>
           
           <div className="header-actions">
             <div className="header-meta">

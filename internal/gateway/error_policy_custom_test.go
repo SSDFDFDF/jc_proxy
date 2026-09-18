@@ -275,3 +275,110 @@ func TestRouterUsesCustomFailoverResponseCodesWithoutCooldown(t *testing.T) {
 		t.Fatalf("first key last_status = %#v, want 430", got)
 	}
 }
+
+func TestClassifyResponsePaymentRequiredDefaultsToCooldownWithoutAutoDisable(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	body := []byte(`{"error":{"message":"Billing issue or payment required","code":"insufficient_quota"}}`)
+
+	// 1. When ErrorPolicyConfig is completely empty (no explicit auto-disable configuration)
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{
+		Cooldown: config.ErrorCooldownConfig{
+			PaymentRequired: config.ErrorCooldownRule{Duration: 3 * time.Hour},
+		},
+	}, http.StatusPaymentRequired, headers, body)
+
+	if decision.action != keyActionCooldown {
+		t.Fatalf("decision.action = %q, want %q (should enter cooldown instead of auto-disabling)", decision.action, keyActionCooldown)
+	}
+	if decision.statusCode != http.StatusPaymentRequired {
+		t.Fatalf("decision.statusCode = %d, want 402", decision.statusCode)
+	}
+	if decision.cooldown != 3*time.Hour {
+		t.Fatalf("decision.cooldown = %v, want 3h", decision.cooldown)
+	}
+
+	// 2. When PaymentRequired is explicitly false
+	disabled := false
+	decisionFalse := classifyResponse("openai", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			PaymentRequired: &disabled,
+		},
+		Cooldown: config.ErrorCooldownConfig{
+			PaymentRequired: config.ErrorCooldownRule{Duration: 30 * time.Minute},
+		},
+	}, http.StatusPaymentRequired, headers, body)
+
+	if decisionFalse.action != keyActionCooldown {
+		t.Fatalf("decisionFalse.action = %q, want %q", decisionFalse.action, keyActionCooldown)
+	}
+	if decisionFalse.cooldown != 30*time.Minute {
+		t.Fatalf("decisionFalse.cooldown = %v, want 30m", decisionFalse.cooldown)
+	}
+}
+
+func TestClassifyResponsePaymentRequiredExplicitTrueAutoDisables(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	body := []byte(`{"error":{"message":"You exceeded your current quota"}}`)
+
+	enabled := true
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			PaymentRequired: &enabled,
+		},
+	}, http.StatusPaymentRequired, headers, body)
+
+	if decision.action != keyActionDisable {
+		t.Fatalf("decision.action = %q, want %q", decision.action, keyActionDisable)
+	}
+	if decision.statusCode != http.StatusPaymentRequired {
+		t.Fatalf("decision.statusCode = %d, want 402", decision.statusCode)
+	}
+	if !strings.Contains(decision.reason, "auto disabled: billing or quota exhausted") {
+		t.Fatalf("decision.reason = %q, want auto disabled marker", decision.reason)
+	}
+}
+
+func TestClassifyResponseQuotaExhaustedDefaultsToRateLimitCooldown(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	body := []byte(`{"error":{"message":"insufficient_quota: you exceeded your current quota","type":"insufficient_quota"}}`)
+
+	// When QuotaExhausted is not configured (nil), it should NOT auto-disable on 429 quota exhaustion
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{
+		Cooldown: config.ErrorCooldownConfig{
+			RateLimit: config.ErrorCooldownRule{Duration: 5 * time.Second},
+		},
+	}, http.StatusTooManyRequests, headers, body)
+
+	if decision.action != keyActionCooldown {
+		t.Fatalf("decision.action = %q, want %q (should fall back to rate limit cooldown)", decision.action, keyActionCooldown)
+	}
+	if decision.statusCode != http.StatusTooManyRequests {
+		t.Fatalf("decision.statusCode = %d, want 429", decision.statusCode)
+	}
+}
+
+func TestClassifyResponseQuotaExhaustedExplicitTrueAutoDisables(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	body := []byte(`{"error":{"message":"insufficient_quota: you exceeded your current quota","type":"insufficient_quota"}}`)
+
+	enabled := true
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			QuotaExhausted: &enabled,
+		},
+	}, http.StatusTooManyRequests, headers, body)
+
+	if decision.action != keyActionDisable {
+		t.Fatalf("decision.action = %q, want %q", decision.action, keyActionDisable)
+	}
+	if decision.statusCode != http.StatusTooManyRequests {
+		t.Fatalf("decision.statusCode = %d, want 429", decision.statusCode)
+	}
+	if !strings.Contains(decision.reason, "auto disabled: quota exhausted") {
+		t.Fatalf("decision.reason = %q, want quota exhausted marker", decision.reason)
+	}
+}

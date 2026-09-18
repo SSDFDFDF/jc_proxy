@@ -267,15 +267,16 @@ func (s *Service) RenameVendor(actor, vendorID, newName string) error {
 	return nil
 }
 
-// The admin vendor editor currently only surfaces part of error_policy.
-// Preserve hidden sub-fields on update so opening the console and saving
-// does not silently reset runtime behavior configured elsewhere.
+// The admin vendor editor surfaces parts of error_policy including auto_disable.
+// Preserve un-submitted sub-fields on update so partial API payloads
+// do not silently reset runtime behavior configured elsewhere.
 func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.VendorConfig {
 	next.ErrorPolicy = mergeErrorPolicyForAdminUpsert(prev.ErrorPolicy, next.ErrorPolicy)
 	return next
 }
 
 func mergeErrorPolicyForAdminUpsert(prev, next config.ErrorPolicyConfig) config.ErrorPolicyConfig {
+	next.AutoDisable.InvalidKey = mergeBoolPtrForAdminUpsert(prev.AutoDisable.InvalidKey, next.AutoDisable.InvalidKey)
 	next.AutoDisable.PaymentRequired = mergeBoolPtrForAdminUpsert(prev.AutoDisable.PaymentRequired, next.AutoDisable.PaymentRequired)
 	next.AutoDisable.QuotaExhausted = mergeBoolPtrForAdminUpsert(prev.AutoDisable.QuotaExhausted, next.AutoDisable.QuotaExhausted)
 
