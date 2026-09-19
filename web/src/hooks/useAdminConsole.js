@@ -381,9 +381,10 @@ export function useAdminConsole() {
     }
     const draft = withVendorDefaults(entry)
     setVendorDraft(draft)
-    setRenameDraft(entry.name || '')
-    setInvalidKeyStatusCodesText(statusCodesToText(draft.error_policy?.auto_disable?.invalid_key_status_codes || []))
-    setInvalidKeyKeywordsText(listToText(draft.error_policy?.auto_disable?.invalid_key_keywords || []))
+    const currentCodes = draft.error_policy?.auto_disable?.status_codes || []
+    const currentKeywords = draft.error_policy?.auto_disable?.keywords || []
+    setInvalidKeyStatusCodesText(statusCodesToText(currentCodes))
+    setInvalidKeyKeywordsText(listToText(currentKeywords))
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
     setMaskingRuleRows(buildMaskingRuleRows(draft.error_policy))
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
@@ -543,8 +544,10 @@ export function useAdminConsole() {
       next.upstream.response_header_timeout = parseDurationToNs(upstreamResponseHeaderTimeoutText, next.upstream.response_header_timeout)
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
       next.upstream.interim_response_interval = parseDurationToNs(upstreamInterimResponseIntervalText, next.upstream.interim_response_interval)
-      next.error_policy.auto_disable.invalid_key_status_codes = parseStatusCodesText(invalidKeyStatusCodesText)
-      next.error_policy.auto_disable.invalid_key_keywords = textToList(invalidKeyKeywordsText)
+      next.error_policy.auto_disable = {
+        status_codes: parseStatusCodesText(invalidKeyStatusCodesText),
+        keywords: textToList(invalidKeyKeywordsText)
+      }
       next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
       next.error_policy.masking = {
         enabled: next.error_policy?.masking?.enabled ?? true,

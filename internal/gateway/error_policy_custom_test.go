@@ -14,7 +14,7 @@ import (
 func TestClassifyResponseUsesCustomInvalidKeyStatusCode(t *testing.T) {
 	decision := classifyResponse("openai", config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			InvalidKeyStatusCodes: []int{498},
+			StatusCodes: []int{498},
 		},
 	}, 498, http.Header{}, []byte(`{"error":"custom invalid key"}`))
 
@@ -30,7 +30,11 @@ func TestClassifyResponseExtractsReadableJSONReason(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Content-Type", "application/json; charset=utf-8")
 
-	decision := classifyResponse("openai", config.ErrorPolicyConfig{}, http.StatusUnauthorized, headers, []byte(`{"error":{"message":"Incorrect API key provided","type":"authentication_error","code":"invalid_api_key"}}`))
+	decision := classifyResponse("openai", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			StatusCodes: []int{http.StatusUnauthorized},
+		},
+	}, http.StatusUnauthorized, headers, []byte(`{"error":{"message":"Incorrect API key provided","type":"authentication_error","code":"invalid_api_key"}}`))
 
 	if decision.action != keyActionDisable {
 		t.Fatalf("decision.action = %q, want %q", decision.action, keyActionDisable)
@@ -51,7 +55,7 @@ func TestClassifyResponseUsesBinaryPlaceholderReason(t *testing.T) {
 
 	decision := classifyResponse("openai", config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			InvalidKeyStatusCodes: []int{498},
+			StatusCodes: []int{498},
 		},
 	}, 498, headers, []byte{0x1b, 0x8f, 0x00, 0xff, 0x42, 0x10})
 
@@ -95,7 +99,7 @@ func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
 					AutoDisable: config.ErrorAutoDisableConfig{
-						InvalidKeyKeywords: []string{"custom bad credential"},
+						Keywords: []string{"custom bad credential"},
 					},
 				},
 			},
@@ -298,11 +302,10 @@ func TestClassifyResponsePaymentRequiredDefaultsToCooldownWithoutAutoDisable(t *
 		t.Fatalf("decision.cooldown = %v, want 3h", decision.cooldown)
 	}
 
-	// 2. When PaymentRequired is explicitly false
-	disabled := false
+	// 2. When 402 is not configured in StatusCodes
 	decisionFalse := classifyResponse("openai", config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			PaymentRequired: &disabled,
+			StatusCodes: []int{401},
 		},
 		Cooldown: config.ErrorCooldownConfig{
 			PaymentRequired: config.ErrorCooldownRule{Duration: 30 * time.Minute},
@@ -322,10 +325,9 @@ func TestClassifyResponsePaymentRequiredExplicitTrueAutoDisables(t *testing.T) {
 	headers.Set("Content-Type", "application/json")
 	body := []byte(`{"error":{"message":"You exceeded your current quota"}}`)
 
-	enabled := true
 	decision := classifyResponse("openai", config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			PaymentRequired: &enabled,
+			StatusCodes: []int{402},
 		},
 	}, http.StatusPaymentRequired, headers, body)
 
@@ -345,7 +347,7 @@ func TestClassifyResponseQuotaExhaustedDefaultsToRateLimitCooldown(t *testing.T)
 	headers.Set("Content-Type", "application/json")
 	body := []byte(`{"error":{"message":"insufficient_quota: you exceeded your current quota","type":"insufficient_quota"}}`)
 
-	// When QuotaExhausted is not configured (nil), it should NOT auto-disable on 429 quota exhaustion
+	// When Keywords are not configured, it should NOT auto-disable on 429 quota exhaustion
 	decision := classifyResponse("openai", config.ErrorPolicyConfig{
 		Cooldown: config.ErrorCooldownConfig{
 			RateLimit: config.ErrorCooldownRule{Duration: 5 * time.Second},
@@ -365,10 +367,9 @@ func TestClassifyResponseQuotaExhaustedExplicitTrueAutoDisables(t *testing.T) {
 	headers.Set("Content-Type", "application/json")
 	body := []byte(`{"error":{"message":"insufficient_quota: you exceeded your current quota","type":"insufficient_quota"}}`)
 
-	enabled := true
 	decision := classifyResponse("openai", config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			QuotaExhausted: &enabled,
+			Keywords: []string{"insufficient_quota"},
 		},
 	}, http.StatusTooManyRequests, headers, body)
 
@@ -380,5 +381,56 @@ func TestClassifyResponseQuotaExhaustedExplicitTrueAutoDisables(t *testing.T) {
 	}
 	if !strings.Contains(decision.reason, "auto disabled: quota exhausted") {
 		t.Fatalf("decision.reason = %q, want quota exhausted marker", decision.reason)
+	}
+}
+
+func TestClassifyResponsePureConfigRuleEngine(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+
+	// 1. Status code 402 configured via StatusCodes triggers auto-disable
+	decision402 := classifyResponse("any_provider", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			StatusCodes: []int{402},
+		},
+	}, http.StatusPaymentRequired, headers, []byte(`{"error":"balance low"}`))
+	if decision402.action != keyActionDisable || decision402.statusCode != 402 {
+		t.Fatalf("expected 402 disable, got action=%q, code=%d", decision402.action, decision402.statusCode)
+	}
+
+	// 2. Status code 402 NOT configured does NOT trigger auto-disable, enters 3h cooldown
+	decision402Cooldown := classifyResponse("any_provider", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			StatusCodes: []int{401},
+		},
+		Cooldown: config.ErrorCooldownConfig{
+			PaymentRequired: config.ErrorCooldownRule{Duration: 3 * time.Hour},
+		},
+	}, http.StatusPaymentRequired, headers, []byte(`{"error":"balance low"}`))
+	if decision402Cooldown.action != keyActionCooldown || decision402Cooldown.cooldown != 3*time.Hour {
+		t.Fatalf("expected 402 cooldown 3h, got action=%q, cooldown=%v", decision402Cooldown.action, decision402Cooldown.cooldown)
+	}
+
+	// 3. Keyword match triggers auto-disable on 429
+	decisionKw := classifyResponse("any_provider", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			Keywords: []string{"insufficient_quota", "余额不足"},
+		},
+	}, http.StatusTooManyRequests, headers, []byte(`{"error":{"message":"账户余额不足，请充值"}}`))
+	if decisionKw.action != keyActionDisable {
+		t.Fatalf("expected keyword disable, got action=%q", decisionKw.action)
+	}
+
+	// 4. Ordinary rate limit without matching keyword enters cooldown
+	decisionNoKw := classifyResponse("any_provider", config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			Keywords: []string{"insufficient_quota", "余额不足"},
+		},
+		Cooldown: config.ErrorCooldownConfig{
+			RateLimit: config.ErrorCooldownRule{Duration: 10 * time.Second},
+		},
+	}, http.StatusTooManyRequests, headers, []byte(`{"error":{"message":"Rate limit reached: 3 requests per minute"}}`))
+	if decisionNoKw.action != keyActionCooldown || decisionNoKw.cooldown != 10*time.Second {
+		t.Fatalf("expected 429 cooldown, got action=%q", decisionNoKw.action)
 	}
 }

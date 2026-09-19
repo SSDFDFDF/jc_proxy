@@ -335,6 +335,9 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 	if cfg == nil {
 		return nil, errors.New("config is nil")
 	}
+	if err := cfg.PrepareAndValidate(); err != nil {
+		return nil, err
+	}
 	if transports == nil {
 		transports = newTransportManager()
 	}

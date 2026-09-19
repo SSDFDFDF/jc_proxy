@@ -1034,103 +1034,41 @@ export function VendorsPage({
                 <div className="section-card-header">
                   <div>
                     <h4>自动禁用策略</h4>
-                    <p>上游返回无效凭据、余额不足或配额耗尽等错误时，自动标记禁用密钥（停止分流并异步持久化）。</p>
+                    <p>纯配置规则引擎：当上游返回匹配的 HTTP 响应码或响应体包含指定关键字时，自动将密钥标记为禁用（停止分流并持久化）。</p>
                   </div>
                 </div>
 
                 <div className="section-card-body">
-                  {/* 内置检测规则组 */}
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-base)] p-3 flex flex-col justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-semibold text-[var(--text-primary)]">无效密钥 (401)</div>
-                        <div className="text-[11px] text-[var(--text-muted)] mt-1">401 凭证无效或密钥被上游吊销时自动禁用。</div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <label className="field-wrap">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="field-label text-sm font-medium text-[var(--text-primary)]">触发响应码 (Status Codes)</span>
                       </div>
-                      <div className="field-inline justify-between pt-2 border-t border-[var(--border)]">
-                        <span className="field-label text-xs">自动禁用</span>
-                        <select
-                          className="select-base text-xs py-1"
-                          value={vendorDraft.error_policy?.auto_disable?.invalid_key ? 'true' : 'false'}
-                          onChange={(e) => onMutateVendorDraft((draft) => {
-                            if (!draft.error_policy) draft.error_policy = {}
-                            if (!draft.error_policy.auto_disable) draft.error_policy.auto_disable = {}
-                            draft.error_policy.auto_disable.invalid_key = e.target.value === 'true'
-                          })}
-                        >
-                          <option value="true">开启</option>
-                          <option value="false">关闭</option>
-                        </select>
-                      </div>
-                    </div>
+                      <input
+                        className="input-base"
+                        placeholder="逗号分隔，例如：401, 402"
+                        value={invalidKeyStatusCodesText}
+                        onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
+                      />
+                      <span className="text-[11px] text-[var(--text-muted)] mt-1">
+                        逗号分隔。当上游返回任一指定 HTTP 响应码时（如 401 凭证失效、402 余额耗尽），自动禁用该密钥。未匹配的状态码进入常规冷却退避。
+                      </span>
+                    </label>
 
-                    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-base)] p-3 flex flex-col justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-semibold text-[var(--text-primary)]">余额不足 (402)</div>
-                        <div className="text-[11px] text-[var(--text-muted)] mt-1">402 发生时禁用；关闭则进入退避冷却（3h）不废弃密钥。</div>
+                    <label className="field-wrap">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="field-label text-sm font-medium text-[var(--text-primary)]">触发关键字 (Keywords)</span>
                       </div>
-                      <div className="field-inline justify-between pt-2 border-t border-[var(--border)]">
-                        <span className="field-label text-xs">自动禁用</span>
-                        <select
-                          className="select-base text-xs py-1"
-                          value={vendorDraft.error_policy?.auto_disable?.payment_required ? 'true' : 'false'}
-                          onChange={(e) => onMutateVendorDraft((draft) => {
-                            if (!draft.error_policy) draft.error_policy = {}
-                            if (!draft.error_policy.auto_disable) draft.error_policy.auto_disable = {}
-                            draft.error_policy.auto_disable.payment_required = e.target.value === 'true'
-                          })}
-                        >
-                          <option value="false">关闭 (推荐)</option>
-                          <option value="true">开启</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-base)] p-3 flex flex-col justify-between gap-2">
-                      <div>
-                        <div className="text-xs font-semibold text-[var(--text-primary)]">配额耗尽 (429)</div>
-                        <div className="text-[11px] text-[var(--text-muted)] mt-1">429 命中配额耗尽关键字时禁用；关闭则按普通限流退避。</div>
-                      </div>
-                      <div className="field-inline justify-between pt-2 border-t border-[var(--border)]">
-                        <span className="field-label text-xs">自动禁用</span>
-                        <select
-                          className="select-base text-xs py-1"
-                          value={vendorDraft.error_policy?.auto_disable?.quota_exhausted ? 'true' : 'false'}
-                          onChange={(e) => onMutateVendorDraft((draft) => {
-                            if (!draft.error_policy) draft.error_policy = {}
-                            if (!draft.error_policy.auto_disable) draft.error_policy.auto_disable = {}
-                            draft.error_policy.auto_disable.quota_exhausted = e.target.value === 'true'
-                          })}
-                        >
-                          <option value="false">关闭 (推荐)</option>
-                          <option value="true">开启</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 自定义匹配扩展条件 */}
-                  <div className="pt-2 border-t border-[var(--border)]">
-                    <div className="text-xs font-medium text-[var(--text-muted)] mb-2">自定义触发条件（匹配到任一即自动禁用）</div>
-                    <div className="xl:grid-cols-2 xl:grid gap-3">
-                      <label className="field-wrap">
-                        <span className="field-label">自定义触发响应码</span>
-                        <input
-                          className="input-base"
-                          placeholder="逗号分隔，例如：401, 403"
-                          value={invalidKeyStatusCodesText}
-                          onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
-                        />
-                      </label>
-                      <label className="field-wrap">
-                        <span className="field-label">自定义触发关键字</span>
-                        <input
-                          className="input-base"
-                          placeholder="逗号分隔，例如：incorrect_api_key, key revoked"
-                          value={invalidKeyKeywordsText}
-                          onChange={(e) => onInvalidKeyKeywordsTextChange(e.target.value)}
-                        />
-                      </label>
-                    </div>
+                      <input
+                        className="input-base"
+                        placeholder="逗号分隔，例如：incorrect_api_key, invalid_api_key, insufficient_quota, 余额不足"
+                        value={invalidKeyKeywordsText}
+                        onChange={(e) => onInvalidKeyKeywordsTextChange(e.target.value)}
+                      />
+                      <span className="text-[11px] text-[var(--text-muted)] mt-1">
+                        逗号分隔，不区分大小写。当响应体包含任一关键字时（如 429 配额不足或厂商特定错误信息），自动禁用该密钥。
+                      </span>
+                    </label>
                   </div>
                 </div>
               </div>

@@ -268,14 +268,11 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 		t.Fatalf("Server.WriteTimeout = %v, want 0", cfg.Server.WriteTimeout)
 	}
 	policy := mustVendor(t, cfg, "openai").ErrorPolicy
-	if !boolValue(policy.AutoDisable.InvalidKey, false) {
-		t.Fatal("ErrorPolicy.AutoDisable.InvalidKey = false, want true")
+	if len(policy.AutoDisable.StatusCodes) != 1 || policy.AutoDisable.StatusCodes[0] != 401 {
+		t.Fatalf("ErrorPolicy.AutoDisable.StatusCodes = %v, want [401]", policy.AutoDisable.StatusCodes)
 	}
-	if boolValue(policy.AutoDisable.PaymentRequired, true) {
-		t.Fatal("ErrorPolicy.AutoDisable.PaymentRequired = true, want false by default")
-	}
-	if boolValue(policy.AutoDisable.QuotaExhausted, true) {
-		t.Fatal("ErrorPolicy.AutoDisable.QuotaExhausted = true, want false by default")
+	if len(policy.AutoDisable.Keywords) != 2 || policy.AutoDisable.Keywords[0] != "incorrect_api_key" {
+		t.Fatalf("ErrorPolicy.AutoDisable.Keywords = %v, want default keywords", policy.AutoDisable.Keywords)
 	}
 	if !boolValue(policy.Cooldown.RequestError.Enabled, false) || policy.Cooldown.RequestError.Duration != 2*time.Second {
 		t.Fatalf("request_error cooldown = (%v, %v)", boolValue(policy.Cooldown.RequestError.Enabled, false), policy.Cooldown.RequestError.Duration)
@@ -317,8 +314,8 @@ vendors:
       base_url: "https://api.openai.com"
     error_policy:
       auto_disable:
-        invalid_key_status_codes: [400, 401]
-        invalid_key_keywords: ["bad credential", "key revoked"]
+        status_codes: [400, 401]
+        keywords: ["bad credential", "key revoked"]
       cooldown:
         response_rules:
           - status_codes: [418, 429]
@@ -335,11 +332,11 @@ vendors:
 	}
 
 	policy := mustVendor(t, cfg, "openai").ErrorPolicy
-	if len(policy.AutoDisable.InvalidKeyStatusCodes) != 2 || policy.AutoDisable.InvalidKeyStatusCodes[0] != 400 || policy.AutoDisable.InvalidKeyStatusCodes[1] != 401 {
-		t.Fatalf("invalid_key_status_codes = %#v", policy.AutoDisable.InvalidKeyStatusCodes)
+	if len(policy.AutoDisable.StatusCodes) != 2 || policy.AutoDisable.StatusCodes[0] != 400 || policy.AutoDisable.StatusCodes[1] != 401 {
+		t.Fatalf("status_codes = %#v", policy.AutoDisable.StatusCodes)
 	}
-	if len(policy.AutoDisable.InvalidKeyKeywords) != 2 || policy.AutoDisable.InvalidKeyKeywords[0] != "bad credential" || policy.AutoDisable.InvalidKeyKeywords[1] != "key revoked" {
-		t.Fatalf("invalid_key_keywords = %#v", policy.AutoDisable.InvalidKeyKeywords)
+	if len(policy.AutoDisable.Keywords) != 2 || policy.AutoDisable.Keywords[0] != "bad credential" || policy.AutoDisable.Keywords[1] != "key revoked" {
+		t.Fatalf("keywords = %#v", policy.AutoDisable.Keywords)
 	}
 	if len(policy.Cooldown.ResponseRules) != 2 {
 		t.Fatalf("len(response_rules) = %d, want 2", len(policy.Cooldown.ResponseRules))
@@ -901,14 +898,6 @@ func TestPrepareAndValidateRejectsNegativeUpstreamInterimResponseInterval(t *tes
 	}
 }
 
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
 
 func preserveEnv(t *testing.T, keys ...string) {
 	t.Helper()

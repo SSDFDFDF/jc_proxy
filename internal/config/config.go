@@ -196,11 +196,8 @@ type ErrorPolicyConfig struct {
 }
 
 type ErrorAutoDisableConfig struct {
-	InvalidKey            *bool    `yaml:"invalid_key" json:"invalid_key"`
-	InvalidKeyStatusCodes []int    `yaml:"invalid_key_status_codes,omitempty" json:"invalid_key_status_codes,omitempty"`
-	InvalidKeyKeywords    []string `yaml:"invalid_key_keywords,omitempty" json:"invalid_key_keywords,omitempty"`
-	PaymentRequired       *bool    `yaml:"payment_required" json:"payment_required"`
-	QuotaExhausted        *bool    `yaml:"quota_exhausted" json:"quota_exhausted"`
+	StatusCodes []int    `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
+	Keywords    []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
 }
 
 type ErrorCooldownConfig struct {
@@ -1060,14 +1057,9 @@ func applyErrorPolicyDefaults(policy *ErrorPolicyConfig) {
 		return
 	}
 
-	if policy.AutoDisable.InvalidKey == nil {
-		policy.AutoDisable.InvalidKey = boolPtr(true)
-	}
-	if policy.AutoDisable.PaymentRequired == nil {
-		policy.AutoDisable.PaymentRequired = boolPtr(false)
-	}
-	if policy.AutoDisable.QuotaExhausted == nil {
-		policy.AutoDisable.QuotaExhausted = boolPtr(false)
+	if policy.AutoDisable.StatusCodes == nil && policy.AutoDisable.Keywords == nil {
+		policy.AutoDisable.StatusCodes = []int{http.StatusUnauthorized}
+		policy.AutoDisable.Keywords = []string{"incorrect_api_key", "invalid_api_key"}
 	}
 
 	applyCooldownRuleDefaults(&policy.Cooldown.RequestError, 2*time.Second)
@@ -1142,7 +1134,7 @@ func validateErrorPolicy(policy ErrorPolicyConfig) error {
 	if policy.Failover.MaxAttempts < 1 || policy.Failover.MaxAttempts > MaxFailoverAttempts {
 		return fmt.Errorf("failover.max_attempts must be between 1 and %d", MaxFailoverAttempts)
 	}
-	if err := validateStatusCodes("auto_disable.invalid_key_status_codes", policy.AutoDisable.InvalidKeyStatusCodes); err != nil {
+	if err := validateStatusCodes("auto_disable.status_codes", policy.AutoDisable.StatusCodes); err != nil {
 		return err
 	}
 	if err := validateCooldownRule("request_error", policy.Cooldown.RequestError); err != nil {

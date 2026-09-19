@@ -74,7 +74,7 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), reasonBody)
 	responseFailover := shouldFailoverResponse(statusCode, policy)
 
-	if shouldDisable, autoReason := classifyAutoDisable(provider, policy.AutoDisable, statusCode, body); shouldDisable {
+	if shouldDisable, autoReason := classifyAutoDisable(policy.AutoDisable, statusCode, body); shouldDisable {
 		return disableDecision(statusCode, compactReason("auto disabled: "+autoReason, reasonBody), responseFailover)
 	}
 
@@ -183,30 +183,25 @@ func boolOrDefault(v *bool, fallback bool) bool {
 	return *v
 }
 
-func classifyAutoDisable(provider string, auto config.ErrorAutoDisableConfig, statusCode int, body string) (bool, string) {
-	// 1. Custom status codes and keywords
-	if len(auto.InvalidKeyStatusCodes) > 0 || hasNonEmptyPattern(auto.InvalidKeyKeywords) {
-		if containsStatusCode(auto.InvalidKeyStatusCodes, statusCode) || containsAnyKeyword(body, auto.InvalidKeyKeywords) {
-			return true, "invalid key"
+func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, body string) (bool, string) {
+	if containsStatusCode(auto.StatusCodes, statusCode) {
+		if statusCode == http.StatusPaymentRequired {
+			return true, "billing or quota exhausted"
 		}
-	}
-
-	// 2. Built-in Invalid Key (HTTP 401)
-	if boolOrDefault(auto.InvalidKey, true) && statusCode == http.StatusUnauthorized && isInvalidKey(provider, body) {
 		return true, "invalid key"
 	}
-
-	// 3. Built-in Payment Required (HTTP 402)
-	if boolOrDefault(auto.PaymentRequired, false) && statusCode == http.StatusPaymentRequired {
-		return true, "billing or quota exhausted"
+	if match, ok := matchKeyword(body, auto.Keywords); ok {
+		if isQuotaKeyword(match) {
+			return true, "quota exhausted"
+		}
+		return true, "invalid key"
 	}
-
-	// 4. Built-in Quota Exhausted (HTTP 429)
-	if boolOrDefault(auto.QuotaExhausted, false) && statusCode == http.StatusTooManyRequests && isQuotaExhausted(provider, body) {
-		return true, "quota exhausted"
-	}
-
 	return false, ""
+}
+
+func isQuotaKeyword(kw string) bool {
+	kw = strings.ToLower(kw)
+	return strings.Contains(kw, "quota") || strings.Contains(kw, "balance") || strings.Contains(kw, "billing") || strings.Contains(kw, "余额")
 }
 
 func shouldFailoverResponse(statusCode int, policy config.ErrorPolicyConfig) bool {
@@ -256,55 +251,6 @@ func retryAfterMode(raw string, statusCode int) string {
 	return "ignore"
 }
 
-func isInvalidKey(provider, body string) bool {
-	if body == "" {
-		return false
-	}
-	common := []string{
-		"incorrect_api_key",
-		"invalid_api_key",
-		"invalid api key",
-		"api key not valid",
-		"authentication_error",
-		"invalid authentication",
-		"invalid x-api-key",
-		"invalid subscription key",
-		"key has been disabled",
-		"leaked",
-		"revoked",
-	}
-	switch provider {
-	case "anthropic":
-		return containsAny(body, append(common, "authentication error", "invalid x-api-key")...)
-	case "gemini":
-		return containsAny(body, append(common, "api_key_invalid", "expired api key")...)
-	case "azure_openai":
-		return containsAny(body, append(common, "access denied due to invalid subscription key")...)
-	default:
-		return containsAny(body, common...)
-	}
-}
-
-func isQuotaExhausted(provider, body string) bool {
-	if body == "" {
-		return false
-	}
-	common := []string{
-		"insufficient_quota",
-		"billing_error",
-		"insufficient balance",
-		"quota exhausted",
-		"quota has been exhausted",
-		"credit balance is too low",
-		"余额不足",
-	}
-	switch provider {
-	case "deepseek":
-		return containsAny(body, append(common, "insufficient balance", "balance is not enough")...)
-	default:
-		return containsAny(body, common...)
-	}
-}
 
 func parseRetryAfter(raw string) time.Duration {
 	raw = strings.TrimSpace(raw)
@@ -508,13 +454,20 @@ func isTextualContentType(contentType string) bool {
 	}
 }
 
-func containsAny(body string, patterns ...string) bool {
+func matchKeyword(body string, patterns []string) (string, bool) {
+	if body == "" {
+		return "", false
+	}
 	for _, pattern := range patterns {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
 		if strings.Contains(body, pattern) {
-			return true
+			return pattern, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func containsAnyKeyword(body string, patterns []string) bool {

@@ -276,9 +276,12 @@ func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.Vend
 }
 
 func mergeErrorPolicyForAdminUpsert(prev, next config.ErrorPolicyConfig) config.ErrorPolicyConfig {
-	next.AutoDisable.InvalidKey = mergeBoolPtrForAdminUpsert(prev.AutoDisable.InvalidKey, next.AutoDisable.InvalidKey)
-	next.AutoDisable.PaymentRequired = mergeBoolPtrForAdminUpsert(prev.AutoDisable.PaymentRequired, next.AutoDisable.PaymentRequired)
-	next.AutoDisable.QuotaExhausted = mergeBoolPtrForAdminUpsert(prev.AutoDisable.QuotaExhausted, next.AutoDisable.QuotaExhausted)
+	if next.AutoDisable.StatusCodes == nil {
+		next.AutoDisable.StatusCodes = prev.AutoDisable.StatusCodes
+	}
+	if next.AutoDisable.Keywords == nil {
+		next.AutoDisable.Keywords = prev.AutoDisable.Keywords
+	}
 
 	next.Cooldown.RequestError = mergeCooldownRuleForAdminUpsert(prev.Cooldown.RequestError, next.Cooldown.RequestError)
 	next.Cooldown.Unauthorized = mergeCooldownRuleForAdminUpsert(prev.Cooldown.Unauthorized, next.Cooldown.Unauthorized)

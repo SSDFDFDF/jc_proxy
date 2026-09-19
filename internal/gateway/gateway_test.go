@@ -3269,7 +3269,8 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
 					AutoDisable: config.ErrorAutoDisableConfig{
-						InvalidKey: configBoolPtr(false),
+						StatusCodes: []int{},
+						Keywords:    []string{},
 					},
 					Cooldown: config.ErrorCooldownConfig{
 						Unauthorized: config.ErrorCooldownRule{Enabled: configBoolPtr(false)},

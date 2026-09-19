@@ -180,9 +180,8 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	currentVC.Provider = "openai"
 	currentVC.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			InvalidKey:      testBoolPtr(true),
-			PaymentRequired: testBoolPtr(false),
-			QuotaExhausted:  testBoolPtr(false),
+			StatusCodes: []int{401},
+			Keywords:    []string{"bad_key"},
 		},
 		Cooldown: config.ErrorCooldownConfig{
 			RateLimit:      config.ErrorCooldownRule{Enabled: testBoolPtr(true), Duration: 37 * time.Second},
@@ -214,9 +213,8 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	update.ErrorPolicy.Masking = config.ErrorMaskingConfig{}
 	update.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
-			InvalidKey:            testBoolPtr(false),
-			InvalidKeyStatusCodes: []int{401, 403},
-			InvalidKeyKeywords:    []string{"incorrect_api_key"},
+			StatusCodes: []int{401, 403},
+			Keywords:    []string{"incorrect_api_key"},
 		},
 		Cooldown: config.ErrorCooldownConfig{
 			ResponseRules: []config.ErrorResponseCooldownRule{
@@ -245,11 +243,11 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	if got.LoadBalance != "least_used" {
 		t.Fatalf("LoadBalance = %q, want %q", got.LoadBalance, "least_used")
 	}
-	if got.ErrorPolicy.AutoDisable.PaymentRequired == nil || *got.ErrorPolicy.AutoDisable.PaymentRequired {
-		t.Fatalf("AutoDisable.PaymentRequired = %#v, want false preserved", got.ErrorPolicy.AutoDisable.PaymentRequired)
+	if len(got.ErrorPolicy.AutoDisable.StatusCodes) != 2 || got.ErrorPolicy.AutoDisable.StatusCodes[1] != 403 {
+		t.Fatalf("AutoDisable.StatusCodes = %#v, want [401, 403]", got.ErrorPolicy.AutoDisable.StatusCodes)
 	}
-	if got.ErrorPolicy.AutoDisable.QuotaExhausted == nil || *got.ErrorPolicy.AutoDisable.QuotaExhausted {
-		t.Fatalf("AutoDisable.QuotaExhausted = %#v, want false preserved", got.ErrorPolicy.AutoDisable.QuotaExhausted)
+	if len(got.ErrorPolicy.AutoDisable.Keywords) != 1 || got.ErrorPolicy.AutoDisable.Keywords[0] != "incorrect_api_key" {
+		t.Fatalf("AutoDisable.Keywords = %#v, want [incorrect_api_key]", got.ErrorPolicy.AutoDisable.Keywords)
 	}
 	if got.ErrorPolicy.Cooldown.RateLimit.Duration != 37*time.Second {
 		t.Fatalf("Cooldown.RateLimit.Duration = %v, want %v", got.ErrorPolicy.Cooldown.RateLimit.Duration, 37*time.Second)

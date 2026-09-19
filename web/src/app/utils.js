@@ -149,11 +149,8 @@ export function emptyVendorConfig() {
     path_rewrites: {},
     error_policy: {
       auto_disable: {
-        invalid_key: true,
-        invalid_key_status_codes: [],
-        invalid_key_keywords: [],
-        payment_required: false,
-        quota_exhausted: false
+        status_codes: [401],
+        keywords: ['incorrect_api_key', 'invalid_api_key', 'insufficient_quota', '余额不足']
       },
       cooldown: {
         no_default_backoff: false,
@@ -217,15 +214,12 @@ export function withVendorDefaults(vendor) {
     path_rewrites: { ...base.path_rewrites, ...(next.path_rewrites || {}) },
     error_policy: {
       auto_disable: {
-        invalid_key: next.error_policy?.auto_disable?.invalid_key ?? base.error_policy.auto_disable.invalid_key,
-        payment_required: next.error_policy?.auto_disable?.payment_required ?? base.error_policy.auto_disable.payment_required,
-        quota_exhausted: next.error_policy?.auto_disable?.quota_exhausted ?? base.error_policy.auto_disable.quota_exhausted,
-        invalid_key_status_codes: Array.isArray(next.error_policy?.auto_disable?.invalid_key_status_codes)
-          ? [...next.error_policy.auto_disable.invalid_key_status_codes]
-          : [...base.error_policy.auto_disable.invalid_key_status_codes],
-        invalid_key_keywords: Array.isArray(next.error_policy?.auto_disable?.invalid_key_keywords)
-          ? [...next.error_policy.auto_disable.invalid_key_keywords]
-          : [...base.error_policy.auto_disable.invalid_key_keywords]
+        status_codes: Array.isArray(next.error_policy?.auto_disable?.status_codes)
+          ? [...next.error_policy.auto_disable.status_codes]
+          : [...base.error_policy.auto_disable.status_codes],
+        keywords: Array.isArray(next.error_policy?.auto_disable?.keywords)
+          ? [...next.error_policy.auto_disable.keywords]
+          : [...base.error_policy.auto_disable.keywords]
       },
       cooldown: {
         ...base.error_policy.cooldown,
