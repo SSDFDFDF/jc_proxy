@@ -184,6 +184,9 @@ func boolOrDefault(v *bool, fallback bool) bool {
 }
 
 func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, body string) (bool, string) {
+	if !boolOrDefault(auto.Enabled, true) {
+		return false, ""
+	}
 	if containsStatusCode(auto.StatusCodes, statusCode) {
 		if statusCode == http.StatusPaymentRequired {
 			return true, "billing or quota exhausted"

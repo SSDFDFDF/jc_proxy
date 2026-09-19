@@ -149,6 +149,7 @@ export function emptyVendorConfig() {
     path_rewrites: {},
     error_policy: {
       auto_disable: {
+        enabled: true,
         status_codes: [401],
         keywords: ['incorrect_api_key', 'invalid_api_key', 'insufficient_quota', '余额不足']
       },
@@ -214,6 +215,7 @@ export function withVendorDefaults(vendor) {
     path_rewrites: { ...base.path_rewrites, ...(next.path_rewrites || {}) },
     error_policy: {
       auto_disable: {
+        enabled: next.error_policy?.auto_disable?.enabled ?? base.error_policy.auto_disable.enabled,
         status_codes: Array.isArray(next.error_policy?.auto_disable?.status_codes)
           ? [...next.error_policy.auto_disable.status_codes]
           : [...base.error_policy.auto_disable.status_codes],

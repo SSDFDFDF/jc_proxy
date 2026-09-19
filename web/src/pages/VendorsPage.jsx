@@ -1036,6 +1036,21 @@ export function VendorsPage({
                     <h4>自动禁用策略</h4>
                     <p>纯配置规则引擎：当上游返回匹配的 HTTP 响应码或响应体包含指定关键字时，自动将密钥标记为禁用（停止分流并持久化）。</p>
                   </div>
+                  <div className="field-inline">
+                    <span className="field-label">策略开关</span>
+                    <select
+                      className="select-base"
+                      value={vendorDraft?.error_policy?.auto_disable?.enabled === false ? 'false' : 'true'}
+                      onChange={(e) => onMutateVendorDraft((draft) => {
+                        if (!draft.error_policy) draft.error_policy = {}
+                        if (!draft.error_policy.auto_disable) draft.error_policy.auto_disable = {}
+                        draft.error_policy.auto_disable.enabled = e.target.value === 'true'
+                      })}
+                    >
+                      <option value="true">开启</option>
+                      <option value="false">关闭</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="section-card-body">

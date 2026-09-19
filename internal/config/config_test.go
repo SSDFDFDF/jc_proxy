@@ -268,6 +268,9 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 		t.Fatalf("Server.WriteTimeout = %v, want 0", cfg.Server.WriteTimeout)
 	}
 	policy := mustVendor(t, cfg, "openai").ErrorPolicy
+	if !boolValue(policy.AutoDisable.Enabled, false) {
+		t.Fatal("ErrorPolicy.AutoDisable.Enabled = false, want true")
+	}
 	if len(policy.AutoDisable.StatusCodes) != 1 || policy.AutoDisable.StatusCodes[0] != 401 {
 		t.Fatalf("ErrorPolicy.AutoDisable.StatusCodes = %v, want [401]", policy.AutoDisable.StatusCodes)
 	}
@@ -942,3 +945,13 @@ func mustVendor(t *testing.T, cfg *Config, name string) VendorEntry {
 	}
 	return entry
 }
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+

@@ -196,6 +196,7 @@ type ErrorPolicyConfig struct {
 }
 
 type ErrorAutoDisableConfig struct {
+	Enabled     *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	StatusCodes []int    `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
 	Keywords    []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
 }
@@ -1057,6 +1058,9 @@ func applyErrorPolicyDefaults(policy *ErrorPolicyConfig) {
 		return
 	}
 
+	if policy.AutoDisable.Enabled == nil {
+		policy.AutoDisable.Enabled = boolPtr(true)
+	}
 	if policy.AutoDisable.StatusCodes == nil && policy.AutoDisable.Keywords == nil {
 		policy.AutoDisable.StatusCodes = []int{http.StatusUnauthorized}
 		policy.AutoDisable.Keywords = []string{"incorrect_api_key", "invalid_api_key"}

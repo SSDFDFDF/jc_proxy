@@ -180,6 +180,7 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	currentVC.Provider = "openai"
 	currentVC.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
+			Enabled:     testBoolPtr(true),
 			StatusCodes: []int{401},
 			Keywords:    []string{"bad_key"},
 		},
@@ -213,6 +214,7 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	update.ErrorPolicy.Masking = config.ErrorMaskingConfig{}
 	update.ErrorPolicy = config.ErrorPolicyConfig{
 		AutoDisable: config.ErrorAutoDisableConfig{
+			Enabled:     testBoolPtr(false),
 			StatusCodes: []int{401, 403},
 			Keywords:    []string{"incorrect_api_key"},
 		},
@@ -242,6 +244,9 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 
 	if got.LoadBalance != "least_used" {
 		t.Fatalf("LoadBalance = %q, want %q", got.LoadBalance, "least_used")
+	}
+	if got.ErrorPolicy.AutoDisable.Enabled == nil || *got.ErrorPolicy.AutoDisable.Enabled {
+		t.Fatalf("AutoDisable.Enabled = %#v, want false updated", got.ErrorPolicy.AutoDisable.Enabled)
 	}
 	if len(got.ErrorPolicy.AutoDisable.StatusCodes) != 2 || got.ErrorPolicy.AutoDisable.StatusCodes[1] != 403 {
 		t.Fatalf("AutoDisable.StatusCodes = %#v, want [401, 403]", got.ErrorPolicy.AutoDisable.StatusCodes)

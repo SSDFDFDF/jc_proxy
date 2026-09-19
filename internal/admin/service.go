@@ -276,6 +276,7 @@ func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.Vend
 }
 
 func mergeErrorPolicyForAdminUpsert(prev, next config.ErrorPolicyConfig) config.ErrorPolicyConfig {
+	next.AutoDisable.Enabled = mergeBoolPtrForAdminUpsert(prev.AutoDisable.Enabled, next.AutoDisable.Enabled)
 	if next.AutoDisable.StatusCodes == nil {
 		next.AutoDisable.StatusCodes = prev.AutoDisable.StatusCodes
 	}

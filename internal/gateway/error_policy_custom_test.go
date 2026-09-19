@@ -434,3 +434,39 @@ func TestClassifyResponsePureConfigRuleEngine(t *testing.T) {
 		t.Fatalf("expected 429 cooldown, got action=%q", decisionNoKw.action)
 	}
 }
+
+func TestClassifyResponseAutoDisableMasterSwitchDisabled(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	disabled := false
+
+	// Even if StatusCodes contains 401 and Keywords contains "incorrect_api_key",
+	// Enabled: false disables the auto-disable policy completely.
+	policy := config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{
+			Enabled:     &disabled,
+			StatusCodes: []int{http.StatusUnauthorized, http.StatusPaymentRequired},
+			Keywords:    []string{"incorrect_api_key"},
+		},
+		Cooldown: config.ErrorCooldownConfig{
+			Unauthorized:    config.ErrorCooldownRule{Duration: 30 * time.Minute},
+			PaymentRequired: config.ErrorCooldownRule{Duration: 3 * time.Hour},
+		},
+	}
+
+	// 1. 401 test
+	decision401 := classifyResponse("openai", policy, http.StatusUnauthorized, headers, []byte(`{"error":{"message":"incorrect_api_key"}}`))
+	if decision401.action == keyActionDisable {
+		t.Fatalf("expected 401 not to auto-disable when Enabled=false, got %q", decision401.action)
+	}
+	if decision401.action != keyActionCooldown {
+		t.Fatalf("expected 401 to fall back to cooldown, got %q", decision401.action)
+	}
+
+	// 2. 402 test
+	decision402 := classifyResponse("openai", policy, http.StatusPaymentRequired, headers, []byte(`{"error":{"message":"billing"}}`))
+	if decision402.action == keyActionDisable {
+		t.Fatalf("expected 402 not to auto-disable when Enabled=false, got %q", decision402.action)
+	}
+}
+

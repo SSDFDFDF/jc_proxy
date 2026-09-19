@@ -545,6 +545,7 @@ export function useAdminConsole() {
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
       next.upstream.interim_response_interval = parseDurationToNs(upstreamInterimResponseIntervalText, next.upstream.interim_response_interval)
       next.error_policy.auto_disable = {
+        enabled: vendorDraft.error_policy?.auto_disable?.enabled !== false,
         status_codes: parseStatusCodesText(invalidKeyStatusCodesText),
         keywords: textToList(invalidKeyKeywordsText)
       }
