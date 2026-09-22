@@ -433,38 +433,69 @@ export function KeyHubPage({
     const liveVendorIDs = new Set(vendorRows.map((row) => row.id).filter(Boolean))
     const liveItems = upstreamKeysData.items || {}
     const backupVendors = Array.isArray(importBackup.vendors) ? importBackup.vendors : []
-    const valid = []
-    const skipped = []
+
+    // Merge duplicate vendor blocks so the preview table has unique keys and
+    // counts are accurate even when the backup file repeats a vendor_id.
+    const mergedBlocks = new Map()
     let totalKeys = 0
-    let validKeys = 0
     for (const block of backupVendors) {
       const vendorID = String(block?.vendor_id || '').trim()
       const keys = Array.isArray(block?.keys) ? block.keys : []
       totalKeys += keys.length
       if (!vendorID) {
-        skipped.push({ vendor_id: '(空)', vendor_name: block?.vendor_name || '', count: keys.length, reason: '备份中缺少供应商 ID' })
+        // Collect empty-ID blocks separately — they are always skipped.
+        const prev = mergedBlocks.get('')
+        if (prev) {
+          prev.keys = [...prev.keys, ...keys]
+        } else {
+          mergedBlocks.set('', { vendor_id: '', vendor_name: block?.vendor_name || '', keys: [...keys] })
+        }
+        continue
+      }
+      if (mergedBlocks.has(vendorID)) {
+        const prev = mergedBlocks.get(vendorID)
+        prev.keys = [...prev.keys, ...keys]
+      } else {
+        mergedBlocks.set(vendorID, { vendor_id: vendorID, vendor_name: block?.vendor_name || vendorID, keys: [...keys] })
+      }
+    }
+
+    const valid = []
+    const skipped = []
+    let validKeys = 0
+    for (const [vendorID, block] of mergedBlocks) {
+      if (!vendorID) {
+        skipped.push({ vendor_id: '(空)', vendor_name: block.vendor_name, count: block.keys.length, reason: '备份中缺少供应商 ID' })
         continue
       }
       if (!liveVendorIDs.has(vendorID)) {
-        skipped.push({ vendor_id: vendorID, vendor_name: block?.vendor_name || vendorID, count: keys.length, reason: '供应商不存在，将跳过该供应商下全部 key' })
+        skipped.push({ vendor_id: vendorID, vendor_name: block.vendor_name, count: block.keys.length, reason: '供应商不存在，将跳过该供应商下全部 key' })
         continue
       }
+      // Deduplicate keys within the merged block so counts reflect what will
+      // actually be imported (the backend skips duplicates too).
       const existing = new Set((liveItems[vendorID] || []).map((item) => item.key))
+      const seenInBackup = new Set()
       let newCount = 0
       let dupCount = 0
-      for (const entry of keys) {
+      let backupDupCount = 0
+      for (const entry of block.keys) {
         const key = String(entry?.key || '').trim()
         if (!key) continue
+        if (seenInBackup.has(key)) { backupDupCount += 1; continue }
+        seenInBackup.add(key)
         if (existing.has(key)) dupCount += 1
         else newCount += 1
       }
-      validKeys += keys.length
+      const uniqueCount = newCount + dupCount
+      validKeys += uniqueCount
       valid.push({
         vendor_id: vendorID,
-        vendor_name: block?.vendor_name || vendorID,
-        count: keys.length,
+        vendor_name: block.vendor_name,
+        count: uniqueCount,
         new_count: newCount,
-        dup_count: dupCount
+        dup_count: dupCount,
+        backup_dup_count: backupDupCount
       })
     }
     return { valid, skipped, totalKeys, validKeys, schema: importBackup.schema, version: importBackup.version, exportedAt: importBackup.exported_at }
@@ -990,9 +1021,10 @@ export function KeyHubPage({
                           <thead>
                             <tr>
                               <th className="text-left">供应商</th>
-                              <th className="text-right">备份</th>
+                              <th className="text-right">去重后</th>
                               <th className="text-right">新增</th>
                               <th className="text-right">已存在</th>
+                              <th className="text-right">备份重复</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1005,6 +1037,7 @@ export function KeyHubPage({
                                 <td className="text-right font-mono">{row.count}</td>
                                 <td className="text-right font-mono text-[var(--success)]">{row.new_count}</td>
                                 <td className="text-right font-mono text-[var(--text-muted)]">{row.dup_count}</td>
+                                <td className={`text-right font-mono ${row.backup_dup_count > 0 ? 'text-[var(--warning)]' : 'text-[var(--text-faint)]'}`}>{row.backup_dup_count}</td>
                               </tr>
                             ))}
                           </tbody>

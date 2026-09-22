@@ -964,19 +964,50 @@ export function useAdminConsole() {
       totalSkipped: 0
     }
     try {
+      // Merge duplicate vendor blocks: if a backup contains the same vendor_id
+      // more than once, combine their key lists so we process each vendor
+      // exactly once. This prevents duplicate React keys in the preview table
+      // and redundant API calls.
+      const mergedVendorBlocks = new Map()
       for (const vendorBlock of backupVendors) {
         const vendorID = String(vendorBlock.vendor_id || '').trim()
-        const backupKeys = Array.isArray(vendorBlock.keys) ? vendorBlock.keys : []
-        if (!vendorID || !backupKeys.length) continue
+        if (!vendorID) continue
+        if (mergedVendorBlocks.has(vendorID)) {
+          const existing = mergedVendorBlocks.get(vendorID)
+          const extraKeys = Array.isArray(vendorBlock.keys) ? vendorBlock.keys : []
+          existing.keys = [...existing.keys, ...extraKeys]
+        } else {
+          mergedVendorBlocks.set(vendorID, {
+            vendor_id: vendorID,
+            vendor_name: vendorBlock.vendor_name || vendorID,
+            keys: Array.isArray(vendorBlock.keys) ? [...vendorBlock.keys] : []
+          })
+        }
+      }
+
+      for (const vendorBlock of mergedVendorBlocks.values()) {
+        const vendorID = vendorBlock.vendor_id
+        const rawBackupKeys = vendorBlock.keys
+        if (!rawBackupKeys.length) continue
         if (!liveVendorIDs.has(vendorID)) {
           report.skippedVendors.push({
             vendor_id: vendorID,
             vendor_name: vendorBlock.vendor_name || vendorID,
-            count: backupKeys.length,
+            count: rawBackupKeys.length,
             reason: '供应商不存在'
           })
-          report.totalSkipped += backupKeys.length
+          report.totalSkipped += rawBackupKeys.length
           continue
+        }
+        // Deduplicate keys within the vendor block to avoid duplicate API
+        // calls when the backup file contains the same key more than once.
+        const seenKeys = new Set()
+        const backupKeys = []
+        for (const entry of rawBackupKeys) {
+          const key = String(entry?.key || '').trim()
+          if (!key || seenKeys.has(key)) continue
+          seenKeys.add(key)
+          backupKeys.push(entry)
         }
         // 1) Add every key from the backup. The server silently skips keys
         //    that already exist, so duplicates are safe.
@@ -998,7 +1029,6 @@ export function useAdminConsole() {
               added: 0,
               remarks: 0,
               disabled: 0,
-              enabled: 0,
               failed: String(err?.message || err)
             })
             report.totalSkipped += keysToAdd.length
@@ -1008,9 +1038,12 @@ export function useAdminConsole() {
         // 2) Restore remark and disabled_manual status. We deliberately do
         //    not re-create disabled_auto, because that status is set by the
         //    runtime in response to live traffic and should not be faked.
+        //    We also do NOT force-enable active keys: freshly added keys
+        //    are already active by default, and force-enabling keys that
+        //    have been auto-disabled by the runtime would create a loop
+        //    (import enables → runtime auto-disables → next import enables).
         let remarksApplied = 0
         let disabledApplied = 0
-        let enabledApplied = 0
         for (const entry of backupKeys) {
           const key = String(entry?.key || '').trim()
           if (!key) continue
@@ -1040,25 +1073,15 @@ export function useAdminConsole() {
             } catch (err) {
               // ignore: key stays active, which is a safe superset
             }
-          } else if (status === 'active') {
-            try {
-              await api(`/admin/upstream-keys/${encodeURIComponent(vendorID)}/enable`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ keys: [key] })
-              })
-              enabledApplied += 1
-            } catch (err) {
-              // ignore: freshly added keys are already active
-            }
           }
+          // active keys: no action needed. Freshly added keys default to
+          // active, and we must not override runtime auto-disable decisions.
         }
         report.vendors.push({
           vendor_id: vendorID,
           added,
           remarks: remarksApplied,
           disabled: disabledApplied,
-          enabled: enabledApplied,
           failed: ''
         })
         report.totalAdded += added
