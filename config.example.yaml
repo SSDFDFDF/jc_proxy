@@ -1,5 +1,5 @@
 # 持久化数据结构版本。服务只读取当前版本，遇到旧版本会拒绝启动并提示运行 jc_proxy_upgrade。
-schema_version: 2
+schema_version: 3
 
 server:
   listen: ":8092"
@@ -67,7 +67,7 @@ vendors:
       # 在最终响应开始前周期性发送 HTTP 102 Processing，避免 Cloudflare 等代理因长时间无响应断开。
       # 这是 interim response，不会写入最终响应体；设为 0s 可关闭。
       interim_response_interval: 30s
-    load_balance: "round_robin" # round_robin | random | least_used | least_requests
+    load_balance: "round_robin" # round_robin | random | least_used | least_requests | lowest_latency | highest_success | adaptive
     upstream_auth:
       mode: "bearer"
       header: "Authorization"

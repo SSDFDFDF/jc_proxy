@@ -97,13 +97,8 @@ func (s *FileStore) Replace(vendorID string, keys []string) error {
 				disabled = append(disabled, record)
 			}
 		}
-		if len(disabled) == 0 {
-			delete(s.data, vendorID)
-		} else {
-			sortRecords(disabled)
-			s.data[vendorID] = disabled
-		}
-		return s.saveLocked()
+		sortRecords(disabled)
+		return s.saveVendorLocked(vendorID, disabled)
 	}
 
 	next := make([]Record, 0, len(keys))
@@ -132,8 +127,7 @@ func (s *FileStore) Replace(vendorID string, keys []string) error {
 		}
 	}
 	sortRecords(next)
-	s.data[vendorID] = next
-	return s.saveLocked()
+	return s.saveVendorLocked(vendorID, next)
 }
 
 func (s *FileStore) Append(vendorID string, keys []string) (int, error) {
@@ -175,8 +169,10 @@ func (s *FileStore) Append(vendorID string, keys []string) (int, error) {
 		return 0, nil
 	}
 	sortRecords(next)
-	s.data[vendorID] = next
-	return added, s.saveLocked()
+	if err := s.saveVendorLocked(vendorID, next); err != nil {
+		return 0, err
+	}
+	return added, nil
 }
 
 func (s *FileStore) Delete(vendorID string, keys []string) (int, error) {
@@ -213,12 +209,10 @@ func (s *FileStore) Delete(vendorID string, keys []string) (int, error) {
 	if removed == 0 {
 		return 0, nil
 	}
-	if len(next) == 0 {
-		delete(s.data, vendorID)
-	} else {
-		s.data[vendorID] = next
+	if err := s.saveVendorLocked(vendorID, next); err != nil {
+		return 0, err
 	}
-	return removed, s.saveLocked()
+	return removed, nil
 }
 
 func (s *FileStore) SetStatus(vendorID, key, status, reason, actor string) error {
@@ -237,7 +231,7 @@ func (s *FileStore) SetRemark(vendorID, key, remark string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current := s.data[vendorID]
+	current := append([]Record(nil), s.data[vendorID]...)
 	for i := range current {
 		if current[i].Key != key {
 			continue
@@ -245,8 +239,7 @@ func (s *FileStore) SetRemark(vendorID, key, remark string) error {
 		current[i].Remark = strings.TrimSpace(remark)
 		current[i].UpdatedAt = time.Now().UTC()
 		current[i] = NormalizeRecord(current[i])
-		s.data[vendorID] = current
-		return s.saveLocked()
+		return s.saveVendorLocked(vendorID, current)
 	}
 	return ErrKeyNotFound
 }
@@ -280,14 +273,7 @@ func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelt
 			if !ok {
 				continue
 			}
-			current[idx].RuntimeStats.TotalRequests += delta.TotalRequests
-			current[idx].RuntimeStats.SuccessCount += delta.SuccessCount
-			current[idx].RuntimeStats.UnauthorizedCount += delta.UnauthorizedCount
-			current[idx].RuntimeStats.ForbiddenCount += delta.ForbiddenCount
-			current[idx].RuntimeStats.RateLimitCount += delta.RateLimitCount
-			current[idx].RuntimeStats.OtherErrorCount += delta.OtherErrorCount
-			current[idx].RuntimeStats.LastStatus = delta.LastStatus
-			current[idx].RuntimeStats.LastError = normalizeRuntimeLastError(delta.LastError)
+			current[idx].RuntimeStats.ApplyDelta(delta.RuntimeStats)
 			current[idx].UpdatedAt = time.Now().UTC()
 			current[idx] = NormalizeRecord(current[idx])
 			changed = true
@@ -324,7 +310,7 @@ func (s *FileStore) setStatus(vendorID, key string, expectedVersion int64, check
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current := s.data[vendorID]
+	current := append([]Record(nil), s.data[vendorID]...)
 	if len(current) == 0 {
 		return ErrKeyNotFound
 	}
@@ -355,8 +341,7 @@ func (s *FileStore) setStatus(vendorID, key string, expectedVersion int64, check
 	if !found {
 		return ErrKeyNotFound
 	}
-	s.data[vendorID] = current
-	return s.saveLocked()
+	return s.saveVendorLocked(vendorID, current)
 }
 
 func (s *FileStore) DeleteVendor(vendorID string) error {
@@ -367,8 +352,7 @@ func (s *FileStore) DeleteVendor(vendorID string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.data, vendorID)
-	return s.saveLocked()
+	return s.saveVendorLocked(vendorID, nil)
 }
 
 func (s *FileStore) Close() error {
@@ -412,8 +396,24 @@ func (s *FileStore) load() error {
 	return nil
 }
 
-func (s *FileStore) saveLocked() error {
-	return s.saveDataLocked(s.data)
+// records must not alias a mutable slice in s.data. Publish only after the
+// atomic file replacement succeeds, so failed status writes cannot consume a
+// version and cause a retried conditional auto-disable to be dropped.
+func (s *FileStore) saveVendorLocked(vendorID string, records []Record) error {
+	next := make(map[string][]Record, len(s.data)+1)
+	for id, existing := range s.data {
+		next[id] = existing
+	}
+	if len(records) == 0 {
+		delete(next, vendorID)
+	} else {
+		next[vendorID] = records
+	}
+	if err := s.saveDataLocked(next); err != nil {
+		return err
+	}
+	s.data = next
+	return nil
 }
 
 func (s *FileStore) saveDataLocked(records map[string][]Record) error {

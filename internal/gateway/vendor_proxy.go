@@ -44,11 +44,10 @@ func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path 
 	selectedKey := v.passthroughUpstreamKey(req)
 	if v.usesManagedUpstreamKeys() {
 		var keyOK bool
-		idx, selectedKey, keyOK = v.pool.AcquireExceptAllowed(excluded, allowedKeyIdxs)
+		idx, selectedKey, selectedVersion, keyOK = v.pool.AcquireVersioned(excluded, allowedKeyIdxs)
 		if !keyOK {
 			return nil, &proxyError{statusCode: http.StatusServiceUnavailable, message: "all vendor keys in cooldown or disabled"}
 		}
-		selectedVersion = v.pool.Version(idx)
 	}
 
 	targetURL, err := v.buildTargetURL(path, req.URL.RawQuery, selectedKey)
@@ -163,14 +162,15 @@ func (v *vendorGateway) applyDecision(idx int, key string, version int64, decisi
 	}
 	switch decision.action {
 	case keyActionSuccess:
-		v.pool.ReleaseSuccess(idx)
+		v.pool.ReleaseSuccess(idx, version)
 	case keyActionObserve:
-		v.pool.Observe(idx, decision.statusCode, decision.reason)
+		v.pool.Observe(idx, decision.statusCode, decision.reason, version)
 	case keyActionCooldown:
-		v.pool.Cooldown(idx, decision.statusCode, decision.reason, decision.cooldown)
+		v.pool.Cooldown(idx, decision.statusCode, decision.reason, decision.cooldown, version)
 	case keyActionDisable:
-		v.pool.Disable(idx, decision.statusCode, decision.reason, "system:auto")
-		v.persistDisabledKeyAsync(key, version, decision.reason)
+		if v.pool.Disable(idx, decision.statusCode, decision.reason, "system:auto", version) {
+			v.persistDisabledKeyAsync(key, version, decision.reason)
+		}
 	default:
 		v.pool.Release(idx)
 	}

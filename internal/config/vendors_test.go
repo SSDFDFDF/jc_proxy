@@ -7,7 +7,7 @@ import (
 )
 
 const v2VendorArrayYAML = `
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 storage:
@@ -124,7 +124,7 @@ func TestDetectSchemaVersion(t *testing.T) {
 
 func TestApplyDefaultsMintsMissingVendorID(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 vendors:

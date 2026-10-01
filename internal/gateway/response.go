@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"jc_proxy/internal/config"
 )
@@ -18,6 +19,12 @@ const (
 )
 
 var errAbortDownstreamResponse = errors.New("abort downstream response")
+
+// Long-lived streams retain only 4 KiB each, not a 32 KiB non-streaming buffer.
+var streamingResponseBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, streamingResponseCopyBufferBytes)
+	return &buf
+}}
 
 type flushWriter struct {
 	writer  io.Writer
@@ -77,12 +84,16 @@ func maybeDecompressPreview(data []byte, header http.Header) []byte {
 		defer gz.Close()
 		reader = gz
 	case strings.Contains(enc, "deflate"):
-		reader = flate.NewReader(bytes.NewReader(data))
+		fr := flate.NewReader(bytes.NewReader(data))
+		defer fr.Close()
+		reader = fr
 	default:
 		return data
 	}
 
-	decompressed, err := io.ReadAll(reader)
+	// A small compressed preview can expand enormously. Bound diagnostic
+	// decompression too; never inflate an untrusted error body without a cap.
+	decompressed, err := io.ReadAll(io.LimitReader(reader, 64<<10))
 	if err != nil || len(decompressed) == 0 {
 		return data
 	}
@@ -91,9 +102,9 @@ func maybeDecompressPreview(data []byte, header http.Header) []byte {
 
 func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
 	if streaming {
-		return make([]byte, streamingResponseCopyBufferBytes), func() {}
+		buf := streamingResponseBuffers.Get().(*[]byte)
+		return *buf, func() { streamingResponseBuffers.Put(buf) }
 	}
-
 	buf := r.bufPool.Get().(*[]byte)
 	return *buf, func() {
 		r.bufPool.Put(buf)

@@ -977,13 +977,17 @@ func (c *Config) validate(requireVendors bool) error {
 			return fmt.Errorf("vendor %q max_upstream_attempts must be between 1 and %d", vendorName, MaxUpstreamAttemptsLimit)
 		}
 		switch vendor.LoadBalance {
-		case "round_robin", "random", "least_used", "least_requests":
+		case "round_robin", "random", "least_used", "least_requests", "lowest_latency", "highest_success", "adaptive":
 		default:
 			return fmt.Errorf("vendor %q invalid load_balance: %s", vendorName, vendor.LoadBalance)
 		}
 		switch NormalizeProvider(vendor.Provider, vendorName) {
 		case "openai", "anthropic", "gemini", "deepseek", "azure_openai", "generic":
 		case "aggregate":
+			switch vendor.LoadBalance {
+			case "lowest_latency", "highest_success", "adaptive":
+				return fmt.Errorf("vendor %q load_balance %s is a managed-key strategy; configure it on child vendors", vendorName, vendor.LoadBalance)
+			}
 			for _, child := range vendor.Aggregate.Children {
 				if strings.TrimSpace(child.VendorID) == "" {
 					return fmt.Errorf("vendor %q has empty aggregate child vendor_id", vendorName)

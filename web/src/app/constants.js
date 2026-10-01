@@ -12,7 +12,7 @@ export const NAV_ITEMS = [
 ]
 
 export const EMPTY_CONFIG = {
-  schema_version: 2,
+  schema_version: 3,
   server: {
     listen: ':8092',
     read_timeout: 30_000_000_000,

@@ -34,6 +34,7 @@ type ConditionalStatusStore interface {
 }
 
 type RuntimeStats struct {
+	RecentStats
 	TotalRequests     int    `json:"total_requests,omitempty"`
 	SuccessCount      int    `json:"success_count,omitempty"`
 	LastStatus        int    `json:"last_status,omitempty"`
@@ -242,11 +243,32 @@ func (s RuntimeStats) DeltaSince(prev RuntimeStats) (RuntimeStats, bool) {
 		delta.LastStatus = s.LastStatus
 		delta.LastError = s.LastError
 	}
+	if s.RecentStats != prev.RecentStats {
+		delta.RecentStats = s.RecentStats
+	}
 	return delta, true
 }
 
+// ApplyDelta adds lifetime counters but replaces the recent-window summary.
+// A timing-only update must not erase the last lifetime status/error.
+func (s *RuntimeStats) ApplyDelta(delta RuntimeStats) {
+	if delta.TotalRequests > 0 {
+		s.LastStatus = delta.LastStatus
+		s.LastError = normalizeRuntimeLastError(delta.LastError)
+	}
+	s.TotalRequests += delta.TotalRequests
+	s.SuccessCount += delta.SuccessCount
+	s.UnauthorizedCount += delta.UnauthorizedCount
+	s.ForbiddenCount += delta.ForbiddenCount
+	s.RateLimitCount += delta.RateLimitCount
+	s.OtherErrorCount += delta.OtherErrorCount
+	if delta.RecentRequests > 0 {
+		s.RecentStats = delta.RecentStats
+	}
+}
+
 func (s RuntimeStats) IsZero() bool {
-	return s.TotalRequests == 0 &&
+	return s.RecentRequests == 0 && s.TotalRequests == 0 &&
 		s.SuccessCount == 0 &&
 		s.LastStatus == 0 &&
 		s.UnauthorizedCount == 0 &&

@@ -16,10 +16,12 @@ import (
 //	     reference keys off the immutable id, so a vendor can be renamed
 //	     without touching stored data.
 //
+//	v3 - key runtime statistics include the latest five-attempt timing summary.
+//
 // The running binary never migrates data in place. It detects the stored
 // version and refuses to start on anything other than CurrentSchemaVersion,
 // pointing the operator at the standalone upgrade command.
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 // LegacySchemaVersion is the version assumed when a stored payload carries no
 // explicit schema_version field.

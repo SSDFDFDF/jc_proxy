@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"jc_proxy/internal/config"
@@ -16,6 +17,9 @@ import (
 )
 
 type Service struct {
+	// Serializes the entire read/modify/persist/publish sequence, including
+	// key mutations that rebuild routing. Read-only/data-plane paths do not wait.
+	changeMu sync.Mutex
 	store    *Store
 	runtime  *gateway.Runtime
 	keyStore keystore.Store
@@ -102,8 +106,18 @@ func (s *Service) GetConfigRaw() (*config.Config, error) {
 }
 
 func (s *Service) UpdateConfig(actor string, next *config.Config) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
+	return s.updateConfigLocked(actor, next)
+}
+
+func (s *Service) updateConfigLocked(actor string, next *config.Config) error {
 	if next == nil {
 		return errors.New("config is nil")
+	}
+	next, err := next.Clone()
+	if err != nil {
+		return err
 	}
 	prev, err := s.store.GetConfig()
 	if err != nil {
@@ -114,10 +128,7 @@ func (s *Service) UpdateConfig(actor string, next *config.Config) error {
 	if err := next.PrepareAndValidate(); err != nil {
 		return err
 	}
-	if err := s.runtime.Update(next); err != nil {
-		return err
-	}
-	if err := s.store.UpdateConfig(next); err != nil {
+	if err := s.runtime.UpdateAndPersist(next, s.store.UpdateConfig); err != nil {
 		return err
 	}
 	if adminSessionsNeedReset(prev, next) {
@@ -128,6 +139,8 @@ func (s *Service) UpdateConfig(actor string, next *config.Config) error {
 }
 
 func (s *Service) RotatePassword(actor, plaintext string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
@@ -138,7 +151,7 @@ func (s *Service) RotatePassword(actor, plaintext string) error {
 	}
 	cfg.Admin.PasswordHash = hash
 	cfg.Admin.Password = ""
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return err
 	}
 	s.audit.Log(actor, "admin.password.rotate", nil)
@@ -180,6 +193,8 @@ func adminSessionsNeedReset(prev, next *config.Config) bool {
 
 // CreateVendor registers a brand new vendor and mints its immutable id.
 func (s *Service) CreateVendor(actor, name string, vc config.VendorConfig) (string, error) {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	name = strings.TrimSpace(name)
 	if err := config.ValidateVendorName(name); err != nil {
 		return "", err
@@ -196,7 +211,7 @@ func (s *Service) CreateVendor(actor, name string, vc config.VendorConfig) (stri
 		return "", err
 	}
 	cfg.Vendors = append(cfg.Vendors, config.VendorEntry{ID: id, Name: name, VendorConfig: vc})
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return "", err
 	}
 	s.audit.Log(actor, "vendor.create", map[string]any{"vendor_id": id, "vendor": name, "provider": vc.Provider})
@@ -206,6 +221,8 @@ func (s *Service) CreateVendor(actor, name string, vc config.VendorConfig) (stri
 // UpdateVendor replaces the configuration of an existing vendor addressed by
 // its immutable id. The name is untouched here; use RenameVendor for that.
 func (s *Service) UpdateVendor(actor, vendorID string, vc config.VendorConfig) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	vendorID = strings.TrimSpace(vendorID)
 	if vendorID == "" {
 		return errors.New("vendor id is required")
@@ -224,7 +241,7 @@ func (s *Service) UpdateVendor(actor, vendorID string, vc config.VendorConfig) e
 		Name:         prev.Name,
 		VendorConfig: mergeVendorConfigForAdminUpsert(prev.VendorConfig, vc),
 	}
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return err
 	}
 	s.audit.Log(actor, "vendor.update", map[string]any{"vendor_id": prev.ID, "vendor": prev.Name, "provider": vc.Provider})
@@ -236,6 +253,8 @@ func (s *Service) UpdateVendor(actor, vendorID string, vc config.VendorConfig) e
 // runtime statistics and aggregate topology are untouched. The one visible
 // effect is that clients must call the new path segment.
 func (s *Service) RenameVendor(actor, vendorID, newName string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	vendorID = strings.TrimSpace(vendorID)
 	if vendorID == "" {
 		return errors.New("vendor id is required")
@@ -260,7 +279,7 @@ func (s *Service) RenameVendor(actor, vendorID, newName string) error {
 		return fmt.Errorf("vendor name %q already used by another vendor", newName)
 	}
 	cfg.Vendors[idx].Name = newName
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return err
 	}
 	s.audit.Log(actor, "vendor.rename", map[string]any{"vendor_id": vendorID, "from": oldName, "to": newName})
@@ -323,6 +342,8 @@ func mergeCooldownRuleForAdminUpsert(prev, next config.ErrorCooldownRule) config
 }
 
 func (s *Service) DeleteVendor(actor, vendorID string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
@@ -343,7 +364,7 @@ func (s *Service) DeleteVendor(actor, vendorID string) error {
 		}
 	}
 	cfg.DeleteVendorByID(entry.ID)
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return err
 	}
 	if err := s.keyStore.DeleteVendor(entry.ID); err != nil {
@@ -365,6 +386,8 @@ func (s *Service) AddUpstreamKey(actor, vendor, key string) error {
 }
 
 func (s *Service) AddUpstreamKeys(actor, vendor string, keys []string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	if err := s.requireVendor(vendor); err != nil {
 		return err
 	}
@@ -395,6 +418,8 @@ func (s *Service) DeleteUpstreamKey(actor, vendor, key string) error {
 }
 
 func (s *Service) DeleteUpstreamKeys(actor, vendor string, keys []string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	if err := s.requireVendor(vendor); err != nil {
 		return err
 	}
@@ -417,6 +442,8 @@ func (s *Service) DeleteUpstreamKeys(actor, vendor string, keys []string) error 
 }
 
 func (s *Service) ReplaceUpstreamKeys(actor, vendor string, keys []string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	if err := s.requireVendor(vendor); err != nil {
 		return err
 	}
@@ -448,6 +475,8 @@ func (s *Service) EnableUpstreamKey(actor, vendor, key string) error {
 }
 
 func (s *Service) RecoverUpstreamKeys(actor, vendor string, keys []string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	if err := s.requireVendor(vendor); err != nil {
 		return err
 	}
@@ -471,6 +500,8 @@ func (s *Service) RecoverUpstreamKeys(actor, vendor string, keys []string) error
 }
 
 func (s *Service) SetUpstreamKeyStatus(actor, vendor string, keys []string, status, reason string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	if err := s.requireVendor(vendor); err != nil {
 		return err
 	}
@@ -499,6 +530,8 @@ func (s *Service) SetUpstreamKeyStatus(actor, vendor string, keys []string, stat
 }
 
 func (s *Service) SetUpstreamKeyRemark(actor, vendor, key, remark string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	vendor = strings.TrimSpace(vendor)
 	key = strings.TrimSpace(key)
 	remark = strings.TrimSpace(remark)
@@ -610,6 +643,8 @@ func (s *Service) ListUpstreamKeys() (*UpstreamKeysResponse, error) {
 }
 
 func (s *Service) AddClientKey(actor, vendorID, key string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
@@ -629,7 +664,7 @@ func (s *Service) AddClientKey(actor, vendorID, key string) error {
 	cfg.Vendors[idx].ClientAuth.Enabled = true
 	cfg.Vendors[idx].ClientAuth.Keys = append(cfg.Vendors[idx].ClientAuth.Keys, key)
 	name := cfg.Vendors[idx].Name
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return err
 	}
 	s.audit.Log(actor, "client_key.add", map[string]any{"vendor_id": vendorID, "vendor": name})
@@ -637,6 +672,8 @@ func (s *Service) AddClientKey(actor, vendorID, key string) error {
 }
 
 func (s *Service) DeleteClientKey(actor, vendorID, key string) error {
+	s.changeMu.Lock()
+	defer s.changeMu.Unlock()
 	cfg, err := s.store.GetConfig()
 	if err != nil {
 		return err
@@ -663,7 +700,7 @@ func (s *Service) DeleteClientKey(actor, vendorID, key string) error {
 		cfg.Vendors[idx].ClientAuth.Enabled = false
 	}
 	name := cfg.Vendors[idx].Name
-	if err := s.UpdateConfig(actor, cfg); err != nil {
+	if err := s.updateConfigLocked(actor, cfg); err != nil {
 		return err
 	}
 	s.audit.Log(actor, "client_key.delete", map[string]any{"vendor_id": vendorID, "vendor": name})

@@ -37,6 +37,12 @@ type KeyState struct {
 	CooldownUntil time.Time
 	CooldownLevel int
 	stats         *RuntimeStatsHandle
+	retired       bool // removed from the current plan; old routers must not reuse it
+	lastAttempt   time.Duration
+	sampleExpires time.Duration
+	nextExplore   time.Duration
+	liveSamples   int
+	failedSamples int
 }
 
 const maxLastErrorLength = 240
@@ -44,9 +50,13 @@ const maxLastErrorLength = 240
 type loadScore struct {
 	primary   int
 	secondary int
+	cost      float64 // only performance strategies use this dimension
 }
 
 func (s loadScore) less(other loadScore) bool {
+	if s.cost != other.cost {
+		return s.cost < other.cost
+	}
 	if s.primary != other.primary {
 		return s.primary < other.primary
 	}
@@ -54,12 +64,13 @@ func (s loadScore) less(other loadScore) bool {
 }
 
 type Pool struct {
-	strategy string
-	keys     []KeyState
-	rrIdx    int
+	strategy    string
+	keys        []*KeyState
+	rrIdx       int
+	exploration *explorationState // shared across overlapping router generations
 
 	rng           *rand.Rand
-	mu            sync.Mutex
+	mu            *sync.Mutex // shared by all overlapping router generations of this vendor
 	nowf          func() time.Time
 	pickerScratch []int // reusable scratch slice for random picks; protected by mu
 }
@@ -77,12 +88,13 @@ func NewPool(strategy string, keys []string) (*Pool, error) {
 
 func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
 	switch strategy {
-	case "round_robin", "random", "least_used", "least_requests":
+	case "round_robin", "random", "least_used", "least_requests", "lowest_latency", "highest_success", "adaptive":
 	default:
 		return nil, errors.New("invalid strategy")
 	}
 
-	states := make([]KeyState, 0, len(keys))
+	states := make([]*KeyState, 0, len(keys))
+	createdAt := time.Since(schedulerEpoch)
 	for _, cfg := range keys {
 		key := strings.TrimSpace(cfg.Key)
 		if key == "" {
@@ -91,11 +103,9 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
 		stats := cfg.Stats
 		if stats == nil {
 			stats = NewRuntimeStatsHandle(cfg.RuntimeStats)
-		} else {
-			stats.MergeBaseline(cfg.RuntimeStats)
 		}
 		status := keystore.NormalizeStatus(cfg.Status)
-		states = append(states, KeyState{
+		states = append(states, &KeyState{
 			Key:           key,
 			Status:        status,
 			DisableReason: strings.TrimSpace(cfg.DisableReason),
@@ -103,14 +113,19 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
 			DisabledBy:    strings.TrimSpace(cfg.DisabledBy),
 			Version:       cfg.Version,
 			stats:         stats,
+			sampleExpires: createdAt + sampleFreshness,
+			lastAttempt:   math.MinInt64,
+			nextExplore:   math.MinInt64,
 		})
 	}
 
 	return &Pool{
-		strategy: strategy,
-		keys:     states,
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		nowf:     time.Now,
+		strategy:    strategy,
+		exploration: &explorationState{},
+		keys:        states,
+		mu:          &sync.Mutex{},
+		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
+		nowf:        time.Now,
 	}, nil
 }
 
@@ -125,6 +140,13 @@ func (p *Pool) AcquireExcept(excluded map[int]struct{}) (idx int, key string, ok
 // AcquireExceptAllowed selects an available key index from allowed.
 // A nil allowed slice means all keys are eligible; a non-nil empty slice means none.
 func (p *Pool) AcquireExceptAllowed(excluded map[int]struct{}, allowed []int) (idx int, key string, ok bool) {
+	idx, key, _, ok = p.AcquireVersioned(excluded, allowed)
+	return
+}
+
+// AcquireVersioned captures the persisted version in the same critical section
+// as selection, so a concurrent admin update cannot relabel an older attempt.
+func (p *Pool) AcquireVersioned(excluded map[int]struct{}, allowed []int) (idx int, key string, version int64, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -147,16 +169,19 @@ func (p *Pool) AcquireExceptAllowed(excluded map[int]struct{}, allowed []int) (i
 				secondary: p.keys[i].Inflight,
 			}
 		})
+	case "lowest_latency", "highest_success", "adaptive":
+		pick, ok = p.pickPerformanceLocked(now, excluded, allowed)
 	default:
 		pick, ok = p.pickRoundRobinLocked(now, excluded, allowed)
 	}
 
 	if !ok || pick < 0 {
-		return 0, "", false
+		return 0, "", 0, false
 	}
 
 	p.keys[pick].Inflight++
-	return pick, p.keys[pick].Key, true
+	p.keys[pick].lastAttempt = now.Sub(schedulerEpoch)
+	return pick, p.keys[pick].Key, p.keys[pick].Version, true
 }
 
 func (p *Pool) Version(idx int) int64 {
@@ -168,13 +193,17 @@ func (p *Pool) Version(idx int) int64 {
 	return p.keys[idx].Version
 }
 
-func (p *Pool) ReleaseSuccess(idx int) {
+func (p *Pool) ReleaseSuccess(idx int, expectedVersion ...int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.releaseInflightLocked(idx) {
 		return
 	}
-	p.recordSuccessLocked(idx)
+	current := p.currentVersionLocked(idx, expectedVersion)
+	p.keys[idx].stats.RecordSuccess(!current)
+	if !current {
+		return
+	}
 	p.keys[idx].Failures = 0
 	p.keys[idx].CooldownLevel = 0
 }
@@ -191,40 +220,53 @@ func (p *Pool) ReleaseFailure(idx int) {
 	if !p.releaseInflightLocked(idx) {
 		return
 	}
-	p.keys[idx].TotalRequests++
+	p.keys[idx].stats.RecordError(0, "upstream request failed")
 	p.recordFailureLocked(idx)
 }
 
-func (p *Pool) Observe(idx int, statusCode int, reason string) {
+func (p *Pool) Observe(idx int, statusCode int, reason string, expectedVersion ...int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.releaseInflightLocked(idx) {
 		return
 	}
-	p.recordErrorLocked(idx, statusCode, reason)
+	current := p.currentVersionLocked(idx, expectedVersion)
+	p.keys[idx].stats.RecordError(statusCode, reason, !current)
+	if !current {
+		return
+	}
 	p.keys[idx].Failures = 0
 }
 
-func (p *Pool) Cooldown(idx int, statusCode int, reason string, duration time.Duration) {
+func (p *Pool) Cooldown(idx int, statusCode int, reason string, duration time.Duration, expectedVersion ...int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.releaseInflightLocked(idx) {
 		return
 	}
-	p.recordErrorLocked(idx, statusCode, reason)
+	current := p.currentVersionLocked(idx, expectedVersion)
+	p.keys[idx].stats.RecordError(statusCode, reason, !current)
+	if !current {
+		return
+	}
 	p.recordFailureLocked(idx)
 	duration = scaledCooldownDuration(p.keys[idx].CooldownLevel, duration)
 	p.keys[idx].CooldownUntil = p.nowf().Add(duration)
 }
 
-func (p *Pool) Disable(idx int, statusCode int, reason, by string) {
+func (p *Pool) Disable(idx int, statusCode int, reason, by string, expectedVersion ...int64) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.releaseInflightLocked(idx) {
-		return
+		return false
 	}
-	p.recordErrorLocked(idx, statusCode, reason)
+	current := p.currentVersionLocked(idx, expectedVersion)
+	p.keys[idx].stats.RecordError(statusCode, reason, !current)
+	if !current {
+		return false
+	}
 	p.disableLocked(idx, keystore.KeyStatusDisabledAuto, reason, by)
+	return true
 }
 
 func (p *Pool) DisableKey(key, reason, by string) bool {
@@ -260,12 +302,36 @@ func (p *Pool) RecoverKey(key string) bool {
 	return true
 }
 
+// LoadTotals returns only the scheduling counters, without allocating a full
+// key snapshot or locking each key's statistics handle. A non-nil allowlist
+// restricts work to those indexes, matching aggregate child key selection.
+func (p *Pool) LoadTotals(allowed []int) (inflight, totalRequests int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	add := func(i int) {
+		if i >= 0 && i < len(p.keys) {
+			inflight += int64(p.keys[i].Inflight)
+			totalRequests += int64(p.totalRequestsLocked(i))
+		}
+	}
+	if allowed == nil {
+		for i := range p.keys {
+			add(i)
+		}
+	} else {
+		for _, i := range allowed {
+			add(i)
+		}
+	}
+	return
+}
+
 func (p *Pool) Snapshot() []KeyState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cp := make([]KeyState, len(p.keys))
-	copy(cp, p.keys)
 	for i := range cp {
+		cp[i] = *p.keys[i]
 		if cp[i].stats != nil {
 			cp[i].RuntimeStats = cp[i].stats.Snapshot()
 		}
@@ -300,63 +366,59 @@ func (p *Pool) HasAvailableAllowed(excluded map[int]struct{}, allowed []int) boo
 	return false
 }
 
-func (p *Pool) MergeRuntimeStats(states []KeyState) {
-	if len(states) == 0 {
+// ShareRuntimeStateFrom is a commit-time operation on an UNPUBLISHED pool.
+// Retained keys share the actual state and mutex, not a point-in-time copy.
+// Old in-flight completions therefore update exactly the state new picks read.
+func (p *Pool) ShareRuntimeStateFrom(prev *Pool) {
+	if prev == nil || prev == p {
 		return
 	}
+	prev.mu.Lock()
+	defer prev.mu.Unlock()
+	p.mu = prev.mu
+	p.exploration = prev.exploration
+	index := make(map[string]*KeyState, len(prev.keys))
+	for _, state := range prev.keys {
+		index[state.Key] = state
+	}
+	for i, incoming := range p.keys {
+		state := index[incoming.Key]
+		if state == nil {
+			continue
+		}
+		delete(index, incoming.Key)
+		if incoming.Version > state.Version {
+			// Only a newer persisted/admin version may override live health.
+			// A stale active snapshot must not resurrect an auto-disabled key.
+			state.Status = incoming.Status
+			state.DisableReason = incoming.DisableReason
+			state.DisabledAt = incoming.DisabledAt
+			state.DisabledBy = incoming.DisabledBy
+			state.Version = incoming.Version
+			state.CooldownUntil = time.Time{}
+			state.CooldownLevel = 0
+			state.Failures = 0
+			if keystore.IsActiveStatus(state.Status) {
+				state.stats.ClearLastError()
+			}
+		}
+		p.keys[i] = state
+	}
+	for _, removed := range index {
+		removed.retired = true
+	}
+}
 
+func (p *Pool) Retire() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	index := make(map[string]KeyState, len(states))
-	for _, state := range states {
-		index[strings.TrimSpace(state.Key)] = state
+	for _, state := range p.keys {
+		state.retired = true
 	}
+}
 
-	for i := range p.keys {
-		current := &p.keys[i]
-		prev, ok := index[current.Key]
-		if !ok {
-			continue
-		}
-
-		// Carry over in-memory runtime state that is not persisted in the
-		// keystore, so a router rebuild (triggered by adding/deleting/disabling
-		// any key) does not reset cooldown and backoff for keys that still
-		// exist. Inflight is intentionally NOT carried: requests in flight when
-		// the rebuild happened release against the previous pool, so copying it
-		// here would leak a permanently-elevated count on the new pool.
-		current.CooldownUntil = prev.CooldownUntil
-		current.CooldownLevel = prev.CooldownLevel
-		current.Failures = prev.Failures
-
-		if current.stats != nil {
-			current.stats.MergeBaseline(prev.RuntimeStats)
-			continue
-		}
-		if prev.TotalRequests > current.TotalRequests {
-			current.TotalRequests = prev.TotalRequests
-		}
-		if prev.SuccessCount > current.SuccessCount {
-			current.SuccessCount = prev.SuccessCount
-		}
-		if prev.UnauthorizedCount > current.UnauthorizedCount {
-			current.UnauthorizedCount = prev.UnauthorizedCount
-		}
-		if prev.ForbiddenCount > current.ForbiddenCount {
-			current.ForbiddenCount = prev.ForbiddenCount
-		}
-		if prev.RateLimitCount > current.RateLimitCount {
-			current.RateLimitCount = prev.RateLimitCount
-		}
-		if prev.OtherErrorCount > current.OtherErrorCount {
-			current.OtherErrorCount = prev.OtherErrorCount
-		}
-		if prev.TotalRequests >= current.TotalRequests {
-			current.LastStatus = prev.LastStatus
-			current.LastError = prev.LastError
-		}
-	}
+func (p *Pool) currentVersionLocked(idx int, expected []int64) bool {
+	return !p.keys[idx].retired && (len(expected) == 0 || p.keys[idx].Version == expected[0])
 }
 
 func (p *Pool) Stats() []map[string]any {
@@ -379,6 +441,12 @@ func (p *Pool) Stats() []map[string]any {
 			"disable_reason":             ks.DisableReason,
 			"disabled_by":                ks.DisabledBy,
 			"disabled_at":                disabledAt,
+			"recent_requests":            ks.RecentRequests,
+			"recent_success_count":       ks.RecentSuccessCount,
+			"header_samples":             ks.HeaderSamples,
+			"avg_header_ms":              ks.AvgHeaderMS,
+			"response_samples":           ks.ResponseSamples,
+			"avg_response_ms":            ks.AvgResponseMS,
 			"total_requests":             ks.TotalRequests,
 			"success_count":              ks.SuccessCount,
 			"inflight":                   ks.Inflight,
@@ -448,19 +516,9 @@ func (p *Pool) pickRandomLocked(now time.Time, excluded map[int]struct{}, allowe
 	}
 	scratch := p.pickerScratch[:0]
 	appendIfAvailable := func(i int) {
-		if _, skip := excluded[i]; skip {
-			return
+		if p.isAvailableLocked(i, now, excluded) {
+			scratch = append(scratch, i)
 		}
-		if i < 0 || i >= len(p.keys) {
-			return
-		}
-		if !keystore.IsActiveStatus(p.keys[i].Status) {
-			return
-		}
-		if p.keys[i].CooldownUntil.After(now) {
-			return
-		}
-		scratch = append(scratch, i)
 	}
 	if allowed == nil {
 		for i := range p.keys {
@@ -523,7 +581,7 @@ func (p *Pool) isAvailableLocked(idx int, now time.Time, excluded map[int]struct
 	if _, skip := excluded[idx]; skip {
 		return false
 	}
-	if !keystore.IsActiveStatus(p.keys[idx].Status) {
+	if p.keys[idx].retired || !keystore.IsActiveStatus(p.keys[idx].Status) {
 		return false
 	}
 	return !p.keys[idx].CooldownUntil.After(now)
@@ -565,40 +623,6 @@ func scaledCooldownDuration(level int, base time.Duration) time.Duration {
 		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(int64(base) * factor)
-}
-
-func (p *Pool) recordSuccessLocked(idx int) {
-	if p.keys[idx].stats != nil {
-		p.keys[idx].stats.RecordSuccess()
-		return
-	}
-	p.keys[idx].TotalRequests++
-	p.keys[idx].SuccessCount++
-	p.keys[idx].LastStatus = http.StatusOK
-	p.keys[idx].LastError = ""
-}
-
-func (p *Pool) recordErrorLocked(idx int, statusCode int, reason string) {
-	if p.keys[idx].stats != nil {
-		p.keys[idx].stats.RecordError(statusCode, reason)
-		return
-	}
-	p.keys[idx].TotalRequests++
-	p.keys[idx].LastStatus = statusCode
-	p.keys[idx].LastError = normalizeLastError(reason)
-
-	switch statusCode {
-	case http.StatusUnauthorized:
-		p.keys[idx].UnauthorizedCount++
-	case http.StatusForbidden:
-		p.keys[idx].ForbiddenCount++
-	case http.StatusTooManyRequests:
-		p.keys[idx].RateLimitCount++
-	default:
-		if statusCode >= http.StatusBadRequest || statusCode == 0 {
-			p.keys[idx].OtherErrorCount++
-		}
-	}
 }
 
 func (p *Pool) disableLocked(idx int, status, reason, by string) {

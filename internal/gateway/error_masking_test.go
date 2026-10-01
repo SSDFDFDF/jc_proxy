@@ -274,7 +274,7 @@ func TestRouterMasksUpstream405LoadedFromYAML(t *testing.T) {
 
 	configYAML := func(maskedStatus int) string {
 		return `
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 storage:

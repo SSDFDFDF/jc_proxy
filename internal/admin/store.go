@@ -35,6 +35,7 @@ type Store struct {
 	useRemote         bool
 	bootstrap         config.StorageConfig
 	initAdminPassword string
+	writeMu           sync.Mutex
 	mu                sync.RWMutex
 	cfg               *config.Config
 }
@@ -152,6 +153,8 @@ func (s *Store) GeneratedAdminPassword() string {
 }
 
 func (s *Store) UpdateConfig(next *config.Config) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if next == nil {
 		return errors.New("config is nil")
 	}
@@ -165,7 +168,10 @@ func (s *Store) UpdateConfig(next *config.Config) error {
 			return err
 		}
 	}
-	if s.path != "" {
+	// Remote mode has one authoritative commit point. The local file is
+	// bootstrap-only; dual-writing it after a successful DB commit could report
+	// failure while the database had already changed.
+	if !s.useRemote && s.path != "" {
 		if err := writeConfigFile(s.path, sanitized); err != nil {
 			return err
 		}
@@ -258,9 +264,22 @@ func writeConfigFile(path string, cfg *config.Config) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir config dir: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create tmp config: %w", err)
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("write tmp config: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync tmp config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close tmp config: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("replace config: %w", err)

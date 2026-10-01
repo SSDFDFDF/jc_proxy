@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"jc_proxy/internal/keystore"
 )
@@ -12,6 +13,13 @@ type RuntimeStatsHandle struct {
 	mu            sync.Mutex
 	stats         keystore.RuntimeStats
 	totalRequests atomic.Int64
+	window        [recentWindowSize]requestSample
+	nextSample    int
+	sampleCount   int
+	lastSample    time.Time
+	latencyCost   atomic.Uint64
+	successCost   atomic.Uint64
+	adaptiveCost  atomic.Uint64
 }
 
 func NewRuntimeStatsHandle(initial keystore.RuntimeStats) *RuntimeStatsHandle {
@@ -46,6 +54,12 @@ func (h *RuntimeStatsHandle) MergeBaseline(baseline keystore.RuntimeStats) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// Persisted averages seed cold-start selection, never fabricate raw samples
+	// or overwrite a live window when a router reload reads a stale baseline.
+	if h.sampleCount == 0 {
+		h.stats.RecentStats = baseline.RecentStats
+		h.updateCostsLocked()
+	}
 	if baseline.TotalRequests > h.stats.TotalRequests {
 		h.stats.LastStatus = baseline.LastStatus
 		h.stats.LastError = normalizeLastError(baseline.LastError)
@@ -71,7 +85,9 @@ func (h *RuntimeStatsHandle) MergeBaseline(baseline keystore.RuntimeStats) {
 	}
 }
 
-func (h *RuntimeStatsHandle) RecordSuccess() {
+// preserveLast is used for results from an obsolete admin version: count the
+// attempt without erasing newer diagnostics or resurrecting cleared errors.
+func (h *RuntimeStatsHandle) RecordSuccess(preserveLast ...bool) {
 	if h == nil {
 		return
 	}
@@ -79,20 +95,24 @@ func (h *RuntimeStatsHandle) RecordSuccess() {
 	defer h.mu.Unlock()
 	h.stats.TotalRequests++
 	h.stats.SuccessCount++
-	h.stats.LastStatus = http.StatusOK
-	h.stats.LastError = ""
+	if len(preserveLast) == 0 || !preserveLast[0] {
+		h.stats.LastStatus = http.StatusOK
+		h.stats.LastError = ""
+	}
 	h.totalRequests.Store(int64(h.stats.TotalRequests))
 }
 
-func (h *RuntimeStatsHandle) RecordError(statusCode int, reason string) {
+func (h *RuntimeStatsHandle) RecordError(statusCode int, reason string, preserveLast ...bool) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.stats.TotalRequests++
-	h.stats.LastStatus = statusCode
-	h.stats.LastError = normalizeLastError(reason)
+	if len(preserveLast) == 0 || !preserveLast[0] {
+		h.stats.LastStatus = statusCode
+		h.stats.LastError = normalizeLastError(reason)
+	}
 
 	switch statusCode {
 	case http.StatusUnauthorized:

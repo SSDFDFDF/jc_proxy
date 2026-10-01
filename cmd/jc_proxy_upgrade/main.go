@@ -538,6 +538,18 @@ func upgradeKeysPG(cfg config.UpstreamKeyStorePGSQLConfig, mapping map[string]st
 		return nil
 	}
 
+	version, err := keyStoreSchemaVersion(db, cfg.Table+"_meta")
+	if err != nil {
+		return err
+	}
+	if version > config.CurrentSchemaVersion {
+		return config.NewSchemaVersionError("upstream key table "+cfg.Table, version)
+	}
+	if version == config.CurrentSchemaVersion {
+		log.Printf("upstream key table %s already at schema v%d", cfg.Table, version)
+		return nil
+	}
+
 	hasVendorID, err := columnExists(db, cfg.Table, "vendor_id")
 	if err != nil {
 		return err
@@ -545,9 +557,10 @@ func upgradeKeysPG(cfg config.UpstreamKeyStorePGSQLConfig, mapping map[string]st
 	if hasVendorID {
 		log.Printf("upstream key table %s already uses vendor_id", cfg.Table)
 		if dryRun {
+			log.Printf("would add recent_stats JSONB to %s and stamp schema v%d", cfg.Table, config.CurrentSchemaVersion)
 			return nil
 		}
-		return stampKeyStoreVersion(db, metaTable)
+		return stampKeyStoreVersion(db, table, metaTable)
 	}
 
 	var rowCount int
@@ -635,7 +648,7 @@ func upgradeKeysPG(cfg config.UpstreamKeyStorePGSQLConfig, mapping map[string]st
 	}
 	log.Printf("verified: %d row(s) intact, every partition uses an assigned vendor id", rowCount)
 	log.Printf("upstream key table %s migrated to vendor_id", cfg.Table)
-	return stampKeyStoreVersion(db, metaTable)
+	return stampKeyStoreVersion(db, table, metaTable)
 }
 
 // verifyKeyMigration re-reads the migrated table and confirms nothing was lost:
@@ -686,14 +699,22 @@ func warnPoolerDSN(origin, dsn string) {
 	}
 }
 
-func stampKeyStoreVersion(db *sql.DB, metaTable string) error {
+func stampKeyStoreVersion(db *sql.DB, table, metaTable string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin runtime stats schema migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS recent_stats JSONB NOT NULL DEFAULT '{}'::jsonb", table)); err != nil {
+		return fmt.Errorf("add recent runtime stats column: %w", err)
+	}
 	ddl := fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
   meta_key TEXT PRIMARY KEY,
   meta_value TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, metaTable)
-	if _, err := db.Exec(ddl); err != nil {
+	if _, err := tx.Exec(ddl); err != nil {
 		return fmt.Errorf("create upstream key meta table: %w", err)
 	}
 	upsert := fmt.Sprintf(`
@@ -701,8 +722,11 @@ INSERT INTO %s (meta_key, meta_value, updated_at)
 VALUES ('schema_version', $1, NOW())
 ON CONFLICT (meta_key)
 DO UPDATE SET meta_value = EXCLUDED.meta_value, updated_at = NOW()`, metaTable)
-	if _, err := db.Exec(upsert, fmt.Sprintf("%d", config.CurrentSchemaVersion)); err != nil {
+	if _, err := tx.Exec(upsert, fmt.Sprintf("%d", config.CurrentSchemaVersion)); err != nil {
 		return fmt.Errorf("stamp upstream key schema version: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit runtime stats schema migration: %w", err)
 	}
 	log.Printf("upstream key store stamped at schema v%d", config.CurrentSchemaVersion)
 	return nil

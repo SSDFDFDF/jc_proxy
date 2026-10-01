@@ -204,23 +204,7 @@ func aggregateChildLoadScore(entry aggregateChildEntry, includeRequests bool) (p
 	if entry.vendor == nil || entry.vendor.pool == nil {
 		return 0, 0
 	}
-	snap := entry.vendor.pool.Snapshot()
-	var inflight int64
-	var totalRequests int64
-	if entry.keyIdxs != nil {
-		for _, idx := range entry.keyIdxs {
-			if idx < 0 || idx >= len(snap) {
-				continue
-			}
-			inflight += int64(snap[idx].Inflight)
-			totalRequests += int64(snap[idx].TotalRequests)
-		}
-	} else {
-		for _, ks := range snap {
-			inflight += int64(ks.Inflight)
-			totalRequests += int64(ks.TotalRequests)
-		}
-	}
+	inflight, totalRequests := entry.vendor.pool.LoadTotals(entry.keyIdxs)
 	if includeRequests {
 		return totalRequests + inflight, inflight
 	}
@@ -482,10 +466,9 @@ func (r *Router) VendorStateSnapshots() map[string][]balancer.KeyState {
 	return out
 }
 
-// MergeRuntimeStatsFrom carries in-memory key state (cooldown, backoff level,
-// consecutive failures) across a router rebuild. Matching on vendor id rather
-// than name is what lets a rename keep that state instead of resetting it.
-func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
+// ShareRuntimeStateFrom binds retained keys to live state at commit time.
+// It must be called only on an unpublished router, after persistence succeeds.
+func (r *Router) ShareRuntimeStateFrom(prev *Router) {
 	if r == nil || prev == nil {
 		return
 	}
@@ -497,7 +480,12 @@ func (r *Router) MergeRuntimeStatsFrom(prev *Router) {
 		if prevVendor == nil || prevVendor.pool == nil {
 			continue
 		}
-		vendor.pool.MergeRuntimeStats(prevVendor.pool.Snapshot())
+		vendor.pool.ShareRuntimeStateFrom(prevVendor.pool)
+	}
+	for id, old := range prev.vendorsByID {
+		if _, exists := r.vendorsByID[id]; !exists && old.pool != nil {
+			old.pool.Retire()
+		}
 	}
 }
 

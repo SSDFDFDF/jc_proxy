@@ -71,7 +71,7 @@ func (s *PGStore) Info() Info {
 }
 
 func (s *PGStore) ListAll() (map[string][]Record, error) {
-	query := fmt.Sprintf("SELECT vendor_id, api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at FROM %s ORDER BY vendor_id, api_key", s.tableSQL)
+	query := fmt.Sprintf("SELECT vendor_id, api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at, recent_stats FROM %s ORDER BY vendor_id, api_key", s.tableSQL)
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("query upstream keys: %w", err)
@@ -82,7 +82,7 @@ func (s *PGStore) ListAll() (map[string][]Record, error) {
 	for rows.Next() {
 		var vendorID string
 		var record Record
-		if err := rows.Scan(&vendorID, &record.Key, &record.Remark, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&vendorID, &record.Key, &record.Remark, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt, &record.RecentStats); err != nil {
 			return nil, fmt.Errorf("scan upstream keys: %w", err)
 		}
 		out[vendorID] = append(out[vendorID], NormalizeRecord(record))
@@ -99,7 +99,7 @@ func (s *PGStore) List(vendorID string) ([]Record, error) {
 		return nil, errors.New("vendor id is required")
 	}
 
-	query := fmt.Sprintf("SELECT api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at FROM %s WHERE vendor_id = $1 ORDER BY api_key", s.tableSQL)
+	query := fmt.Sprintf("SELECT api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at, recent_stats FROM %s WHERE vendor_id = $1 ORDER BY api_key", s.tableSQL)
 	rows, err := s.db.Query(query, vendorID)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor upstream keys: %w", err)
@@ -109,7 +109,7 @@ func (s *PGStore) List(vendorID string) ([]Record, error) {
 	var out []Record
 	for rows.Next() {
 		var record Record
-		if err := rows.Scan(&record.Key, &record.Remark, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.Key, &record.Remark, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt, &record.RecentStats); err != nil {
 			return nil, fmt.Errorf("scan vendor upstream keys: %w", err)
 		}
 		out = append(out, NormalizeRecord(record))
@@ -145,7 +145,7 @@ func (s *PGStore) Replace(vendorID string, keys []string) error {
 	}
 	defer tx.Rollback()
 
-	selectQuery := fmt.Sprintf("SELECT api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at FROM %s WHERE vendor_id = $1 ORDER BY api_key", s.tableSQL)
+	selectQuery := fmt.Sprintf("SELECT api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at, recent_stats FROM %s WHERE vendor_id = $1 ORDER BY api_key", s.tableSQL)
 	rows, err := tx.Query(selectQuery, vendorID)
 	if err != nil {
 		return fmt.Errorf("query existing upstream keys: %w", err)
@@ -153,7 +153,7 @@ func (s *PGStore) Replace(vendorID string, keys []string) error {
 	existing := make([]Record, 0)
 	for rows.Next() {
 		var record Record
-		if err := rows.Scan(&record.Key, &record.Remark, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.Key, &record.Remark, &record.Status, &record.DisableReason, &record.DisabledAt, &record.DisabledBy, &record.TotalRequests, &record.SuccessCount, &record.LastStatus, &record.UnauthorizedCount, &record.ForbiddenCount, &record.RateLimitCount, &record.OtherErrorCount, &record.LastError, &record.Version, &record.CreatedAt, &record.UpdatedAt, &record.RecentStats); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan existing upstream keys: %w", err)
 		}
@@ -171,13 +171,13 @@ func (s *PGStore) Replace(vendorID string, keys []string) error {
 	if _, err := tx.Exec(deleteQuery, vendorID); err != nil {
 		return fmt.Errorf("clear vendor upstream keys: %w", err)
 	}
-	insertQuery := fmt.Sprintf("INSERT INTO %s (vendor_id, api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)", s.tableSQL)
+	insertQuery := fmt.Sprintf("INSERT INTO %s (vendor_id, api_key, remark, status, disable_reason, disabled_at, disabled_by, total_requests, success_count, last_status, unauthorized_count, forbidden_count, rate_limit_count, other_error_count, last_error, version, created_at, updated_at, recent_stats) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)", s.tableSQL)
 	if len(keys) == 0 {
 		for _, record := range existing {
 			if IsActiveStatus(record.Status) {
 				continue
 			}
-			if _, err := tx.Exec(insertQuery, vendorID, record.Key, record.Remark, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
+			if _, err := tx.Exec(insertQuery, vendorID, record.Key, record.Remark, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt, record.RecentStats); err != nil {
 				return fmt.Errorf("preserve disabled upstream key: %w", err)
 			}
 		}
@@ -196,7 +196,7 @@ func (s *PGStore) Replace(vendorID string, keys []string) error {
 				record.UpdatedAt = now
 			}
 			record = NormalizeRecord(record)
-			if _, err := tx.Exec(insertQuery, vendorID, key, record.Remark, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
+			if _, err := tx.Exec(insertQuery, vendorID, key, record.Remark, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt, record.RecentStats); err != nil {
 				return fmt.Errorf("insert upstream key: %w", err)
 			}
 		}
@@ -207,7 +207,7 @@ func (s *PGStore) Replace(vendorID string, keys []string) error {
 			if _, ok := selected[record.Key]; ok {
 				continue
 			}
-			if _, err := tx.Exec(insertQuery, vendorID, record.Key, record.Remark, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt); err != nil {
+			if _, err := tx.Exec(insertQuery, vendorID, record.Key, record.Remark, record.Status, record.DisableReason, record.DisabledAt, record.DisabledBy, record.TotalRequests, record.SuccessCount, record.LastStatus, record.UnauthorizedCount, record.ForbiddenCount, record.RateLimitCount, record.OtherErrorCount, record.LastError, record.Version, record.CreatedAt, record.UpdatedAt, record.RecentStats); err != nil {
 				return fmt.Errorf("insert disabled upstream key: %w", err)
 			}
 		}
@@ -336,12 +336,13 @@ func (s *PGStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelta)
 		`UPDATE %s
 SET total_requests = total_requests + $3,
     success_count = success_count + $4,
-    last_status = $5,
+    last_status = CASE WHEN $3 > 0 THEN $5 ELSE last_status END,
     unauthorized_count = unauthorized_count + $6,
     forbidden_count = forbidden_count + $7,
     rate_limit_count = rate_limit_count + $8,
     other_error_count = other_error_count + $9,
-    last_error = $10
+    last_error = CASE WHEN $3 > 0 THEN $10 ELSE last_error END,
+    recent_stats = CASE WHEN $11 THEN $12::jsonb ELSE recent_stats END
 WHERE vendor_id = $1 AND api_key = $2`,
 		s.tableSQL,
 	)
@@ -370,6 +371,8 @@ WHERE vendor_id = $1 AND api_key = $2`,
 				delta.RateLimitCount,
 				delta.OtherErrorCount,
 				normalizeRuntimeLastError(delta.LastError),
+				delta.RecentRequests > 0,
+				delta.RecentStats,
 			); err != nil {
 				return fmt.Errorf("apply runtime stats delta: %w", err)
 			}
@@ -499,6 +502,7 @@ CREATE TABLE IF NOT EXISTS %s (
   rate_limit_count BIGINT NOT NULL DEFAULT 0,
   other_error_count BIGINT NOT NULL DEFAULT 0,
   last_error TEXT NOT NULL DEFAULT '',
+  recent_stats JSONB NOT NULL DEFAULT '{}'::jsonb,
   version BIGINT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

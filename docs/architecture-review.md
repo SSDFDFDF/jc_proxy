@@ -1,5 +1,8 @@
 # jc_proxy 架构分析报告
 
+> 历史报告：部分问题在后续版本已经修复，不能直接作为当前状态。
+> 2026-10-01 的复查、耗时统计与性能对照见 [性能与负载策略报告](performance-and-balancing.md)。
+
 > 日期：2026-08-20 · 分析基线：`main` @ `5bef164`
 > 范围：`internal/gateway`、`internal/balancer`、`internal/keystore`、`internal/admin`、`internal/config`、`cmd/jc_proxy`
 > 本报告只记录**已通过阅读代码或运行测试验证**的结论。未验证的推断已明确标注。

@@ -776,6 +776,9 @@ export function VendorsPage({
                       <option value="random">random</option>
                       <option value="least_used">least_used</option>
                       <option value="least_requests">least_requests</option>
+                      {!isAggregate && <option value="lowest_latency">lowest_latency</option>}
+                      {!isAggregate && <option value="highest_success">highest_success</option>}
+                      {!isAggregate && <option value="adaptive">adaptive</option>}
                     </select>
                   </label>
                   <label className="field-wrap">

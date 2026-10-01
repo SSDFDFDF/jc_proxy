@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const mintingConfigYAML = `schema_version: 2
+const mintingConfigYAML = `schema_version: 3
 vendors:
   - name: "openai"
     provider: "openai"
@@ -47,7 +47,7 @@ func TestLoadMintsMissingVendorIDs(t *testing.T) {
 }
 
 func TestLoadKeepsExplicitVendorIDs(t *testing.T) {
-	payload := `schema_version: 2
+	payload := `schema_version: 3
 vendors:
   - id: "vid_custom"
     name: "openai"

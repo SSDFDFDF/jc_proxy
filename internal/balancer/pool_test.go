@@ -431,7 +431,7 @@ func TestLastErrorIsTruncated(t *testing.T) {
 	}
 }
 
-func TestMergeRuntimeStatsCarriesCooldownButNotInflight(t *testing.T) {
+func TestShareRuntimeStateCarriesCooldownAndInflight(t *testing.T) {
 	prev, err := NewPool("round_robin", []string{"k1", "k2", "stale"})
 	if err != nil {
 		t.Fatal(err)
@@ -446,19 +446,17 @@ func TestMergeRuntimeStatsCarriesCooldownButNotInflight(t *testing.T) {
 	}
 	prev.Cooldown(idx, http.StatusTooManyRequests, "rate limited", 2*time.Second)
 
-	// k2: leave a request in flight; this must NOT be carried to the new pool.
+	// k2: an old request stays in flight and releases against shared state.
 	if _, _, ok := prev.Acquire(); !ok { // k2
 		t.Fatal("acquire k2 failed")
 	}
-
-	snap := prev.Snapshot()
 
 	// Rebuilt pool: k1/k2 retained, "stale" removed, "fresh" added.
 	next, err := NewPool("round_robin", []string{"k1", "k2", "fresh"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	next.MergeRuntimeStats(snap)
+	next.ShareRuntimeStateFrom(prev)
 
 	states := make(map[string]KeyState)
 	for _, ks := range next.Snapshot() {
@@ -476,8 +474,12 @@ func TestMergeRuntimeStatsCarriesCooldownButNotInflight(t *testing.T) {
 		t.Fatalf("k1 failures = %d, want 1", k1.Failures)
 	}
 
-	if k2 := states["k2"]; k2.Inflight != 0 {
-		t.Fatalf("k2 inflight = %d, want 0 (inflight must not be carried over)", k2.Inflight)
+	if k2 := states["k2"]; k2.Inflight != 1 {
+		t.Fatalf("k2 inflight = %d, want 1", k2.Inflight)
+	}
+	prev.ReleaseSuccess(1)
+	if got := next.Snapshot()[1].Inflight; got != 0 {
+		t.Fatalf("old completion leaked inflight: %d", got)
 	}
 
 	fresh := states["fresh"]

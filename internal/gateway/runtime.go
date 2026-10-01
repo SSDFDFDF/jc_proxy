@@ -54,24 +54,39 @@ func (rt *Runtime) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (rt *Runtime) Update(cfg *config.Config) error {
+	return rt.UpdateAndPersist(cfg, nil)
+}
+
+// UpdateAndPersist prepares a complete router before persistence. No live key
+// health is changed until persistence succeeds; publishing then cannot fail.
+// The callback must not re-enter Runtime mutation methods.
+func (rt *Runtime) UpdateAndPersist(cfg *config.Config, persist func(*config.Config) error) error {
+	rt.updateMu.Lock()
+	defer rt.updateMu.Unlock()
+	return rt.updateLocked(cfg, persist)
+}
+
+func (rt *Runtime) updateLocked(cfg *config.Config, persist func(*config.Config) error) error {
+	if cfg == nil {
+		return errors.New("runtime config is nil")
+	}
 	cloned, err := cfg.Clone()
 	if err != nil {
 		return err
 	}
-	rt.updateMu.Lock()
-	defer rt.updateMu.Unlock()
+	prev := rt.router.Load()
 	r, err := rt.buildRouter(cloned)
 	if err != nil {
+		rt.transports.Retain(prev.upstreamTransports())
 		return fmt.Errorf("rebuild router: %w", err)
 	}
-	// The new router rebuilds every vendor pool from scratch, which would
-	// otherwise drop in-memory runtime state (cooldown, backoff level,
-	// consecutive failures) for every key. Carry it over from the router we
-	// are replacing so a key add/delete/status change does not reset unrelated
-	// keys across all vendors.
-	if prev := rt.router.Load(); prev != nil {
-		r.MergeRuntimeStatsFrom(prev)
+	if persist != nil {
+		if err := persist(cloned); err != nil {
+			rt.transports.Retain(prev.upstreamTransports())
+			return err
+		}
 	}
+	r.ShareRuntimeStateFrom(prev)
 	rt.router.Store(r)
 	rt.cfg.Store(cloned)
 	rt.transports.Retain(r.upstreamTransports())
@@ -79,11 +94,15 @@ func (rt *Runtime) Update(cfg *config.Config) error {
 }
 
 func (rt *Runtime) RefreshKeys() error {
+	// Read the current config under the same lock as publication. Otherwise a
+	// waiting RefreshKeys could restore a config superseded by an admin edit.
+	rt.updateMu.Lock()
+	defer rt.updateMu.Unlock()
 	current := rt.cfg.Load()
 	if current == nil {
 		return errors.New("runtime config is empty")
 	}
-	return rt.Update(current)
+	return rt.updateLocked(current, nil)
 }
 
 func (rt *Runtime) Snapshot() *Router {

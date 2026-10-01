@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { buttonClass, panelClass, parseKeysText } from '../app/utils'
+import { keyErrorDetails } from '../app/keyStats'
+import { KeyRecentTiming } from '../components/KeyRecentTiming'
 
 /* ── Shared helpers ─────────────────────────────────────── */
 
@@ -38,7 +40,7 @@ function normalizeStatus(status) {
 
 function resolveDisplayState(item, rt = {}) {
   const displayStatus = normalizeStatus(rt.status || item.status)
-  const displayDisableReason = String(rt.disable_reason || item.disable_reason || rt.last_error || '').trim()
+  const displayDisableReason = keyErrorDetails(item, rt)
   const displayDisabledBy = String(rt.disabled_by || item.disabled_by || '').trim()
   return {
     displayStatus,
@@ -569,7 +571,7 @@ export function KeyHubPage({
   }
 
   return (
-    <section className={`${panelClass('p-5')} animate-fade-in`}>
+    <section className={`${panelClass('p-5')} key-hub-panel animate-fade-in`}>
       {/* ═══ Header ═══ */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
         <div>
@@ -607,7 +609,7 @@ export function KeyHubPage({
       </div>
 
       {/* ═══ Vendor Tabs ═══ */}
-      <div className="mb-5 flex flex-wrap gap-2">
+      <div className="key-vendor-tabs mb-5 flex flex-wrap gap-2">
         {vendorTabs.map((item) => (
           <button
             key={item.vendorID}
@@ -635,12 +637,12 @@ export function KeyHubPage({
           <div className="control-bar">
             <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center">
               <input
-                className="input-base text-sm lg:max-w-sm flex-1"
+                className="input-base min-h-10 text-sm lg:max-w-sm flex-1"
                 placeholder="搜索 key / 状态 / 原因 / 错误"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
-              <select className="select-base text-sm lg:w-44" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}>
+              <select className="select-base min-h-10 text-sm lg:w-44" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}>
                 <option value="all">全部状态</option>
                 <option value="active">仅启用</option>
                 <option value="disabled">仅禁用</option>
@@ -654,7 +656,7 @@ export function KeyHubPage({
                 <span>
                   <strong className="font-mono text-[var(--text-secondary)]">{filteredItems.length}</strong> / <strong className="font-mono text-[var(--text-secondary)]">{allItems.length}</strong> 条
                 </span>
-                <span className="text-[10px] text-[var(--text-faint)]">点击列头排序</span>
+                <span className="hidden md:inline text-[10px] text-[var(--text-faint)]">点击列头排序</span>
               </div>
               <div className="flex items-center gap-1.5 border-l border-[var(--border)] pl-3">
                 <button className={buttonClass('ghost')} disabled={busy} onClick={onRefreshStats} title="立即刷新运行态">
@@ -702,10 +704,31 @@ export function KeyHubPage({
             </div>
           </div>
 
+          <div className="flex flex-wrap items-center justify-between gap-3 md:hidden">
+            <label className="flex min-h-10 items-center gap-2 text-sm">
+              <input type="checkbox" checked={pageItems.length > 0 && pageItems.every((item) => selectedKeys.has(item.key))} onChange={handleToggleSelectAll} />
+              本页全选
+            </label>
+            <select
+              aria-label="密钥排序"
+              className="select-base w-auto text-sm"
+              value={`${sortState.key}:${sortState.direction}`}
+              onChange={(e) => { const [key, direction] = e.target.value.split(':'); setSortState({ key, direction }); setPage(1) }}
+            >
+              <option value="index:asc">默认顺序</option>
+              <option value="requests:desc">请求最多优先</option>
+              <option value="requests:asc">请求最少优先</option>
+              <option value="errors:desc">错误最多优先</option>
+              <option value="load:desc">负载最高优先</option>
+              <option value="status:asc">启用优先</option>
+              {!['index:asc', 'requests:desc', 'requests:asc', 'errors:desc', 'load:desc', 'status:asc'].includes(`${sortState.key}:${sortState.direction}`) && <option value={`${sortState.key}:${sortState.direction}`}>沿用桌面排序</option>}
+            </select>
+          </div>
+
           {selectedKeys.size > 0 && (
-            <div className="mb-4 flex items-center justify-between rounded bg-[var(--bg-elevated)] px-4 py-2 border border-[var(--accent)] border-opacity-30">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded bg-[var(--bg-elevated)] px-4 py-2 border border-[var(--accent)] border-opacity-30">
               <span className="text-sm font-medium">已选择 {selectedKeys.size} 项</span>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   className={buttonClass('ghost') + ' text-[var(--success)] hover:bg-[rgba(16,185,129,0.1)]'}
                   onClick={() => {
@@ -748,18 +771,17 @@ export function KeyHubPage({
           )}
 
           {/* ═══ Unified Table ═══ */}
-          <div className="table-shell text-xs">
-            <table className="w-full min-w-[1200px] table-fixed">
+          <div className="table-shell key-table-shell text-xs">
+            <table className="key-table w-full min-w-[1120px] table-fixed">
               <colgroup>
-                <col style={{ width: '56px' }} />
+                <col style={{ width: '40px' }} />
+                <col style={{ width: '200px' }} />
+                <col style={{ width: '80px' }} />
+                <col style={{ width: '80px' }} />
+                <col style={{ width: '184px' }} />
+                <col style={{ width: '100px' }} />
                 <col style={{ width: '260px' }} />
-                <col style={{ width: '180px' }} />
-                <col style={{ width: '112px' }} />
-                <col style={{ width: '104px' }} />
-                <col style={{ width: '168px' }} />
-                <col style={{ width: '156px' }} />
-                <col />
-                <col style={{ width: '156px' }} />
+                <col style={{ width: '176px' }} />
               </colgroup>
               <thead>
                 <tr>
@@ -767,15 +789,15 @@ export function KeyHubPage({
                     <input
                       type="checkbox"
                       className="rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
-                      checked={pageItems.length > 0 && selectedKeys.size === pageItems.length}
+                      aria-label="本页全选"
+                      checked={pageItems.length > 0 && pageItems.every((item) => selectedKeys.has(item.key))}
                       onChange={handleToggleSelectAll}
                     />
                   </th>
-                  <th>{renderSortableHeader('Key', 'key')}</th>
-                  <th>备注</th>
+                  <th>{renderSortableHeader('Key / 备注', 'key')}</th>
                   <th>{renderSortableHeader('状态', 'status')}</th>
                   <th>{renderSortableHeader('负载', 'load')}</th>
-                  <th>{renderSortableHeader('请求', 'requests')}</th>
+                  <th>{renderSortableHeader('请求 / 近5次耗时', 'requests')}</th>
                   <th>{renderSortableHeader('错误', 'errors')}</th>
                   <th>{renderSortableHeader('异常 / 原因', 'reason')}</th>
                   <th className="w-24 text-right">操作</th>
@@ -789,31 +811,32 @@ export function KeyHubPage({
 
                   return (
                     <tr key={item.key} className={`transition-colors ${isDisabled ? 'key-row-disabled' : ''} ${selectedKeys.has(item.key) ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}>
-                      <td className="text-center">
+                      <td className="key-select-cell text-center">
                         <input
                           type="checkbox"
+                          aria-label={`选择 ${item.masked}`}
                           className="rounded border-[var(--border)] bg-transparent text-[var(--accent)]"
                           checked={selectedKeys.has(item.key)}
                           onChange={() => handleToggleSelect(item.key)}
                         />
                       </td>
-                      <td><div className={`font-mono truncate ${isDisabled ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>{showSecrets ? item.key : item.masked}</div></td>
-                      <td>
+                      <td className="key-identity-cell">
+                        <div className={`font-mono break-all ${isDisabled ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>{showSecrets ? item.key : item.masked}</div>
                         <button
                           type="button"
-                          className={`block w-full truncate text-left ${item.remark ? 'text-[var(--text-secondary)]' : 'text-[var(--text-faint)]'}`}
+                          className={`mt-1 block w-full truncate text-left ${item.remark ? 'text-[var(--text-secondary)]' : 'text-[var(--text-faint)]'}`}
                           title={item.remark || '点击添加备注'}
                           onClick={() => setRemarkEditor({ key: item.key, value: item.remark || '' })}
                         >
                           {item.remark || '添加备注'}
                         </button>
                       </td>
-                      <td>
+                      <td data-label="状态">
                         <span className={`inline-flex rounded border px-1.5 py-[1px] text-[10px] font-semibold tracking-wide ${statusTone(item.displayStatus)}`}>
                           {statusLabel(item.displayStatus)}
                         </span>
                       </td>
-                      <td>
+                      <td data-label="负载" className={inflight > 0 || backoff > 0 ? 'key-load-cell' : 'key-load-cell key-cell-empty'}>
                         {(inflight > 0 || backoff > 0) ? (
                           <span className="font-mono text-[11px]">
                             {inflight > 0 && <span className="text-[var(--accent)] font-semibold">↑{inflight}</span>}
@@ -822,21 +845,22 @@ export function KeyHubPage({
                           </span>
                         ) : <span className="text-[10px] text-[var(--text-faint)]">--</span>}
                       </td>
-                      <td>
-                        {totalRequests > 0 ? (
-                          <div className="w-full">
-                            <div className="flex justify-between items-baseline">
-                              <span className="text-[10px] font-mono text-[var(--text-primary)]">{totalRequests.toLocaleString()}</span>
+                      <td className="key-metrics-cell">
+                        <div className="key-metrics-row">
+                          {totalRequests > 0 ? (
+                            <>
+                              <span className="font-mono text-[10px] text-[var(--text-primary)]">{totalRequests.toLocaleString()}</span>
+                              <div className="key-metrics-bar">
+                                {successCount > 0 && <div className="h-full bg-[var(--success)]" style={{ width: `${successRate}%` }}></div>}
+                                {failedCount > 0 && <div className="h-full bg-[var(--danger)]" style={{ width: `${errRate}%` }}></div>}
+                              </div>
                               <span className="font-mono text-[10px] text-[var(--text-muted)]">{successRate}%{failedCount > 0 ? ` ·${failedCount}` : ''}</span>
-                            </div>
-                            <div className="h-1 w-full bg-[var(--border)] rounded-full overflow-hidden flex mt-0.5">
-                              {successCount > 0 && <div className="h-full bg-[var(--success)]" style={{ width: `${successRate}%` }}></div>}
-                              {failedCount > 0 && <div className="h-full bg-[var(--danger)]" style={{ width: `${errRate}%` }}></div>}
-                            </div>
-                          </div>
-                        ) : <span className="text-[10px] text-[var(--text-faint)]">--</span>}
+                            </>
+                          ) : <span className="text-[10px] text-[var(--text-faint)]">--</span>}
+                          <KeyRecentTiming stats={item.rt} />
+                        </div>
                       </td>
-                      <td>
+                      <td className={`key-counts-cell${hasErrors ? '' : ' key-cell-empty'}`} data-label="错误计数">
                         {hasErrors ? (
                           <div className="flex flex-wrap gap-1">
                             <ErrorPill label="401" count={err401} tone="err" />
@@ -846,12 +870,16 @@ export function KeyHubPage({
                           </div>
                         ) : <span className="text-[10px] text-[var(--text-faint)]">--</span>}
                       </td>
-                      <td>
-                        <div className={`truncate ${reason ? 'text-[var(--text-secondary)]' : 'text-[var(--text-faint)]'}`} title={reason}>{reason || '--'}</div>
-                        {secondaryText && <div className="text-[10px] text-[var(--text-faint)] truncate">{secondaryText}</div>}
+                      <td className={`key-error-cell${reason || secondaryText ? '' : ' key-cell-empty'}`} data-label="异常 / 原因">
+                        {reason ? (
+                          <div className="key-error-summary text-[var(--danger)]" title={reason}>{reason}</div>
+                        ) : (
+                          <div className="text-[var(--text-faint)]" title={hasErrors ? '错误计数为累计值，暂无最近错误详情' : undefined}>--</div>
+                        )}
+                        {secondaryText && <div className="mt-1 text-[10px] text-[var(--text-muted)] break-words">{secondaryText}</div>}
                       </td>
-                      <td>
-                        <div className="flex justify-end gap-3">
+                      <td className="key-actions-cell">
+                        <div className="key-row-actions flex flex-wrap justify-end gap-x-3 gap-y-2">
                           <button
                             className="font-medium text-[var(--accent)] hover:text-blue-400 transition-colors"
                             onClick={() => {
@@ -884,7 +912,7 @@ export function KeyHubPage({
                 })}
                 {!pageItems.length && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-12 text-center text-[var(--text-faint)]">暂无匹配密钥</td>
+                    <td colSpan={8} className="key-empty-cell px-3 py-12 text-center text-[var(--text-faint)]">暂无匹配密钥</td>
                   </tr>
                 )}
               </tbody>

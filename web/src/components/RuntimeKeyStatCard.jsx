@@ -1,3 +1,5 @@
+import { KeyRecentTiming } from './KeyRecentTiming'
+
 function statPill(label, value, tone = 'default') {
   const toneClass = {
     ok: 'border-[rgba(34,197,94,0.3)] bg-[var(--success-soft)] text-[var(--success)]',
@@ -59,6 +61,8 @@ export function RuntimeKeyStatCard({ item }) {
         {statPill('429', Number(item.rate_limit_count || 0), Number(item.rate_limit_count || 0) > 0 ? 'err' : 'default')}
         {statPill('other', Number(item.other_error_count || 0), Number(item.other_error_count || 0) > 0 ? 'warn' : 'default')}
       </div>
+
+      <div className="mt-3"><KeyRecentTiming stats={item} /></div>
 
       {(disableReason || lastError) && (
         <p className="mt-3 truncate text-[12px] text-[var(--text-muted)]" title={lastError}>

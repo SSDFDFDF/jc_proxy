@@ -24,6 +24,7 @@ func TestFileStoreApplyRuntimeStatsDeltasDoesNotDoubleCountAfterSaveFailure(t *t
 			{
 				Key: "k1",
 				RuntimeStats: RuntimeStats{
+					RecentStats:   RecentStats{RecentRequests: 1, HeaderSamples: 1, AvgHeaderMS: 12},
 					TotalRequests: 1,
 					SuccessCount:  1,
 					LastStatus:    http.StatusOK,
@@ -49,6 +50,9 @@ func TestFileStoreApplyRuntimeStatsDeltasDoesNotDoubleCountAfterSaveFailure(t *t
 	}
 	if got := records[0].TotalRequests; got != 0 {
 		t.Fatalf("total_requests after failed apply = %d, want 0", got)
+	}
+	if records[0].RecentRequests != 0 {
+		t.Fatal("failed save changed recent stats")
 	}
 	if got := records[0].SuccessCount; got != 0 {
 		t.Fatalf("success_count after failed apply = %d, want 0", got)
@@ -76,6 +80,9 @@ func TestFileStoreApplyRuntimeStatsDeltasDoesNotDoubleCountAfterSaveFailure(t *t
 	}
 	if got := records[0].TotalRequests; got != 1 {
 		t.Fatalf("total_requests after retry = %d, want 1", got)
+	}
+	if records[0].RecentRequests != 1 || records[0].AvgHeaderMS != 12 {
+		t.Fatal("retry lost recent stats")
 	}
 	if got := records[0].SuccessCount; got != 1 {
 		t.Fatalf("success_count after retry = %d, want 1", got)

@@ -3,9 +3,11 @@ package gateway
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/ui"
@@ -122,6 +124,14 @@ type upstreamAttempt struct {
 	selectedVersion int64
 	selectedKey     string
 	request         *http.Request
+	body            io.ReadCloser
+	started         time.Time
+	headerElapsed   time.Duration
+	fullElapsed     time.Duration
+	bodyErr         error
+	responseStatus  int
+	closed          bool
+	vendor          *vendorGateway
 }
 
 type proxyError struct {
@@ -468,6 +478,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		// Budget is consumed, so this reflects whether attempt N+1 is allowed.
 		retryRemaining := attempts < maxAttempts && execution.hasBudget()
 
+		attempt.started = time.Now()
 		resp, err := vg.client.Do(attempt.request)
 		if err != nil {
 			if isCanceledUpstreamError(req.Context(), err) {
@@ -475,6 +486,9 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 					vg.pool.Release(attempt.idx)
 				}
 				return vendorRequestDone
+			}
+			if vg.usesManagedUpstreamKeys() {
+				vg.pool.RecordSample(attempt.idx, -1, -1, false, attempt.selectedVersion)
 			}
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream request failed: %v", err))
 			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
@@ -492,8 +506,15 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			return vendorRequestDone
 		}
 
+		attempt.headerElapsed = time.Since(attempt.started)
 		if vg.upstreamBodyTimeout > 0 {
 			resp.Body = newIdleTimeoutReadCloser(resp.Body, vg.upstreamBodyTimeout)
+		}
+		if vg.usesManagedUpstreamKeys() {
+			attempt.body = resp.Body
+			attempt.vendor = vg
+			attempt.responseStatus = resp.StatusCode
+			resp.Body = attempt
 		}
 
 		switch r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs, interim, aggregateHook, retryRemaining) {

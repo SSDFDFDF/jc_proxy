@@ -48,6 +48,11 @@ func upgradeKeysFile(path string, mapping map[string]string, dryRun bool) error 
 
 	next := make(map[string][]keystore.Record, len(snap.Vendors))
 	for name, records := range snap.Vendors {
+		if snap.SchemaVersion >= 2 {
+			// v2 already uses immutable IDs; only its version needs updating.
+			next[name] = records
+			continue
+		}
 		id, ok := mapping[name]
 		if !ok {
 			// Keep orphan partitions rather than dropping key material.

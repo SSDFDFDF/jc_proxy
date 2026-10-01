@@ -3,7 +3,6 @@ package keystore
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -292,11 +291,14 @@ func (s *AsyncStatusStore) flushPending() bool {
 	for _, update := range updates {
 		err := s.applyPending(update)
 		switch {
-		case err == nil, errors.Is(err, ErrVersionMismatch), errors.Is(err, ErrKeyNotFound):
+		case err == nil:
 			s.deletePendingIfMatch(update)
+		case errors.Is(err, ErrVersionMismatch), errors.Is(err, ErrKeyNotFound):
+			s.deletePendingIfMatch(update)
+			s.onError(statusUpdateError(update, err))
 		default:
 			allSynced = false
-			s.onError(fmt.Errorf("vendor=%s key=%s: %w", update.vendorID, update.key, err))
+			s.onError(statusUpdateError(update, err))
 		}
 	}
 	return allSynced
@@ -312,10 +314,13 @@ func (s *AsyncStatusStore) flushPendingFinal() error {
 	for _, update := range updates {
 		err := s.applyPending(update)
 		switch {
-		case err == nil, errors.Is(err, ErrVersionMismatch), errors.Is(err, ErrKeyNotFound):
+		case err == nil:
 			s.deletePendingIfMatch(update)
+		case errors.Is(err, ErrVersionMismatch), errors.Is(err, ErrKeyNotFound):
+			s.deletePendingIfMatch(update)
+			s.onError(statusUpdateError(update, err))
 		default:
-			errs = append(errs, fmt.Errorf("vendor=%s key=%s: %w", update.vendorID, update.key, err))
+			errs = append(errs, statusUpdateError(update, err))
 		}
 	}
 	return errors.Join(errs...)

@@ -1,4 +1,5 @@
 web/node_modules/
+/bin/
 web/.vite/
 web/dist/
 config.yaml
@@ -15,3 +16,6 @@ jc_proxy
 
 # Production migration config; holds the live database DSN.
 migrate_neon.yaml
+
+# Local environment overrides (may contain real DSNs/credentials).
+.env

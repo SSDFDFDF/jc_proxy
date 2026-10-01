@@ -11,7 +11,7 @@ import (
 )
 
 const testConfigYAML = `
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -77,7 +77,7 @@ func TestLoadBootstrapBytesKeepsAdminCredentialsFromConfigOverEnv(t *testing.T) 
 	t.Setenv("JC_PROXY_ADMIN_PASSWORD_HASH", "pbkdf2$120000$envsalt$envhash")
 
 	cfg, err := LoadBootstrapBytes([]byte(`
-schema_version: 2
+schema_version: 3
 admin:
   enabled: true
   username: db-admin
@@ -115,7 +115,7 @@ func TestLoadBootstrapBytesNoEnvDoesNotApplyAdminCredentialOverrides(t *testing.
 	t.Setenv("JC_PROXY_ADMIN_PASSWORD_HASH", "pbkdf2$120000$envsalt$envhash")
 
 	cfg, err := LoadBootstrapBytesNoEnv([]byte(`
-schema_version: 2
+schema_version: 3
 admin:
   enabled: true
 
@@ -299,7 +299,7 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 
 func TestLoadBytesSupportsCustomErrorPolicyRules(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -354,7 +354,7 @@ vendors:
 
 func TestLoadBytesRejectsInvalidCustomErrorPolicyRules(t *testing.T) {
 	_, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -417,7 +417,7 @@ func TestExampleConfigStaysLoadable(t *testing.T) {
 
 func TestLoadBytesSupportsErrorMaskingRules(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -481,7 +481,7 @@ vendors:
 func TestLoadBytesRejectsInvalidErrorMaskingRules(t *testing.T) {
 	base := func(rules string) string {
 		return `
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -610,7 +610,7 @@ func TestPrepareAndValidateRejectsAggregateSuccessfulRetryStatus(t *testing.T) {
 
 func TestLoadAllowsBootstrapAdminWithoutCredentials(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -706,7 +706,7 @@ func TestResolveRequestAddrIgnoresForwardedHeadersFromUntrustedPeer(t *testing.T
 
 func TestParseAdminCredentialLayerYAML(t *testing.T) {
 	layer, err := ParseAdminCredentialLayerYAML([]byte(`
-schema_version: 2
+schema_version: 3
 admin:
   username: db-admin
   password_hash: db-hash
@@ -789,7 +789,7 @@ func TestPrepareAndValidateSetsDefaultUpstreamResponseHeaderTimeout(t *testing.T
 
 func TestLoadBytesSupportsDisabledUpstreamInterimResponse(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 
@@ -822,7 +822,7 @@ vendors:
 
 func TestLoadBytesSupportsDisabledUpstreamResponseHeaderTimeout(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
-schema_version: 2
+schema_version: 3
 server:
   listen: ":8092"
 

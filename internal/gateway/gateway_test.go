@@ -1977,6 +1977,9 @@ func TestRuntimeStatsPersistAcrossRestart(t *testing.T) {
 	if got := stats[0]["last_status"]; got != http.StatusUnauthorized {
 		t.Fatalf("restarted last_status = %#v, want %d", got, http.StatusUnauthorized)
 	}
+	if stats[0]["recent_requests"] != 1 || stats[0]["header_samples"] != 1 || stats[0]["response_samples"] != 1 {
+		t.Fatalf("restarted timing stats = %#v", stats[0])
+	}
 }
 
 func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
@@ -2072,6 +2075,9 @@ func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
 	}
 	if got := stats[0]["last_status"]; got != http.StatusUnauthorized {
 		t.Fatalf("restarted last_status = %#v, want %d", got, http.StatusUnauthorized)
+	}
+	if stats[0]["recent_requests"] != 1 || stats[0]["header_samples"] != 1 || stats[0]["response_samples"] != 1 {
+		t.Fatalf("late response lost timing stats = %#v", stats[0])
 	}
 }
 

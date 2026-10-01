@@ -42,7 +42,7 @@ func (r *runtimeStatsRegistry) Handle(vendorID, key string, baseline keystore.Ru
 		r.vendors[vendorID] = perVendor
 	}
 	if handle, ok := perVendor[key]; ok {
-		handle.MergeBaseline(baseline)
+		// Router preparation must not mutate the live handle before commit.
 		return handle
 	}
 

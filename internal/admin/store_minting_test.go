@@ -11,7 +11,7 @@ import (
 
 // The admin credentials carry a hash so NewStore never generates a bootstrap
 // password: any persistence these tests observe is caused by minting alone.
-const mintingStoreConfigYAML = `schema_version: 2
+const mintingStoreConfigYAML = `schema_version: 3
 admin:
   enabled: true
   username: "admin"
@@ -137,7 +137,7 @@ func remoteTestBootstrap(t *testing.T) *config.Config {
 }
 
 func TestNewStoreSavesMintedVendorIDsToRemote(t *testing.T) {
-	remoteCfg, err := config.LoadBootstrapBytesNoEnv([]byte(`schema_version: 2
+	remoteCfg, err := config.LoadBootstrapBytesNoEnv([]byte(`schema_version: 3
 vendors:
   - name: "openai"
     provider: "openai"
@@ -169,7 +169,7 @@ vendors:
 }
 
 func TestNewStoreDoesNotRewriteRemoteWithStableIDs(t *testing.T) {
-	remoteCfg, err := config.LoadBootstrapBytesNoEnv([]byte(`schema_version: 2
+	remoteCfg, err := config.LoadBootstrapBytesNoEnv([]byte(`schema_version: 3
 vendors:
   - id: "vid_openai"
     name: "openai"
