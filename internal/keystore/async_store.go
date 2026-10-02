@@ -212,6 +212,15 @@ func (s *AsyncStatusStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeSt
 	return s.statsStore.ApplyRuntimeStatsDeltas(deltas)
 }
 
+func (s *AsyncStatusStore) ResetRuntimeStats(vendorID string) (int, error) {
+	resetter, ok := s.base.(RuntimeStatsResetStore)
+	if !ok {
+		return 0, errors.New("base store does not support runtime stats reset")
+	}
+	// Pending status changes are independent of statistics and must survive.
+	return resetter.ResetRuntimeStats(vendorID)
+}
+
 func (s *AsyncStatusStore) Close() error {
 	s.mu.Lock()
 	if s.closed {

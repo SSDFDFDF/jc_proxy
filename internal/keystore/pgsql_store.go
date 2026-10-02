@@ -385,6 +385,33 @@ WHERE vendor_id = $1 AND api_key = $2`,
 	return nil
 }
 
+// One UPDATE is atomic across the selected keys. Bound the wait because the
+// caller holds the runtime statistics locks until persistence completes.
+func (s *PGStore) ResetRuntimeStats(vendorID string) (int, error) {
+	vendorID = normalizeVendor(vendorID)
+	query := fmt.Sprintf(`UPDATE %s
+SET total_requests = 0, success_count = 0, last_status = 0,
+    unauthorized_count = 0, forbidden_count = 0, rate_limit_count = 0,
+    other_error_count = 0, last_error = '', recent_stats = '{}'::jsonb,
+    updated_at = NOW()`, s.tableSQL)
+	var args []any
+	if vendorID != "" {
+		query += " WHERE vendor_id = $1"
+		args = append(args, vendorID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("reset runtime stats: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count reset runtime stats: %w", err)
+	}
+	return int(count), nil
+}
+
 func (s *PGStore) updateStatus(ctx context.Context, vendorID, key string, expectedVersion int64, checkVersion bool, status, reason, actor string) error {
 	vendorID = normalizeVendor(vendorID)
 	key = strings.TrimSpace(key)

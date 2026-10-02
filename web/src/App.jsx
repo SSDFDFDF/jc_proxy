@@ -86,6 +86,7 @@ function App() {
           onToggleAutoRefresh={() => statsView.setAutoRefreshStats((prev) => !prev)}
           onRefreshEverySecChange={statsView.setRefreshEverySec}
           onRefreshStats={() => statsView.loadStats(false, true)}
+          onResetStats={statsView.resetRuntimeStats}
         />
       )}
 

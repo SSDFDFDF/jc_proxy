@@ -290,6 +290,34 @@ func (s *FileStore) ApplyRuntimeStatsDeltas(deltas map[string][]RuntimeStatsDelt
 	return nil
 }
 
+func (s *FileStore) ResetRuntimeStats(vendorID string) (int, error) {
+	vendorID = normalizeVendor(vendorID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := cloneRecordMap(s.data)
+	count := 0
+	now := time.Now().UTC()
+	for id, records := range next {
+		if vendorID != "" && id != vendorID {
+			continue
+		}
+		for i := range records {
+			records[i].RuntimeStats = RuntimeStats{}
+			records[i].UpdatedAt = now
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	if err := s.saveDataLocked(next); err != nil {
+		return 0, err
+	}
+	s.data = next
+	return count, nil
+}
+
 func (s *FileStore) SetStatusIfVersion(vendorID, key string, expectedVersion int64, status, reason, actor string) error {
 	return s.setStatus(vendorID, key, expectedVersion, true, status, reason, actor)
 }

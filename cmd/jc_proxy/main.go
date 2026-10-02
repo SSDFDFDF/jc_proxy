@@ -87,7 +87,7 @@ func main() {
 
 	sessions := admin.NewSessionManager(cfg.Admin.SessionTTL)
 	audit := admin.NewAuditLogger(cfg.Admin.AuditLogPath)
-	service := admin.NewService(store, runtime, keyStore, sessions, audit)
+	service := admin.NewService(store, runtime, keyStore, sessions, audit, statsPersister)
 	adminHandler := admin.NewHandler(service, sessions)
 
 	mux := http.NewServeMux()

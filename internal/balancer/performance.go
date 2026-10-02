@@ -32,9 +32,9 @@ func (h *RuntimeStatsHandle) RecordSample(header, full time.Duration, success bo
 	h.recordSampleAt(header, full, success, time.Now())
 }
 
-func (h *RuntimeStatsHandle) recordSampleAt(header, full time.Duration, success bool, now time.Time) {
+func (h *RuntimeStatsHandle) recordSampleAt(header, full time.Duration, success bool, now time.Time) uint64 {
 	if h == nil {
-		return
+		return 0
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -69,6 +69,7 @@ func (h *RuntimeStatsHandle) recordSampleAt(header, full time.Duration, success 
 	}
 	h.stats.RecentStats = summary
 	h.updateCostsLocked()
+	return h.generation.Load()
 }
 
 // Costs are precomputed on completion, so selection loads only one atomic per
@@ -149,6 +150,8 @@ func (p *Pool) RecordSample(idx int, header, full time.Duration, success bool, e
 		state := p.keys[idx]
 		now := p.nowf()
 		tick := now.Sub(schedulerEpoch)
+		generation := state.stats.recordSampleAt(header, full, success, now)
+		state.syncStatsGeneration(generation, tick)
 		if tick >= state.sampleExpires {
 			state.liveSamples = 0
 		}
@@ -169,8 +172,20 @@ func (p *Pool) RecordSample(idx int, header, full time.Duration, success bool, e
 			}
 			state.nextExplore = tick + delay
 		}
-		state.stats.recordSampleAt(header, full, success, now)
 	}
+}
+
+// Reset exploration history lazily under the pool mutex, without taking pool
+// locks while a bulk reset holds statistics locks (pool -> stats is the normal
+// lock order). Inflight, cooldown, failures and disabled state are untouched.
+func (state *KeyState) syncStatsGeneration(generation uint64, tick time.Duration) {
+	if state.statsGeneration == generation {
+		return
+	}
+	state.statsGeneration = generation
+	state.lastAttempt, state.nextExplore = math.MinInt64, math.MinInt64
+	state.sampleExpires = tick + sampleFreshness
+	state.liveSamples, state.failedSamples = 0, 0
 }
 
 // A single O(eligible keys) scan, no allocation and no per-key stats locks.
@@ -189,6 +204,7 @@ func (p *Pool) pickPerformanceLocked(now time.Time, excluded map[int]struct{}, a
 			return
 		}
 		state := p.keys[i]
+		state.syncStatsGeneration(state.stats.generation.Load(), tick)
 		cost := state.stats.performanceCost(p.strategy)
 		expired := tick >= state.sampleExpires
 		if expired {

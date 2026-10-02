@@ -31,18 +31,19 @@ type KeyState struct {
 	DisabledAt    *time.Time
 	DisabledBy    string
 	keystore.RuntimeStats
-	Version       int64
-	Inflight      int
-	Failures      int
-	CooldownUntil time.Time
-	CooldownLevel int
-	stats         *RuntimeStatsHandle
-	retired       bool // removed from the current plan; old routers must not reuse it
-	lastAttempt   time.Duration
-	sampleExpires time.Duration
-	nextExplore   time.Duration
-	liveSamples   int
-	failedSamples int
+	Version         int64
+	Inflight        int
+	Failures        int
+	CooldownUntil   time.Time
+	CooldownLevel   int
+	stats           *RuntimeStatsHandle
+	retired         bool // removed from the current plan; old routers must not reuse it
+	lastAttempt     time.Duration
+	sampleExpires   time.Duration
+	nextExplore     time.Duration
+	liveSamples     int
+	failedSamples   int
+	statsGeneration uint64
 }
 
 const maxLastErrorLength = 240

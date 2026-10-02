@@ -81,6 +81,48 @@ func (p *RuntimeStatsPersister) Flush() error {
 	return p.flushLocked()
 }
 
+// Reset clears one vendor, or all vendors when vendorID is empty. It must be
+// the only entry point for online resets: storage alone cannot reset live load
+// scores or the delta baseline. This coordinates one gateway process, not a
+// fleet sharing a database.
+func (p *RuntimeStatsPersister) Reset(vendorID string) (int, error) {
+	vendorID = strings.TrimSpace(vendorID)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case <-p.stop:
+		return 0, errors.New("runtime stats persister is closed")
+	default:
+	}
+	store, ok := p.store.(keystore.RuntimeStatsResetStore)
+	if !ok {
+		return 0, errors.New("runtime stats store does not support reset")
+	}
+
+	// Match router publication's lock order and prevent a prepared router from
+	// introducing a stale persisted baseline during reset.
+	p.runtime.updateMu.Lock()
+	defer p.runtime.updateMu.Unlock()
+	count := 0
+	err := p.runtime.stats.Reset(vendorID, func() error {
+		var err error
+		count, err = store.ResetRuntimeStats(vendorID)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	// Do NOT capture a fresh snapshot here: completions unblocked by Reset
+	// may already have arrived, and using them as baseline would lose them.
+	// Missing baselines mean the next snapshot is counted from zero.
+	for id := range p.last {
+		if vendorID == "" || id == vendorID {
+			delete(p.last, id)
+		}
+	}
+	return count, nil
+}
+
 func (p *RuntimeStatsPersister) run() {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()

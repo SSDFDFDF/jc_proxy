@@ -50,3 +50,20 @@ func (r *runtimeStatsRegistry) Handle(vendorID, key string, baseline keystore.Ru
 	perVendor[key] = handle
 	return handle
 }
+
+// Reset includes handles no longer present in the published router. Otherwise
+// removing and re-adding a key could resurrect its pre-reset counters.
+func (r *runtimeStatsRegistry) Reset(vendorID string, persist func() error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var handles []*balancer.RuntimeStatsHandle
+	for id, keys := range r.vendors {
+		if vendorID != "" && id != vendorID {
+			continue
+		}
+		for _, handle := range keys {
+			handles = append(handles, handle)
+		}
+	}
+	return balancer.ResetRuntimeStats(handles, persist)
+}

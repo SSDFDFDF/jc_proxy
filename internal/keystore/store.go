@@ -54,6 +54,13 @@ type RuntimeStatsStore interface {
 	ApplyRuntimeStatsDeltas(map[string][]RuntimeStatsDelta) error
 }
 
+// RuntimeStatsResetStore clears only statistics, preserving key identity and
+// health metadata. An empty vendorID explicitly selects all partitions.
+// Live callers must coordinate this with the runtime statistics persister.
+type RuntimeStatsResetStore interface {
+	ResetRuntimeStats(vendorID string) (int, error)
+}
+
 type RemarkStore interface {
 	SetRemark(vendorID, key, remark string) error
 }

@@ -20,6 +20,7 @@ type RuntimeStatsHandle struct {
 	latencyCost   atomic.Uint64
 	successCost   atomic.Uint64
 	adaptiveCost  atomic.Uint64
+	generation    atomic.Uint64 // statistics reset, independent of admin/health version
 }
 
 func NewRuntimeStatsHandle(initial keystore.RuntimeStats) *RuntimeStatsHandle {

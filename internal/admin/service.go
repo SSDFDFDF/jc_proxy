@@ -19,16 +19,21 @@ import (
 type Service struct {
 	// Serializes the entire read/modify/persist/publish sequence, including
 	// key mutations that rebuild routing. Read-only/data-plane paths do not wait.
-	changeMu sync.Mutex
-	store    *Store
-	runtime  *gateway.Runtime
-	keyStore keystore.Store
-	sessions *SessionManager
-	audit    *AuditLogger
+	changeMu       sync.Mutex
+	store          *Store
+	runtime        *gateway.Runtime
+	keyStore       keystore.Store
+	sessions       *SessionManager
+	audit          *AuditLogger
+	statsPersister *gateway.RuntimeStatsPersister
 }
 
-func NewService(store *Store, runtime *gateway.Runtime, keyStore keystore.Store, sessions *SessionManager, audit *AuditLogger) *Service {
-	return &Service{store: store, runtime: runtime, keyStore: keyStore, sessions: sessions, audit: audit}
+func NewService(store *Store, runtime *gateway.Runtime, keyStore keystore.Store, sessions *SessionManager, audit *AuditLogger, statsPersister ...*gateway.RuntimeStatsPersister) *Service {
+	s := &Service{store: store, runtime: runtime, keyStore: keyStore, sessions: sessions, audit: audit}
+	if len(statsPersister) > 0 {
+		s.statsPersister = statsPersister[0]
+	}
+	return s
 }
 
 func (s *Service) Login(username, password string) (token string, expiresAt string, err error) {

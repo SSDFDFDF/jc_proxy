@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { buildStatsResetPayload } from '../app/statsReset'
 
 import {
   DEFAULT_SYSTEM_FORM,
@@ -260,6 +261,10 @@ export function useAdminConsole() {
   const [maskedConfig, setMaskedConfig] = useState(EMPTY_CONFIG)
   const [rawConfigText, setRawConfigText] = useState(JSON.stringify(EMPTY_CONFIG, null, 2))
   const [stats, setStats] = useState({ vendors: {} })
+  // Ignore reads started before a reset; old auto-refresh responses must not
+  // make cleared counters appear to come back in the console.
+  const statsEpoch = useRef(0)
+  const statsResetting = useRef(false)
   const [statsResult, setStatsResult] = useState(emptyStatsResult())
   const [upstreamKeysData, setUpstreamKeysData] = useState(EMPTY_UPSTREAM_KEYS)
 
@@ -409,20 +414,25 @@ export function useAdminConsole() {
   }
 
   const loadStats = async (silent = false, touchBusy = false) => {
+    if (statsResetting.current) return
+    const epoch = statsEpoch.current
     if (touchBusy) setBusy(true)
     try {
       const data = await api('/admin/stats')
+      if (epoch !== statsEpoch.current) return
       setStats(data || { vendors: {} })
       setLastSyncAt(Date.now())
       if (!silent) setStatus('success', '运行状态已刷新')
     } catch (err) {
-      if (!silent) setStatus('error', String(err?.message || err))
+      if (!silent && epoch === statsEpoch.current) setStatus('error', String(err?.message || err))
     } finally {
-      if (touchBusy) setBusy(false)
+      if (touchBusy && epoch === statsEpoch.current) setBusy(false)
     }
   }
 
   const loadFilteredStats = async (overrides = {}, silent = false, touchBusy = false) => {
+    if (statsResetting.current) return
+    const epoch = statsEpoch.current
     const nextQuery = {
       ...statsFilters,
       ...overrides
@@ -436,17 +446,63 @@ export function useAdminConsole() {
     if (touchBusy) setBusy(true)
     try {
       const data = await api(buildStatsPath(nextQuery))
+      if (epoch !== statsEpoch.current) return
       setStatsResult(data || emptyStatsResult())
       setLastSyncAt(Date.now())
       if (!silent) setStatus('success', '运行状态已刷新')
     } catch (err) {
-      if (!silent) setStatus('error', String(err?.message || err))
+      if (!silent && epoch === statsEpoch.current) setStatus('error', String(err?.message || err))
     } finally {
-      if (touchBusy) setBusy(false)
+      if (touchBusy && epoch === statsEpoch.current) setBusy(false)
+    }
+  }
+
+  const resetRuntimeStats = async (scope, vendorID, confirmation) => {
+    if (statsResetting.current) return false
+    let payload
+    try {
+      payload = buildStatsResetPayload(scope, vendorID, confirmation)
+    } catch (err) {
+      setStatus('error', err.message)
+      return false
+    }
+    statsResetting.current = true
+    statsEpoch.current += 1
+    setBusy(true)
+    try {
+      const result = await api('/admin/stats/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      // Refresh both datasets without reusing/coalescing an older cached read.
+      // A read failure after a successful reset must not invite a second reset.
+      try {
+        const [upstreamKeys, runtimeStats] = await Promise.all([
+          api('/admin/upstream-keys', { cache: 'no-store' }),
+          api('/admin/stats', { cache: 'no-store' })
+        ])
+        setUpstreamKeysData(upstreamKeys || EMPTY_UPSTREAM_KEYS)
+        setStats(runtimeStats || { vendors: {} })
+        setStatsResult(emptyStatsResult())
+        setLastSyncAt(Date.now())
+        setStatus('success', `已重置 ${result.count || 0} 个 Key 的统计，新提交的结果将重新累计`)
+      } catch (err) {
+        setStatus('warn', `统计已重置，但刷新失败，请手动刷新，不要重复重置：${err.message}`)
+      }
+      return true
+    } catch (err) {
+      setStatus('error', `重置未确认成功，请刷新核实后再操作：${err.message}`)
+      return false
+    } finally {
+      statsResetting.current = false
+      setBusy(false)
     }
   }
 
   const refreshAll = async (preferredVendorID = '', preferredKeyVendorID = '') => {
+    if (statsResetting.current) return
+    const epoch = statsEpoch.current
     setBusy(true)
     try {
       const [nextMe, raw, masked, upstreamKeys, runtimeStats] = await Promise.all([
@@ -456,6 +512,7 @@ export function useAdminConsole() {
         api('/admin/upstream-keys'),
         api('/admin/stats')
       ])
+      if (epoch !== statsEpoch.current) return
 
       setMe(nextMe || { username: '' })
       setRawConfig(raw || EMPTY_CONFIG)
@@ -487,9 +544,9 @@ export function useAdminConsole() {
       setLastSyncAt(Date.now())
       setStatus('success', '管理数据已同步')
     } catch (err) {
-      setStatus('error', String(err?.message || err))
+      if (epoch === statsEpoch.current) setStatus('error', String(err?.message || err))
     } finally {
-      setBusy(false)
+      if (epoch === statsEpoch.current) setBusy(false)
     }
   }
 
@@ -1411,7 +1468,8 @@ export function useAdminConsole() {
       setAutoRefreshStats,
       setRefreshEverySec,
       loadStats,
-      loadFilteredStats
+      loadFilteredStats,
+      resetRuntimeStats
     },
     security: {
       newPassword,

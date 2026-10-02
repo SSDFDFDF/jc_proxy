@@ -36,6 +36,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/config", h.withAuth(h.handleConfig))
 	mux.HandleFunc("/admin/config/raw", h.withAuth(h.handleConfigRaw))
 	mux.HandleFunc("/admin/stats", h.withAuth(h.handleStats))
+	mux.HandleFunc("/admin/stats/reset", h.withAuth(h.handleStatsReset))
 	mux.HandleFunc("/admin/upstream-keys", h.withAuth(h.handleUpstreamKeyIndex))
 	mux.HandleFunc("/admin/upstream-keys/", h.withAuth(h.handleUpstreamKeyVendor))
 
