@@ -60,10 +60,10 @@ func TestMatchUpstreamErrorMaskIgnoresSuccessResponses(t *testing.T) {
 			},
 		},
 	}
-	if _, ok := matchUpstreamErrorMask(policy, http.StatusOK, http.Header{}, []byte("ok")); ok {
+	if _, ok := matchUpstreamErrorMask(policy, http.StatusOK, "ok"); ok {
 		t.Fatal("success response must never be masked")
 	}
-	if _, ok := matchUpstreamErrorMask(policy, http.StatusMethodNotAllowed, http.Header{}, nil); ok {
+	if _, ok := matchUpstreamErrorMask(policy, http.StatusMethodNotAllowed, ""); ok {
 		t.Fatal("rule matching 200 must not match 405")
 	}
 }
@@ -79,7 +79,7 @@ func TestMatchUpstreamErrorMaskMatchesJSONBodyKeywords(t *testing.T) {
 		},
 	}
 	preview := []byte(`{"error":{"message":"You exceeded your quota: quota exhausted","type":"insufficient_quota"}}`)
-	rule, ok := matchUpstreamErrorMask(policy, http.StatusTooManyRequests, headers, preview)
+	_, rule, ok := analyzeErrorResponse("generic", policy, http.StatusTooManyRequests, headers, preview)
 	if !ok {
 		t.Fatal("expected keyword rule to match summarized JSON body")
 	}

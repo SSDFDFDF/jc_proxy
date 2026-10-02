@@ -39,8 +39,8 @@ func TestMixedFastFailuresNeverImprovePerformanceCost(t *testing.T) {
 			if i != 0 {
 				t.Fatal("fast failures won selection")
 			}
-			if got := p.Snapshot()[1].AvgHeaderMS; got != 200.8 {
-				t.Fatalf("display average changed: %v", got)
+			if got := p.Snapshot()[1].AvgHeaderMS; got != (1000+4*999000)/5.0 {
+				t.Fatalf("display must include failure penalties: %v", got)
 			}
 		})
 	}

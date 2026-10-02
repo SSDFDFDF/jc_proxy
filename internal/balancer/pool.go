@@ -215,6 +215,14 @@ func (p *Pool) Release(idx int) {
 	p.releaseInflightLocked(idx)
 }
 
+func (p *Pool) ReleaseInterrupted(idx int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.releaseInflightLocked(idx) {
+		p.keys[idx].stats.RecordInterrupted()
+	}
+}
+
 func (p *Pool) ReleaseFailure(idx int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -450,6 +458,7 @@ func (p *Pool) Stats() []map[string]any {
 			"avg_response_ms":            ks.AvgResponseMS,
 			"total_requests":             ks.TotalRequests,
 			"success_count":              ks.SuccessCount,
+			"interrupted_count":          ks.InterruptedCount(),
 			"inflight":                   ks.Inflight,
 			"failures":                   ks.Failures,
 			"last_status":                ks.LastStatus,

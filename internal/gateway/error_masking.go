@@ -11,10 +11,12 @@ import (
 	"jc_proxy/internal/config"
 )
 
-// maxMaskedBodyDrainBytes bounds how much of a masked upstream body is drained
-// (after the already-captured preview) so the connection can be reused. Beyond
-// the limit the connection is simply closed.
-const maxMaskedBodyDrainBytes = 64 << 10
+// Only incomplete masked bodies need best-effort draining. Bound both bytes
+// and total time: trickling data must not hold a synthetic response indefinitely.
+const (
+	maxMaskedBodyDrainBytes = 64 << 10
+	maskedBodyDrainTimeout  = 50 * time.Millisecond
+)
 
 // maskedResponse is the uniform replacement a masking rule prescribes for a
 // matched error. Upstream headers are deliberately dropped: masking exists to
@@ -55,13 +57,12 @@ func matchErrorMaskRule(statusCode int, body string, rules []config.ErrorMasking
 }
 
 // matchUpstreamErrorMask checks masking rules against an upstream error
-// response. Only error responses (status >= 400) can be masked; success
-// responses are always forwarded verbatim.
-func matchUpstreamErrorMask(policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte) (config.ErrorMaskingRule, bool) {
-	if !errorMaskingEnabled(policy.Masking) || statusCode < http.StatusBadRequest {
+// response. body is the already-normalized preview shared with classification.
+// Only error responses (status >= 400) can be masked.
+func matchUpstreamErrorMask(policy config.ErrorPolicyConfig, statusCode int, body string) (config.ErrorMaskingRule, bool) {
+	if len(policy.Masking.Rules) == 0 || !errorMaskingEnabled(policy.Masking) || statusCode < http.StatusBadRequest {
 		return config.ErrorMaskingRule{}, false
 	}
-	body, _ := summarizeResponsePreview(headers, preview)
 	return matchErrorMaskRule(statusCode, body, policy.Masking.Rules)
 }
 
@@ -176,13 +177,16 @@ func writeMaskedResponse(w http.ResponseWriter, interim *interimResponseSender, 
 	})
 }
 
-// drainMaskedUpstreamBody drains the remainder of a masked upstream body
-// (bounded) so the underlying connection can be reused. The caller remains
-// responsible for closing the response body.
-func drainMaskedUpstreamBody(body io.Reader) {
-	if body == nil {
+// drainMaskedUpstreamBody reads only the remainder, not the replayed preview.
+// Response.Body must support Close concurrently with Read (net/http's contract).
+// This timer exists only for incomplete, discarded error bodies, never for each
+// stream chunk. A timeout here is cleanup, not another upstream failure sample.
+func drainMaskedUpstreamBody(body io.ReadCloser) {
+	if body == nil || body == http.NoBody {
 		return
 	}
+	timer := time.AfterFunc(maskedBodyDrainTimeout, func() { _ = body.Close() })
+	defer timer.Stop()
 	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxMaskedBodyDrainBytes))
 }
 

@@ -221,6 +221,12 @@ func normalizeRuntimeLastError(message string) string {
 	return string(runes[:237]) + "..."
 }
 
+// InterruptedCount is derived rather than stored as a new schema column.
+// Interrupted attempts count toward traffic, but not success or upstream errors.
+func (s RuntimeStats) InterruptedCount() int {
+	return max(0, s.TotalRequests-s.SuccessCount-s.UnauthorizedCount-s.ForbiddenCount-s.RateLimitCount-s.OtherErrorCount)
+}
+
 func (s RuntimeStats) Equal(other RuntimeStats) bool {
 	return s == other
 }

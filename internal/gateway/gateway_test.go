@@ -384,15 +384,16 @@ func TestCaptureResponsePreviewKeepsOriginalCompressedBody(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Content-Encoding", "gzip")
 
-	preview, bodyReader, err := captureResponsePreview(io.NopCloser(bytes.NewReader(compressed.Bytes())), compressed.Len(), headers)
+	upstreamBody := io.NopCloser(bytes.NewReader(compressed.Bytes()))
+	preview, err := captureResponsePreview(upstreamBody, compressed.Len(), headers)
 	if err != nil {
 		t.Fatalf("captureResponsePreview failed: %v", err)
 	}
-	if got := string(preview); !strings.Contains(got, "invalid_api_key") {
+	if got := string(preview.decoded); !strings.Contains(got, "invalid_api_key") {
 		t.Fatalf("preview = %q, want decompressed JSON preview", got)
 	}
 
-	body, err := io.ReadAll(bodyReader)
+	body, err := io.ReadAll(preview.replay(upstreamBody))
 	if err != nil {
 		t.Fatalf("read bodyReader failed: %v", err)
 	}
@@ -1233,11 +1234,14 @@ func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing
 	}
 
 	stats := router.VendorStats()["vid_openai"]
-	if got := stats[0]["failures"]; got != 0 {
-		t.Fatalf("stall before first byte should not mark key failure, got %#v", got)
+	if got := stats[0]["failures"]; got != 1 {
+		t.Fatalf("upstream body timeout should mark key failure, got %#v", got)
 	}
-	if got := stats[0]["other_error_count"]; got != 0 {
-		t.Fatalf("stall before first byte should not count as key error, got %#v", got)
+	if got := stats[0]["other_error_count"]; got != 1 {
+		t.Fatalf("upstream body timeout should count as key error, got %#v", got)
+	}
+	if stats[0]["total_requests"] != 1 || stats[0]["avg_header_ms"] != float64(999000) || stats[0]["avg_response_ms"] != float64(999000) {
+		t.Fatalf("missing timeout accounting/penalty: %#v", stats[0])
 	}
 }
 
@@ -1297,11 +1301,14 @@ func TestRouterAbortsClientConnectionWhenSuccessfulStreamBreaksMidBody(t *testin
 	}
 
 	stats := router.VendorStats()["vid_openai"]
-	if got := stats[0]["failures"]; got != 0 {
-		t.Fatalf("mid-stream upstream break should not mark key failure, got %#v", got)
+	if got := stats[0]["failures"]; got != 1 {
+		t.Fatalf("mid-stream upstream break should mark key failure, got %#v", got)
 	}
-	if got := stats[0]["other_error_count"]; got != 0 {
-		t.Fatalf("mid-stream upstream break should not count as key error, got %#v", got)
+	if got := stats[0]["other_error_count"]; got != 1 {
+		t.Fatalf("mid-stream upstream break should count as key error, got %#v", got)
+	}
+	if stats[0]["total_requests"] != 1 || stats[0]["avg_header_ms"] != float64(999000) || stats[0]["avg_response_ms"] != float64(999000) {
+		t.Fatalf("missing interrupted stream accounting/penalty: %#v", stats[0])
 	}
 	if got := stats[0]["inflight"]; got != 0 {
 		t.Fatalf("inflight should be released after mid-stream abort, got %#v", got)

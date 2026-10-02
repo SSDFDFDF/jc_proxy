@@ -23,47 +23,46 @@ type timingErrorBody struct{}
 func (timingErrorBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 func (timingErrorBody) Close() error             { return nil }
 
-func TestAttemptTimingCompletionPaths(t *testing.T) {
+func TestAttemptFinishExactlyOnce(t *testing.T) {
 	for _, tc := range []struct {
-		name                    string
-		status                  int
-		read, broken, cancel    bool
-		requests, full, success int
+		name    string
+		action  keyAction
+		cancel  bool
+		recent  int
+		success int
 	}{
-		{"success", 200, true, false, false, 1, 1, 1},
-		{"no-content", 204, true, false, false, 1, 1, 1},
-		{"error-forwarded", 429, true, false, false, 1, 1, 0},
-		{"retry-discard", 429, false, false, false, 1, 0, 0},
-		{"truncated", 200, true, true, false, 1, 0, 0},
-		{"downstream-write-error", 200, false, false, false, 0, 0, 0},
-		{"cancelled", 200, true, false, true, 0, 0, 0},
-		{"cancelled-error", 500, true, true, true, 0, 0, 0},
+		{"success", keyActionSuccess, false, 1, 1},
+		{"known-success-before-cancellation", keyActionSuccess, true, 1, 1},
+		{"error", keyActionObserve, false, 1, 0},
+		{"known-error-before-cancellation", keyActionObserve, true, 1, 0},
+		{"client-cancelled", keyActionInterrupted, true, 0, 0},
+		{"downstream-write-error", keyActionInterrupted, false, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, _ := balancer.NewPool("adaptive", []string{"key"})
+			idx, key, version, _ := pool.AcquireVersioned(nil, nil)
+			v := &vendorGateway{pool: pool}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			a := &upstreamAttempt{idx: 0, vendor: &vendorGateway{pool: pool}, request: httptest.NewRequest("GET", "/", nil).WithContext(ctx), body: io.NopCloser(strings.NewReader("body")), responseStatus: tc.status, started: time.Now().Add(-100 * time.Millisecond), headerElapsed: 20 * time.Millisecond}
-			if tc.broken {
-				a.body = timingErrorBody{}
-			}
-			if tc.read {
-				_, _ = io.Copy(io.Discard, a)
-			}
+			a := &upstreamAttempt{idx: idx, selectedKey: key, selectedVersion: version, request: httptest.NewRequest("GET", "/", nil).WithContext(ctx), headerElapsed: 20 * time.Millisecond}
 			if tc.cancel {
 				cancel()
 			}
-			_ = a.Close()
-			_ = a.Close() // exactly once even with redundant cleanup
-			s := pool.Snapshot()[0].RecentStats
-			if s.RecentRequests != tc.requests || s.ResponseSamples != tc.full || s.RecentSuccessCount != tc.success {
+			a.finish(v, keyDecision{action: tc.action, statusCode: 502, reason: "test error"}, 100*time.Millisecond)
+			a.finish(v, keyDecision{action: keyActionInterrupted}, -1)
+			a.finish(v, keyDecision{action: keyActionSuccess}, time.Second)
+			s := pool.Snapshot()[0]
+			if s.TotalRequests != 1 || s.Inflight != 0 || s.RecentRequests != tc.recent || s.HeaderSamples != tc.recent || s.ResponseSamples != tc.recent || s.RecentSuccessCount != tc.success {
 				t.Fatalf("summary = %+v", s)
 			}
-			if tc.requests > 0 && (s.HeaderSamples != 1 || s.AvgHeaderMS != 20) {
-				t.Fatalf("header timing = %+v", s)
+			if tc.success > 0 && (s.AvgHeaderMS != 20 || s.AvgResponseMS != 100) {
+				t.Fatalf("success timing = %+v", s)
 			}
-			if tc.full > 0 && s.AvgResponseMS < 100 {
-				t.Fatalf("full timing = %+v", s)
+			if tc.recent > tc.success && (s.AvgHeaderMS != 999000 || s.AvgResponseMS != 999000 || s.OtherErrorCount != 1) {
+				t.Fatalf("failure penalty = %+v", s)
+			}
+			if tc.recent == 0 && (s.InterruptedCount() != 1 || s.OtherErrorCount != 0 || s.LastError != "") {
+				t.Fatalf("interrupted attempt = %+v", s)
 			}
 		})
 	}
@@ -178,7 +177,7 @@ func TestTimingNetworkFailoverRecordsEachKey(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/openai/test", nil))
 	s := r.vendors["openai"].pool.Snapshot()
-	if w.Code != 204 || calls != 2 || s[0].RecentRequests != 1 || s[0].HeaderSamples != 0 || s[1].RecentSuccessCount != 1 || s[1].ResponseSamples != 1 {
+	if w.Code != 204 || calls != 2 || s[0].RecentRequests != 1 || s[0].HeaderSamples != 1 || s[0].AvgHeaderMS != 999000 || s[0].AvgResponseMS != 999000 || s[1].RecentSuccessCount != 1 || s[1].ResponseSamples != 1 {
 		t.Fatalf("calls=%d, code=%d, stats=%+v", calls, w.Code, s)
 	}
 }

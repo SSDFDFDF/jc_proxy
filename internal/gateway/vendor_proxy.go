@@ -161,6 +161,8 @@ func (v *vendorGateway) applyDecision(idx int, key string, version int64, decisi
 		return
 	}
 	switch decision.action {
+	case keyActionInterrupted:
+		v.pool.ReleaseInterrupted(idx)
 	case keyActionSuccess:
 		v.pool.ReleaseSuccess(idx, version)
 	case keyActionObserve:

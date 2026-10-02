@@ -75,6 +75,22 @@ test('metrics derive counts, rates and the cooldown multiplier', () => {
   assert.deepEqual(metrics.secondaryText.split(' · '), ['by system', 'HTTP 429', '连败 4', '退避 x4'])
 })
 
+test('metrics count client interruptions without marking upstream failures', () => {
+  const metrics = buildKeyMetrics({ rt: runtime({ total_requests: 10, success_count: 6, other_error_count: 2 }) })
+  assert.equal(metrics.failedCount, 2)
+  assert.equal(metrics.interruptedCount, 2)
+  assert.equal(metrics.evaluatedRequests, 8)
+  assert.equal(metrics.successRate, 75)
+  assert.equal(metrics.errRate, 25)
+
+  const canceledOnly = row({ rt: runtime({ total_requests: 3 }) })
+  assert.equal(canceledOnly.metrics.interruptedCount, 3)
+  assert.equal(canceledOnly.metrics.failedCount, 0)
+  assert.equal(canceledOnly.metrics.evaluatedRequests, 0)
+  assert.equal(canceledOnly.metrics.errRate, 0)
+  assert.equal(matchesFilter(canceledOnly, 'issues'), false)
+})
+
 test('metrics keep zero-request keys at an unknown rate', () => {
   const metrics = buildKeyMetrics({ rt: runtime() })
   assert.equal(metrics.totalRequests, 0)

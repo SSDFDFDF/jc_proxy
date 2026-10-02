@@ -180,7 +180,7 @@ func isClientDisconnectError(err error) bool {
 }
 
 func isCanceledUpstreamError(ctx context.Context, err error) bool {
-	if ctx == nil || err == nil || ctx.Err() == nil {
+	if ctx == nil || err == nil || ctx.Err() == nil || errors.Is(err, errUpstreamBodyTimeout) {
 		return false
 	}
 	if errors.Is(err, ctx.Err()) ||

@@ -4,6 +4,7 @@ import { formatSampleSeconds, keyErrorDetails, recentTimingPair } from './keySta
 
 test('timings use seconds and distinguish no sample from zero', () => {
   assert.equal(recentTimingPair({ avg_header_ms: 1000, header_samples: 5, avg_response_ms: 30000, response_samples: 5 }), '1s/30s')
+  assert.equal(recentTimingPair({ avg_header_ms: 999000, header_samples: 1, avg_response_ms: 999000, response_samples: 1 }), '999s/999s')
   assert.equal(formatSampleSeconds(1250, 2), '1.25s')
   assert.equal(formatSampleSeconds(120, 5), '0.12s')
   assert.equal(formatSampleSeconds(0.5, 1), '<0.001s')

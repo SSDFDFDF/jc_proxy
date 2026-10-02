@@ -1,44 +1,27 @@
 package gateway
 
-import (
-	"errors"
-	"io"
-	"net/http"
-	"time"
-)
+import "time"
 
-// Reuse the already allocated attempt as the response body observer. No body
-// buffering, tracing callbacks, extra timers or per-attempt allocations.
-func (a *upstreamAttempt) Read(p []byte) (int, error) {
-	n, err := a.body.Read(p)
-	if err != nil && a.bodyErr == nil {
-		a.bodyErr = err
-		a.fullElapsed = time.Since(a.started)
+// finish is the single accounting boundary for an upstream attempt. Decisions
+// already made for retry/masking survive later client cancellation or body-close
+// errors. Successful timings are taken at EOF, before the final downstream write.
+// No response-body wrapper, extra timer or per-attempt allocation is needed.
+func (a *upstreamAttempt) finish(v *vendorGateway, decision keyDecision, full time.Duration) {
+	if a.finished {
+		return
 	}
-	return n, err
-}
-
-func (a *upstreamAttempt) Close() error {
-	if a.closed {
-		return nil
+	a.finished = true
+	if !v.usesManagedUpstreamKeys() {
+		return
 	}
-	a.closed = true
-	err := a.body.Close()
-	if a.request.Context().Err() != nil {
-		return err // client cancellation is not evidence of an unhealthy key
+	switch decision.action {
+	case keyActionSuccess:
+		v.pool.RecordSample(a.idx, a.headerElapsed, full, true, a.selectedVersion)
+	case keyActionInterrupted:
+		// Count traffic without changing the upstream's performance/health.
+	default:
+		// The balancer substitutes 999s/999s for every failed sample.
+		v.pool.RecordSample(a.idx, -1, -1, false, a.selectedVersion)
 	}
-	complete := errors.Is(a.bodyErr, io.EOF)
-	// A successful response closed before EOF without a read error is normally
-	// a downstream write failure. Do not score the upstream for that failure.
-	if a.bodyErr == nil && a.responseStatus < http.StatusBadRequest {
-		return err
-	}
-	full := time.Duration(-1)
-	if complete {
-		full = a.fullElapsed
-	}
-	// Discarded retry/masked error bodies still count as failed attempts, but
-	// only bodies read to EOF contribute to the complete-response average.
-	a.vendor.pool.RecordSample(a.idx, a.headerElapsed, full, complete && a.responseStatus < http.StatusBadRequest, a.selectedVersion)
-	return err
+	v.applyDecision(a.idx, a.selectedKey, a.selectedVersion, decision)
 }

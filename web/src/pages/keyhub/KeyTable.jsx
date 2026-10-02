@@ -80,7 +80,7 @@ export function KeyTable({
         </thead>
         <tbody>
           {pageItems.map((item) => {
-            const { totalRequests, successCount, failedCount, successRate, errRate } = item.metrics
+            const { totalRequests, evaluatedRequests, interruptedCount, successCount, failedCount, successRate, errRate } = item.metrics
             const isDisabled = item.displayStatus !== 'active'
             const isSelected = selectedKeys.has(item.key)
 
@@ -134,14 +134,15 @@ export function KeyTable({
                 {/* ── Requests + recent timing ── */}
                 <td>
                   {totalRequests > 0 ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2" title="请求总数含取消/下游中断；成功率不含这些中断">
                       <span className="font-mono text-[11px] text-[var(--text-primary)]">{totalRequests.toLocaleString()}</span>
                       <div className="key-metrics-bar">
                         {successCount > 0 && <div className="h-full bg-[var(--success)]" style={{ width: `${successRate}%` }} />}
                         {failedCount > 0 && <div className="h-full bg-[var(--danger)]" style={{ width: `${errRate}%` }} />}
                       </div>
                       <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-                        {successRate}%{failedCount > 0 ? ` ·${failedCount}` : ''}
+                        {evaluatedRequests > 0 ? `${successRate}%` : '--'}{failedCount > 0 ? ` ·${failedCount}` : ''}
+                        {interruptedCount > 0 ? ` ·中断${interruptedCount}` : ''}
                       </span>
                     </div>
                   ) : (

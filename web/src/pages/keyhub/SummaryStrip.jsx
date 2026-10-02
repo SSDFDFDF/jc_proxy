@@ -4,9 +4,9 @@ import { COUNT_PALETTES, countByFilter } from './keyMetrics'
    shortcut for the matching status filter. */
 export function SummaryStrip({ items, filter, onFilterChange }) {
   const counts = countByFilter(items)
-  const totalRequests = items.reduce((sum, item) => sum + item.metrics.totalRequests, 0)
+  const evaluatedRequests = items.reduce((sum, item) => sum + item.metrics.evaluatedRequests, 0)
   const successCount = items.reduce((sum, item) => sum + item.metrics.successCount, 0)
-  const successRate = totalRequests > 0 ? ((successCount / totalRequests) * 100).toFixed(1) : null
+  const successRate = evaluatedRequests > 0 ? ((successCount / evaluatedRequests) * 100).toFixed(1) : null
 
   const cards = [
     { filterId: 'all', label: '密钥总数', value: counts.all },
@@ -39,7 +39,7 @@ export function SummaryStrip({ items, filter, onFilterChange }) {
           </button>
         )
       })}
-      <div className="kh-kpi border-[var(--border)] bg-[var(--bg-surface)]" title="全部启用密钥的累计成功率">
+      <div className="kh-kpi border-[var(--border)] bg-[var(--bg-surface)]" title="累计成功率：成功 /（成功 + 上游失败），不含客户端取消或下游中断">
         <div className="text-[11px] text-[var(--text-muted)]">成功率</div>
         <div className={`mt-0.5 font-mono text-lg font-semibold leading-none tabular-nums ${
           successRate === null ? 'text-[var(--text-faint)]'

@@ -19,7 +19,7 @@ export function KeyRecentTiming({ stats = {} }) {
   return (
     <div
       className="key-recent-timing flex items-baseline gap-1"
-      title={`首包/整包 · ${summary}。首包为收到最终响应头，不是首token；整包只统计读至EOF的响应，包含下游背压。颜色：<3s 绿，3-10s 黄，≥10s 红。`}
+      title={`首包/整包 · ${summary}。成功样本：首包为最终响应头（非首token），整包计到EOF、含下游背压；上游失败统一按999s/999s计入均值，不是真实耗时。客户端取消/下游中断仅计入累计请求，不进入本窗口。颜色：<3s 绿，3-10s 黄，≥10s 红。`}
     >
       <span className="text-[10px] text-[var(--text-faint)]">首包/整包</span>
       <span className={`font-mono tabular-nums ${timingTone(stats.avg_header_ms, stats.header_samples)}`}>{formatSampleSeconds(stats.avg_header_ms, stats.header_samples)}</span>

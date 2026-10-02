@@ -46,7 +46,7 @@ export function KeyCardList({
 
       <div className="space-y-2">
         {pageItems.map((item) => {
-          const { totalRequests, successCount, failedCount, successRate, errRate } = item.metrics
+          const { totalRequests, evaluatedRequests, interruptedCount, successCount, failedCount, successRate, errRate } = item.metrics
           const isDisabled = item.displayStatus !== 'active'
           const isSelected = selectedKeys.has(item.key)
 
@@ -89,13 +89,13 @@ export function KeyCardList({
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 pl-6 text-[11px]">
                 <LoadChips metrics={item.metrics} />
                 {totalRequests > 0 && (
-                  <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-flex flex-wrap items-center gap-1.5" title="请求总数含取消/下游中断；成功率不含这些中断">
                     <span className="font-mono text-[var(--text-primary)]">{totalRequests.toLocaleString()}</span>
                     <span className="key-metrics-bar" style={{ width: 48, flex: '0 0 auto' }}>
                       {successCount > 0 && <span className="block h-full bg-[var(--success)]" style={{ width: `${successRate}%` }} />}
                       {failedCount > 0 && <span className="block h-full bg-[var(--danger)]" style={{ width: `${errRate}%` }} />}
                     </span>
-                    <span className="font-mono tabular-nums text-[var(--text-muted)]">{successRate}%</span>
+                    <span className="font-mono tabular-nums text-[var(--text-muted)]">{evaluatedRequests > 0 ? `${successRate}%` : '--'}{interruptedCount > 0 ? ` ·中断${interruptedCount}` : ''}</span>
                   </span>
                 )}
                 <KeyRecentTiming stats={item.rt} />

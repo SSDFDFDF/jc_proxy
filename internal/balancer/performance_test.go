@@ -8,7 +8,7 @@ import (
 	"jc_proxy/internal/keystore"
 )
 
-func TestRecentWindowEvictionAndMissingTimings(t *testing.T) {
+func TestRecentWindowEvictionAndFailurePenalties(t *testing.T) {
 	h := NewRuntimeStatsHandle(keystore.RuntimeStats{})
 	for i := 1; i <= 7; i++ {
 		h.RecordSample(time.Duration(i)*time.Millisecond, time.Duration(i*10)*time.Millisecond, true)
@@ -19,14 +19,14 @@ func TestRecentWindowEvictionAndMissingTimings(t *testing.T) {
 	}
 	h.RecordSample(-1, -1, false) // evicts sample 3, not a zero-latency response
 	s = h.Snapshot().RecentStats
-	if s.HeaderSamples != 4 || s.ResponseSamples != 4 || s.AvgHeaderMS != 5.5 || s.AvgResponseMS != 55 || s.RecentSuccessCount != 4 {
+	if s.HeaderSamples != 5 || s.ResponseSamples != 5 || s.AvgHeaderMS != (999000+22)/5.0 || s.AvgResponseMS != (999000+220)/5.0 || s.RecentSuccessCount != 4 {
 		t.Fatalf("failed attempt = %+v", s)
 	}
 	for range 5 {
 		h.RecordSample(-1, -1, false)
 	}
 	s = h.Snapshot().RecentStats
-	if s.HeaderSamples != 0 || s.ResponseSamples != 0 || s.AvgHeaderMS != 0 || s.RecentRequests != 5 {
+	if s.HeaderSamples != 5 || s.ResponseSamples != 5 || s.AvgHeaderMS != 999000 || s.AvgResponseMS != 999000 || s.RecentRequests != 5 {
 		t.Fatalf("evicted timings = %+v", s)
 	}
 }

@@ -130,6 +130,20 @@ func (h *RuntimeStatsHandle) RecordError(statusCode int, reason string, preserve
 	h.totalRequests.Store(int64(h.stats.TotalRequests))
 }
 
+// RecordInterrupted counts an attempted request without attributing a client
+// cancellation/downstream write failure to the upstream. Keep health diagnostics
+// and the performance window intact. The unclassified portion of TotalRequests
+// is the interrupted count, so existing file/PG schemas remain compatible.
+func (h *RuntimeStatsHandle) RecordInterrupted() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stats.TotalRequests++
+	h.totalRequests.Store(int64(h.stats.TotalRequests))
+}
+
 func (h *RuntimeStatsHandle) ClearLastError() {
 	if h == nil {
 		return

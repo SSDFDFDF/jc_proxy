@@ -124,14 +124,9 @@ type upstreamAttempt struct {
 	selectedVersion int64
 	selectedKey     string
 	request         *http.Request
-	body            io.ReadCloser
 	started         time.Time
 	headerElapsed   time.Duration
-	fullElapsed     time.Duration
-	bodyErr         error
-	responseStatus  int
-	closed          bool
-	vendor          *vendorGateway
+	finished        bool
 }
 
 type proxyError struct {
@@ -482,16 +477,11 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		resp, err := vg.client.Do(attempt.request)
 		if err != nil {
 			if isCanceledUpstreamError(req.Context(), err) {
-				if vg.usesManagedUpstreamKeys() {
-					vg.pool.Release(attempt.idx)
-				}
+				attempt.finish(vg, keyDecision{action: keyActionInterrupted}, -1)
 				return vendorRequestDone
 			}
-			if vg.usesManagedUpstreamKeys() {
-				vg.pool.RecordSample(attempt.idx, -1, -1, false, attempt.selectedVersion)
-			}
 			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream request failed: %v", err))
-			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
+			attempt.finish(vg, decision, -1)
 			canRetry := prepared.bodySource.canRetryRequestError(decision)
 			if canRetry && retryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, prepared.allowedKeyIdxs) {
 				continue
@@ -510,12 +500,6 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		if vg.upstreamBodyTimeout > 0 {
 			resp.Body = newIdleTimeoutReadCloser(resp.Body, vg.upstreamBodyTimeout)
 		}
-		if vg.usesManagedUpstreamKeys() {
-			attempt.body = resp.Body
-			attempt.vendor = vg
-			attempt.responseStatus = resp.StatusCode
-			resp.Body = attempt
-		}
 
 		switch r.handleUpstreamResponse(w, req, resp, vg, attempt, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs, interim, aggregateHook, retryRemaining) {
 		case upstreamResponseRetryVendorKey:
@@ -529,90 +513,58 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 }
 
 func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, vg *vendorGateway, attempt *upstreamAttempt, bodySource *requestBodySource, triedManagedKeyIdx map[int]struct{}, allowedKeyIdxs []int, interim *interimResponseSender, aggregateHook aggregateRetryHook, vendorRetryRemaining bool) upstreamResponseOutcome {
+	decision := keyDecision{action: keyActionSuccess, statusCode: resp.StatusCode}
+	var bodyReader io.Reader = resp.Body
 	if resp.StatusCode >= http.StatusBadRequest {
-		preview, bodyReader, err := captureResponsePreview(resp.Body, 2048, resp.Header)
+		preview, err := captureResponsePreview(resp.Body, 2048, resp.Header)
 		if err != nil {
 			_ = resp.Body.Close()
+			// Preserve a known HTTP failure even if previewing its body fails.
+			decision = classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
+			decision.reason = compactReason(decision.reason, fmt.Sprintf("read upstream response failed: %v", err))
+			attempt.finish(vg, decision, -1)
 			if isCanceledUpstreamError(req.Context(), err) {
-				if vg.usesManagedUpstreamKeys() {
-					vg.pool.Release(attempt.idx)
-				}
 				return upstreamResponseDone
 			}
-			decision := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("read upstream response failed: %v", err))
-			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-			canRetry := bodySource.canRetryRequestError(decision)
-			if canRetry && vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
+			// Retain the HTTP status for health/statistics, but preserve the
+			// independent request-error retry switch for a failed preview read.
+			retryDecision := classifyRequestError(vg.provider, vg.errorPolicy, "read upstream response failed")
+			if bodySource.canRetryRequestError(retryDecision) && vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 				return upstreamResponseRetryVendorKey
 			}
 			if aggregateHook != nil && aggregateHook(0, err, bodySource) {
 				return upstreamResponseRetryAggregateChild
 			}
-			// The response body could not be read, so there is nothing to
-			// forward downstream.
 			writeMaskableGatewayError(w, interim, vg, "upstream request failed", http.StatusBadGateway)
 			return upstreamResponseDone
 		}
 
-		decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview)
-		// Masking is evaluated on the real upstream response but only applied
-		// at delivery time: failover still runs first, and key health decisions
-		// still see the true status code and body.
-		maskRule, maskMatched := matchUpstreamErrorMask(vg.errorPolicy, resp.StatusCode, resp.Header, preview)
-		if maskMatched {
-			decision = extendDecisionCooldown(decision, maskRule)
-		}
-		deliverMasked := func() {
-			drainMaskedUpstreamBody(bodyReader)
+		var maskRule config.ErrorMaskingRule
+		var maskMatched bool
+		decision, maskRule, maskMatched = analyzeErrorResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview.decoded)
+		attempt.finish(vg, decision, -1)
+		// Preserve separate vendor/aggregate retry policies, the global budget
+		// and non-idempotent replay restrictions. Delivery has one exit below.
+		if bodySource.canRetryResponse(resp.StatusCode, decision) && vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 			_ = resp.Body.Close()
-			writeMaskedResponse(w, interim, buildMaskedResponse(maskRule, resp.Header.Get("Retry-After")))
+			return upstreamResponseRetryVendorKey
 		}
-		if bodySource.canRetryResponse(resp.StatusCode, decision) {
-			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-			if vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
-				_ = resp.Body.Close()
-				return upstreamResponseRetryVendorKey
-			}
-			if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource) {
-				_ = resp.Body.Close()
-				return upstreamResponseRetryAggregateChild
-			}
-			// Out of keys, attempts or budget: deliver the outcome we already
-			// hold. A masking rule replaces the client-visible error with a
-			// uniform response; otherwise the upstream response is forwarded
-			// verbatim because its real status and Retry-After are exactly the
-			// signal a rate-limited client needs.
-			if maskMatched {
-				deliverMasked()
-				return upstreamResponseDone
-			}
-			if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, true, interim); errors.Is(err, errAbortDownstreamResponse) {
-				panic(http.ErrAbortHandler)
-			}
-			return upstreamResponseDone
-		}
-
 		if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource) {
-			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
 			_ = resp.Body.Close()
 			return upstreamResponseRetryAggregateChild
 		}
 		if maskMatched {
-			// The masked body is synthesized, so the key decision is applied
-			// here; writeUpstreamResponse would otherwise apply it once the
-			// real body finished relaying.
-			vg.applyDecision(attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision)
-			deliverMasked()
+			if !preview.complete {
+				drainMaskedUpstreamBody(resp.Body)
+			}
+			_ = resp.Body.Close()
+			writeMaskedResponse(w, interim, buildMaskedResponse(maskRule, resp.Header.Get("Retry-After")))
 			return upstreamResponseDone
 		}
-		if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false, interim); errors.Is(err, errAbortDownstreamResponse) {
-			panic(http.ErrAbortHandler)
-		}
-		return upstreamResponseDone
+		bodyReader = preview.replay(resp.Body)
 	}
 
-	decision := classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
-	if err := r.writeUpstreamResponse(w, req, resp, resp.Body, vg, attempt.idx, attempt.selectedKey, attempt.selectedVersion, decision, false, interim); errors.Is(err, errAbortDownstreamResponse) {
+	if err := r.writeUpstreamResponse(w, req, resp, bodyReader, vg, attempt, decision, interim); errors.Is(err, errAbortDownstreamResponse) {
 		panic(http.ErrAbortHandler)
 	}
 	return upstreamResponseDone

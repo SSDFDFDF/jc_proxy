@@ -5,10 +5,12 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"jc_proxy/internal/config"
 )
@@ -25,19 +27,6 @@ var streamingResponseBuffers = sync.Pool{New: func() any {
 	buf := make([]byte, streamingResponseCopyBufferBytes)
 	return &buf
 }}
-
-type flushWriter struct {
-	writer  io.Writer
-	flusher http.Flusher
-}
-
-func (w *flushWriter) Write(p []byte) (int, error) {
-	n, err := w.writer.Write(p)
-	if n > 0 {
-		w.flusher.Flush()
-	}
-	return n, err
-}
 
 func shouldFlushResponse(req *http.Request, resp *http.Response) bool {
 	if resp != nil {
@@ -56,16 +45,37 @@ func shouldFlushResponse(req *http.Request, resp *http.Response) bool {
 	return strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream")
 }
 
-func captureResponsePreview(body io.ReadCloser, limit int, header http.Header) ([]byte, io.Reader, error) {
-	if body == nil || body == http.NoBody || limit <= 0 {
-		return nil, http.NoBody, nil
+type capturedResponsePreview struct {
+	raw      []byte
+	decoded  []byte
+	complete bool
+}
+
+// Only forwarding needs to replay the preview; retry/masking can discard it
+// without allocating an extra reader chain or reading the prefix twice.
+func (p capturedResponsePreview) replay(body io.Reader) io.Reader {
+	if p.complete {
+		return bytes.NewReader(p.raw)
 	}
-	rawPreview, err := io.ReadAll(io.LimitReader(body, int64(limit)))
+	if len(p.raw) == 0 {
+		return body
+	}
+	return io.MultiReader(bytes.NewReader(p.raw), body)
+}
+
+func captureResponsePreview(body io.ReadCloser, limit int, header http.Header) (capturedResponsePreview, error) {
+	if body == nil || body == http.NoBody {
+		return capturedResponsePreview{complete: true}, nil
+	}
+	if limit <= 0 {
+		return capturedResponsePreview{}, nil
+	}
+	reader := &io.LimitedReader{R: body, N: int64(limit)}
+	raw, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, nil, err
+		return capturedResponsePreview{}, err
 	}
-	preview := maybeDecompressPreview(rawPreview, header)
-	return preview, io.MultiReader(bytes.NewReader(rawPreview), body), nil
+	return capturedResponsePreview{raw: raw, decoded: maybeDecompressPreview(raw, header), complete: reader.N > 0}, nil
 }
 
 func maybeDecompressPreview(data []byte, header http.Header) []byte {
@@ -111,8 +121,11 @@ func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
 	}
 }
 
-func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, idx int, selectedKey string, selectedVersion int64, decision keyDecision, decisionApplied bool, interim *interimResponseSender) error {
+func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, attempt *upstreamAttempt, decision keyDecision, interim *interimResponseSender) error {
 	defer resp.Body.Close()
+	// Downstream write failures (including panics) still count as attempted
+	// traffic, but must not poison upstream health. finish is exactly once.
+	defer attempt.finish(vg, keyDecision{action: keyActionInterrupted}, -1)
 
 	if body == nil {
 		body = http.NoBody
@@ -122,32 +135,23 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 	buf, releaseBuf := r.responseCopyBuffer(streaming)
 	defer releaseBuf()
 
-	writer := io.Writer(w)
+	var flusher *http.ResponseController
 	if streaming {
-		if flusher, ok := w.(http.Flusher); ok {
-			writer = &flushWriter{writer: w, flusher: flusher}
-		}
+		// Prefer FlushError when available (including through Unwrap). A
+		// buffered Write can succeed even though sending it to the client fails.
+		flusher = http.NewResponseController(w)
 	}
 
-	applyCompletedDecisionIfNeeded := func() {
-		if !decisionApplied {
-			vg.applyDecision(idx, selectedKey, selectedVersion, decision)
-			decisionApplied = true
+	finishReadFailure := func(err error) {
+		if attempt.finished {
+			return // a known HTTP failure was already classified and counted
 		}
+		failure := classifyRequestError(vg.provider, vg.errorPolicy, fmt.Sprintf("upstream response interrupted: %v", err))
+		failure.statusCode = http.StatusBadGateway
+		attempt.finish(vg, failure, -1)
 	}
 
-	applyInterruptedDecisionIfNeeded := func() {
-		if !decisionApplied {
-			if resp.StatusCode >= http.StatusBadRequest {
-				vg.applyDecision(idx, selectedKey, selectedVersion, decision)
-			} else {
-				vg.applyDecision(idx, selectedKey, selectedVersion, keyDecision{action: keyActionNone})
-			}
-			decisionApplied = true
-		}
-	}
-
-	committed := false
+	committed, hasBody := false, false
 	commitUpstream := func() {
 		if committed {
 			return
@@ -157,20 +161,32 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 			w.WriteHeader(resp.StatusCode)
 		})
 		committed = true
-		if streaming {
-			if flusher, ok := w.(http.Flusher); ok {
-				flusher.Flush()
-			}
-		}
 	}
 
 	for {
 		n, readErr := body.Read(buf)
+		full := time.Duration(-1)
+		if readErr != nil {
+			full = time.Since(attempt.started)
+		}
+		canceled := isCanceledUpstreamError(req.Context(), readErr)
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !canceled {
+			// Preserve a known upstream failure even if writing these last
+			// bytes also fails or cancels the downstream context.
+			finishReadFailure(readErr)
+		}
 		if n > 0 {
+			hasBody = true
 			commitUpstream()
-			if _, writeErr := writer.Write(buf[:n]); writeErr != nil {
-				applyInterruptedDecisionIfNeeded()
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				return nil
+			}
+			if flusher != nil {
+				if err := flusher.Flush(); errors.Is(err, http.ErrNotSupported) {
+					flusher = nil // preserve writers without streaming support
+				} else if err != nil {
+					return nil
+				}
 			}
 		}
 
@@ -178,16 +194,25 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 			continue
 		}
 		if errors.Is(readErr, io.EOF) {
+			if !hasBody && expectsUpstreamResponseBody(attempt.request, resp) {
+				finishReadFailure(errors.New("empty upstream response"))
+				writeHTTPError(w, interim, "upstream returned an empty response", http.StatusBadGateway)
+				return nil
+			}
 			commitUpstream()
-			applyCompletedDecisionIfNeeded()
+			if !hasBody && flusher != nil {
+				// No body Write exists to flush this empty stream.
+				if err := flusher.Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+					return nil
+				}
+			}
+			attempt.finish(vg, decision, full)
 			return nil
 		}
-		if isCanceledUpstreamError(req.Context(), readErr) {
-			applyInterruptedDecisionIfNeeded()
+		if canceled {
 			return nil
 		}
 
-		applyInterruptedDecisionIfNeeded()
 		if !committed {
 			if resp.StatusCode >= http.StatusBadRequest {
 				commitUpstream()
@@ -201,6 +226,31 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 		}
 		return errAbortDownstreamResponse
 	}
+}
+
+// HTTP permits empty responses in general. Reject them only when a successful
+// response promises JSON/SSE or a known inference API requires a result. Do not
+// turn legitimate HEAD, OPTIONS, 204/205, redirects or empty acknowledgments
+// from generic endpoints into upstream failures.
+func expectsUpstreamResponseBody(req *http.Request, resp *http.Response) bool {
+	if req == nil || resp == nil || req.Method == http.MethodHead || req.Method == http.MethodOptions ||
+		resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent {
+		return false
+	}
+	contentType := normalizedContentType(resp.Header)
+	if resp.ContentLength > 0 || contentType == "application/json" || strings.HasSuffix(contentType, "+json") || contentType == "text/event-stream" {
+		return true
+	}
+	if req.Method != http.MethodPost || req.URL == nil {
+		return false
+	}
+	path := strings.TrimRight(req.URL.Path, "/")
+	for _, suffix := range []string{"/chat/completions", "/completions", "/responses", "/messages", "/embeddings", ":generateContent", ":streamGenerateContent"} {
+		if strings.HasSuffix(path, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeHTTPError(w http.ResponseWriter, interim *interimResponseSender, message string, statusCode int) {

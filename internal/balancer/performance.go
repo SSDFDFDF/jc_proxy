@@ -9,6 +9,7 @@ import (
 
 const (
 	recentWindowSize    = 5
+	failedSamplePenalty = 999 * time.Second
 	sampleFreshness     = 5 * time.Minute
 	explorationInterval = 10
 )
@@ -20,8 +21,8 @@ var schedulerEpoch = time.Now()
 type explorationState struct{ credit int }
 
 type requestSample struct {
-	header  time.Duration // negative means no response headers
-	full    time.Duration // negative means body not read to EOF
+	header  time.Duration // successful timing, or the fixed failure penalty
+	full    time.Duration // successful timing, or the fixed failure penalty
 	success bool
 }
 
@@ -35,6 +36,11 @@ func (h *RuntimeStatsHandle) RecordSample(header, full time.Duration, success bo
 func (h *RuntimeStatsHandle) recordSampleAt(header, full time.Duration, success bool, now time.Time) uint64 {
 	if h == nil {
 		return 0
+	}
+	// Failed attempts must never look fast or disappear from timing averages,
+	// including network failures and bodies discarded before EOF.
+	if !success {
+		header, full = failedSamplePenalty, failedSamplePenalty
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -89,8 +95,8 @@ func (h *RuntimeStatsHandle) updateCostsLocked() {
 	p := float64(s.RecentSuccessCount+1) / float64(s.RecentRequests+2) // Laplace smoothing
 	header := 1000.0                                                   // neutral 1s prior when timing is unknown
 	full := header
-	// Display averages include failures. Scheduling averages must not: fast
-	// error responses cannot improve a key's latency score.
+	// Display averages include fixed failure penalties. Scheduling continues to
+	// use successful timings plus the success-rate penalty (not both penalties).
 	if h.sampleCount > 0 {
 		var hs, fs int
 		var ht, ft float64

@@ -52,7 +52,6 @@ export function buildKeyMetrics(item) {
   const cooldownMultiplier = cooldownLevel > 1 ? 2 ** (cooldownLevel - 1) : 1
   const totalRequests = Number(rt.total_requests || 0)
   const successCount = Number(rt.success_count || 0)
-  const failedCount = Math.max(0, totalRequests - successCount)
   const failures = Number(rt.failures || 0)
   const lastStatus = Number(rt.last_status || 0)
   const reason = item.displayDisableReason
@@ -61,7 +60,12 @@ export function buildKeyMetrics(item) {
   const err429 = Number(rt.rate_limit_count || 0)
   const errOth = Number(rt.other_error_count || 0)
   const errorCount = err401 + err403 + err429 + errOth
-  const successRate = totalRequests === 0 ? 0 : Math.round((successCount / totalRequests) * 100)
+  const failedCount = errorCount
+  // Derived from existing lifetime counters, also works with persisted records
+  // that do not have the live API's interrupted_count convenience field.
+  const interruptedCount = Math.max(0, totalRequests - successCount - failedCount)
+  const evaluatedRequests = successCount + failedCount
+  const successRate = evaluatedRequests === 0 ? 0 : Math.round((successCount / evaluatedRequests) * 100)
   const secondaryParts = []
 
   if (item.displayDisabledBy) secondaryParts.push(`by ${item.displayDisabledBy}`)
@@ -77,6 +81,8 @@ export function buildKeyMetrics(item) {
     totalRequests,
     successCount,
     failedCount,
+    interruptedCount,
+    evaluatedRequests,
     failures,
     lastStatus,
     reason,
@@ -87,7 +93,7 @@ export function buildKeyMetrics(item) {
     errorCount,
     hasErrors: errorCount > 0,
     successRate,
-    errRate: totalRequests === 0 ? 0 : 100 - successRate,
+    errRate: evaluatedRequests === 0 ? 0 : 100 - successRate,
     secondaryText: secondaryParts.join(' · ')
   }
 }

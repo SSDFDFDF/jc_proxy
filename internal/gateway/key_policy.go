@@ -18,11 +18,11 @@ import (
 type keyAction string
 
 const (
-	keyActionNone     keyAction = "none"
-	keyActionSuccess  keyAction = "success"
-	keyActionObserve  keyAction = "observe"
-	keyActionCooldown keyAction = "cooldown"
-	keyActionDisable  keyAction = "disable"
+	keyActionInterrupted keyAction = "interrupted"
+	keyActionSuccess     keyAction = "success"
+	keyActionObserve     keyAction = "observe"
+	keyActionCooldown    keyAction = "cooldown"
+	keyActionDisable     keyAction = "disable"
 )
 
 type keyDecision struct {
@@ -33,29 +33,16 @@ type keyDecision struct {
 	failover   bool
 }
 
-type responsePreview struct {
-	limit int
-	buf   bytes.Buffer
-}
-
-func newResponsePreview(limit int) *responsePreview {
-	return &responsePreview{limit: limit}
-}
-
-func (p *responsePreview) Write(b []byte) (int, error) {
-	if p.limit <= 0 || p.buf.Len() >= p.limit {
-		return len(b), nil
+// analyzeErrorResponse shares one parsed preview between health classification
+// and masking. Both continue to use the real upstream status and body.
+func analyzeErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte) (keyDecision, config.ErrorMaskingRule, bool) {
+	body, reason := summarizeResponsePreview(headers, preview)
+	decision := classifyErrorResponse(provider, policy, statusCode, headers, body, reason)
+	rule, matched := matchUpstreamErrorMask(policy, statusCode, body)
+	if matched {
+		decision = extendDecisionCooldown(decision, rule)
 	}
-	remain := p.limit - p.buf.Len()
-	if remain > len(b) {
-		remain = len(b)
-	}
-	_, _ = p.buf.Write(b[:remain])
-	return len(b), nil
-}
-
-func (p *responsePreview) Bytes() []byte {
-	return append([]byte(nil), p.buf.Bytes()...)
+	return decision, rule, matched
 }
 
 func classifyRequestError(provider string, policy config.ErrorPolicyConfig, message string) keyDecision {
@@ -70,6 +57,10 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 	}
 
 	body, reasonBody := summarizeResponsePreview(headers, preview)
+	return classifyErrorResponse(provider, policy, statusCode, headers, body, reasonBody)
+}
+
+func classifyErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, body, reasonBody string) keyDecision {
 	retryAfter := parseRetryAfter(headers.Get("Retry-After"))
 	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), reasonBody)
 	responseFailover := shouldFailoverResponse(statusCode, policy)
@@ -253,7 +244,6 @@ func retryAfterMode(raw string, statusCode int) string {
 	}
 	return "ignore"
 }
-
 
 func parseRetryAfter(raw string) time.Duration {
 	raw = strings.TrimSpace(raw)
