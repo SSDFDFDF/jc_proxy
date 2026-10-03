@@ -1,35 +1,9 @@
 import { buttonClass } from '../../app/utils'
-import { KEY_FILTERS, COUNT_PALETTES } from './keyMetrics'
 import { Icon, IconButton } from './shared'
 
-/* ── Toolbar: search + filter chips + refresh cluster + actions ── */
-
-function FilterChips({ value, counts, onChange }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1" aria-label="按状态过滤">
-      {KEY_FILTERS.map((option) => {
-        const active = value === option.id
-        const count = counts[option.id] ?? 0
-        const palette = COUNT_PALETTES[option.id]
-        const emphasize = count > 0 && palette.value !== 'normal' && option.id !== 'active'
-        return (
-          <button
-            key={option.id}
-            type="button"
-            aria-pressed={active}
-            className={`filter-chip ${active ? 'filter-chip-active' : ''}`}
-            onClick={() => onChange(option.id)}
-          >
-            <span>{option.label}</span>
-            <span className={`font-mono text-[10px] tabular-nums ${active ? 'text-[var(--accent)]' : emphasize ? palette.value : 'text-[var(--text-faint)]'}`}>
-              {count}
-            </span>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
+/* ── Toolbar: search + refresh cluster + actions ──
+   Status filtering lives in the SummaryStrip KPI cards above — the counts
+   used to be duplicated here as filter chips. */
 
 function RefreshCluster({ busy, autoRefresh, refreshEverySec, onToggleAutoRefresh, onRefreshEverySecChange, onRefresh }) {
   return (
@@ -63,9 +37,6 @@ function RefreshCluster({ busy, autoRefresh, refreshEverySec, onToggleAutoRefres
 export function KeyToolbar({
   query,
   onQueryChange,
-  statusFilter,
-  counts,
-  onStatusFilterChange,
   filteredCount,
   totalCount,
   busy,
@@ -92,7 +63,6 @@ export function KeyToolbar({
             onChange={(e) => onQueryChange(e.target.value)}
           />
         </div>
-        <FilterChips value={statusFilter} counts={counts} onChange={onStatusFilterChange} />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="whitespace-nowrap text-xs text-[var(--text-muted)]">

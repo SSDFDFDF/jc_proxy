@@ -1641,36 +1641,6 @@ code, .font-mono {
 
 .kh-kpi-danger-active { border-color: rgba(239, 68, 68, 0.45); }
 
-/* Filter chips in the toolbar. */
-.filter-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  font-family: inherit;
-  white-space: nowrap;
-}
-
-.filter-chip:hover {
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-}
-
-.filter-chip-active,
-.filter-chip-active:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
 /* Square icon button used for row actions and toolbar utilities. */
 .icon-btn {
   width: 28px;

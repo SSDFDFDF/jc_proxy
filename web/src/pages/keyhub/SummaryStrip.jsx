@@ -18,7 +18,7 @@ export function SummaryStrip({ items, filter, onFilterChange }) {
   ]
 
   return (
-    <div className="kh-kpi-strip">
+    <div className="kh-kpi-strip" role="group" aria-label="密钥状态统计，点击卡片按状态过滤">
       {cards.map((card) => {
         const palette = COUNT_PALETTES[card.filterId] || COUNT_PALETTES.all
         const isActiveFilter = filter === card.filterId

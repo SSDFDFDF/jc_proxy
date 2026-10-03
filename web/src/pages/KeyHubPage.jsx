@@ -10,7 +10,7 @@ import { KeyToolbar } from './keyhub/KeyToolbar'
 import { RemarkModal } from './keyhub/RemarkModal'
 import { SummaryStrip } from './keyhub/SummaryStrip'
 import { VendorChipBar } from './keyhub/VendorChipBar'
-import { buildKeyMetrics, compareItems, compareValues, countByFilter, matchesFilter, resolveDisplayState } from './keyhub/keyMetrics'
+import { buildKeyMetrics, compareItems, compareValues, matchesFilter, resolveDisplayState } from './keyhub/keyMetrics'
 import { Icon } from './keyhub/shared'
 
 /* ══════════════════════════════════════════════════════════════
@@ -83,8 +83,6 @@ export function KeyHubPage({
       return { ...merged, metrics: buildKeyMetrics(merged) }
     })
   }, [allItems, runtimeMap])
-
-  const counts = useMemo(() => countByFilter(mergedItems), [mergedItems])
 
   const selectedBackoffKeys = useMemo(
     () => mergedItems.filter((item) => selectedKeys.has(item.key) && item.metrics.backoff > 0).map((item) => item.key),
@@ -302,9 +300,6 @@ export function KeyHubPage({
           <KeyToolbar
             query={query}
             onQueryChange={(value) => { setQuery(value); setPage(1) }}
-            statusFilter={statusFilter}
-            counts={counts}
-            onStatusFilterChange={(id) => { setStatusFilter(id); setPage(1) }}
             filteredCount={filteredItems.length}
             totalCount={allItems.length}
             busy={busy}
