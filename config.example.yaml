@@ -62,6 +62,8 @@ vendors:
     max_upstream_attempts: 10
     upstream:
       base_url: "https://api.openai.com"
+      # 请求发送阶段预算（连接/上传），写完请求即停止，不限制后续长 SSE；0s 禁用。
+      upload_timeout: 300s
       response_header_timeout: 300s
       body_timeout: 5m
       # 在最终响应开始前周期性发送 HTTP 102 Processing，避免 Cloudflare 等代理因长时间无响应断开。
@@ -95,10 +97,11 @@ vendors:
       duration: 3h
     error_policy:
       auto_disable:
-        invalid_key: true
-        # 可选：命中以下响应码或响应体关键字任一条件时，按“无效密钥”自动禁用
-        invalid_key_status_codes: []
-        invalid_key_keywords: []
+        enabled: true
+        status_codes: [401]
+        # 内置认证标识只匹配 error.code/type 等结构化字段，不匹配反射的模型名/消息。
+        # 其他自定义文本关键词仍是全文匹配，应谨慎配置不可逆自动禁用。
+        keywords: [incorrect_api_key, invalid_api_key]
       cooldown:
         # 按顺序匹配自定义退避规则；可只配 status_codes，
         # 也可叠加 keywords 做更细粒度匹配。
@@ -183,9 +186,9 @@ vendors:
       duration: 3h
     error_policy:
       auto_disable:
-        invalid_key: true
-        invalid_key_status_codes: []
-        invalid_key_keywords: []
+        enabled: true
+        status_codes: [401]
+        keywords: [incorrect_api_key, invalid_api_key]
       cooldown:
         response_rules:
           - status_codes: [401, 403]

@@ -7,7 +7,9 @@ import { buildVendorInitials, vendorHealth } from './keyMetrics'
    Phones get a wrapped text-avatar grid — a long vendor list grows downwards
    instead of sideways, so there is always something to tap without swiping the
    strip to its end. The selected vendor's full name and live numbers are shown
-   in the row above the grid. */
+   in the row above the grid. Any vendor with live load gets a pulsing ↑n
+   inflight marker right on its chip/tile, so the busy vendors are visible at
+   a glance without selecting them first. */
 const MOBILE_LIMIT = 11
 
 function totals(item) {
@@ -44,7 +46,7 @@ export function VendorChipBar({ tabs, selectedID, onSelect }) {
               <span className="text-[var(--text-faint)]">/{totals(selected)}</span>
             </span>
             {selected.inflight > 0 && (
-              <span className="shrink-0 font-mono text-[11px] text-[var(--accent)]" title="并发">↑{selected.inflight}</span>
+              <span className="kh-inflight shrink-0" title="并发处理中">↑{selected.inflight}</span>
             )}
             {selected.backoff > 0 && (
               <span className="shrink-0 font-mono text-[11px] text-[var(--warning)]" title="退避">⏱{selected.backoff}</span>
@@ -62,12 +64,13 @@ export function VendorChipBar({ tabs, selectedID, onSelect }) {
                 type="button"
                 role="option"
                 aria-selected={active}
-                aria-label={`${item.vendorName}${item.configured ? '' : '（未配置）'}：启用 ${item.activeCount} / 共 ${total}`}
+                aria-label={`${item.vendorName}${item.configured ? '' : '（未配置）'}：启用 ${item.activeCount} / 共 ${total}${item.inflight > 0 ? `，并发 ${item.inflight}` : ''}`}
                 title={`${item.vendorName}${item.configured ? '' : '（未配置）'}`}
                 className={`kh-vendor-tile ${active ? 'kh-vendor-tile-active' : ''} ${item.configured ? '' : 'kh-vendor-tile-unconfigured'}`}
                 onClick={() => onSelect(item.vendorID)}
               >
                 <span className={`kh-dot kh-dot-${vendorHealth(item)}`} aria-hidden="true" />
+                {item.inflight > 0 && <span className="kh-inflight" aria-hidden="true">↑{item.inflight}</span>}
                 <span className="kh-vendor-avatar">{initials[item.vendorID]}</span>
                 <span className="kh-vendor-count">
                   <span className={item.activeCount > 0 ? 'text-[var(--success)]' : undefined}>{item.activeCount}</span>
@@ -113,6 +116,9 @@ export function VendorChipBar({ tabs, selectedID, onSelect }) {
                 <span className={item.activeCount > 0 ? 'text-[var(--success)]' : ''}>{item.activeCount}</span>
                 <span className="text-[var(--text-faint)]">/{total}</span>
               </span>
+              {item.inflight > 0 && (
+                <span className="kh-inflight" title="并发处理中">↑{item.inflight}</span>
+              )}
             </button>
           )
         })}

@@ -37,26 +37,27 @@ type vendorGateway struct {
 	// id is the immutable vendor identifier and is what every stored artifact
 	// keys off: upstream key partitions and runtime statistics. name is the
 	// mutable display label that also forms the request path segment.
-	id                  string
-	name                string
-	provider            string
-	baseURL             *url.URL
-	baseURLPrefix       string
-	pool                *balancer.Pool
-	managedKeyCount     int
-	client              *http.Client
-	clientAuth          map[string]struct{}
-	allowlist           map[string]struct{}
-	dropHeaders         map[string]struct{}
-	injectHeaders       map[string]string
-	upstreamAuth        config.UpstreamAuthConfig
-	upstreamBodyTimeout time.Duration
-	interimInterval     time.Duration
-	errorPolicy         config.ErrorPolicyConfig
-	maxAttemptsBudget   int
-	rewrites            rewriteMatcher
-	resinRuntime        *resin.RuntimeConfig
-	keyCtrl             UpstreamKeyController
+	id                    string
+	name                  string
+	provider              string
+	baseURL               *url.URL
+	baseURLPrefix         string
+	pool                  *balancer.Pool
+	managedKeyCount       int
+	client                *http.Client
+	clientAuth            map[string]struct{}
+	allowlist             map[string]struct{}
+	dropHeaders           map[string]struct{}
+	injectHeaders         map[string]string
+	upstreamAuth          config.UpstreamAuthConfig
+	upstreamUploadTimeout time.Duration
+	upstreamBodyTimeout   time.Duration
+	interimInterval       time.Duration
+	errorPolicy           config.ErrorPolicyConfig
+	maxAttemptsBudget     int
+	rewrites              rewriteMatcher
+	resinRuntime          *resin.RuntimeConfig
+	keyCtrl               UpstreamKeyController
 
 	// Aggregate fields
 	isAggregate bool
@@ -518,12 +519,12 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 	name := entry.Name
 	vendorID := entry.ID
 	vendor := entry.VendorConfig
-	baseURL, err := url.Parse(strings.TrimRight(vendor.Upstream.BaseURL, "/"))
+	baseURL, err := url.Parse(strings.TrimSpace(vendor.Upstream.BaseURL))
 	if err != nil {
 		return nil, fmt.Errorf("vendor %s parse upstream base_url: %w", name, err)
 	}
-	if baseURL.Scheme == "" || baseURL.Host == "" {
-		return nil, fmt.Errorf("vendor %s invalid upstream base_url", name)
+	if (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.Fragment != "" {
+		return nil, fmt.Errorf("vendor %s invalid upstream base_url (requires HTTP(S) without a fragment)", name)
 	}
 
 	keyConfigs := make([]balancer.KeyConfig, 0)
@@ -579,26 +580,27 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 	}
 
 	return &vendorGateway{
-		id:                  vendorID,
-		name:                name,
-		provider:            config.NormalizeProvider(vendor.Provider, name),
-		baseURL:             baseURL,
-		baseURLPrefix:       baseURL.String(),
-		pool:                pool,
-		managedKeyCount:     len(keyConfigs),
-		client:              client,
-		clientAuth:          clientAuthSet,
-		allowlist:           headerNameSet(config.ResolveClientHeaderAllowlist(vendor.ClientHeaders)),
-		dropHeaders:         headerNameSet(config.ResolveClientHeaderDropList(vendor.ClientHeaders)),
-		injectHeaders:       vendor.InjectedHeader,
-		upstreamAuth:        vendor.UpstreamAuth,
-		upstreamBodyTimeout: vendor.Upstream.BodyTimeout,
-		interimInterval:     upstreamInterimInterval(vendor.Upstream),
-		errorPolicy:         vendor.ErrorPolicy,
-		maxAttemptsBudget:   vendor.MaxUpstreamAttempts,
-		rewrites:            newRewriteMatcher(vendor.PathRewrites),
-		resinRuntime:        rr,
-		keyCtrl:             keyCtrl,
+		id:                    vendorID,
+		name:                  name,
+		provider:              config.NormalizeProvider(vendor.Provider, name),
+		baseURL:               baseURL,
+		baseURLPrefix:         baseURL.String(),
+		pool:                  pool,
+		managedKeyCount:       len(keyConfigs),
+		client:                client,
+		clientAuth:            clientAuthSet,
+		allowlist:             headerNameSet(config.ResolveClientHeaderAllowlist(vendor.ClientHeaders)),
+		dropHeaders:           headerNameSet(config.ResolveClientHeaderDropList(vendor.ClientHeaders)),
+		injectHeaders:         vendor.InjectedHeader,
+		upstreamAuth:          vendor.UpstreamAuth,
+		upstreamUploadTimeout: *vendor.Upstream.UploadTimeout,
+		upstreamBodyTimeout:   vendor.Upstream.BodyTimeout,
+		interimInterval:       upstreamInterimInterval(vendor.Upstream),
+		errorPolicy:           vendor.ErrorPolicy,
+		maxAttemptsBudget:     vendor.MaxUpstreamAttempts,
+		rewrites:              newRewriteMatcher(vendor.PathRewrites),
+		resinRuntime:          rr,
+		keyCtrl:               keyCtrl,
 	}, nil
 }
 

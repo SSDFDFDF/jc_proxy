@@ -175,6 +175,12 @@ export function KeyHubPage({
     const seen = new Set()
     const tabs = []
 
+    // vendorRows only covers vendors present in the raw config; an
+    // unconfigured partition can still carry live load, so fall back to
+    // summing the runtime stats directly for those.
+    const runtimeInflight = (vendorID) =>
+      (runtimeVendors[vendorID] || []).reduce((sum, item) => sum + Number(item.inflight || 0), 0)
+
     const buildCounts = (vendorID, fallbackActive = 0, fallbackDisabled = 0) => {
       const vendorItems = upstreamItems[vendorID] || []
       if (!vendorItems.length) return { activeCount: fallbackActive, disabledCount: fallbackDisabled }
@@ -206,7 +212,7 @@ export function KeyHubPage({
         activeCount: counts.activeCount,
         disabledCount: counts.disabledCount,
         backoff: row?.backoff || 0,
-        inflight: row?.inflight || 0
+        inflight: row ? row.inflight || 0 : runtimeInflight(item.vendor_id)
       })
     }
     for (const row of vendorRows) {

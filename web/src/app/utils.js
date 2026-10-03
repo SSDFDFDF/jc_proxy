@@ -1,4 +1,4 @@
-import { DURATION_UNITS } from './constants'
+import { DURATION_UNITS } from './constants.js'
 
 export function clone(value) {
   return JSON.parse(JSON.stringify(value))
@@ -126,6 +126,7 @@ export function emptyVendorConfig() {
     max_upstream_attempts: 10,
     upstream: {
       base_url: '',
+      upload_timeout: 300_000_000_000,
       response_header_timeout: 300_000_000_000,
       body_timeout: 300_000_000_000,
       interim_response_interval: 30_000_000_000
@@ -151,7 +152,7 @@ export function emptyVendorConfig() {
       auto_disable: {
         enabled: true,
         status_codes: [401],
-        keywords: ['incorrect_api_key', 'invalid_api_key', 'insufficient_quota', '余额不足']
+        keywords: ['incorrect_api_key', 'invalid_api_key']
       },
       cooldown: {
         no_default_backoff: false,

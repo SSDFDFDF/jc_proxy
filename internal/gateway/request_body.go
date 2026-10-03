@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -25,7 +26,38 @@ func (s *requestBodySource) Body() (io.ReadCloser, error) {
 	if s == nil || s.newBody == nil {
 		return http.NoBody, nil
 	}
-	return s.newBody()
+	body, err := s.newBody()
+	if err != nil || body == nil || body == http.NoBody {
+		return body, err
+	}
+	return &requestBodyReader{ReadCloser: body}, nil
+}
+
+// Keep the origin of a body read failure through Transport's error wrapping.
+// An upstream EOF is not interchangeable with an incomplete client upload.
+type requestBodyReadError struct{ cause error }
+
+func (e *requestBodyReadError) Error() string { return "read client request body: " + e.cause.Error() }
+func (e *requestBodyReadError) Unwrap() error { return e.cause }
+
+type requestBodyReader struct {
+	io.ReadCloser
+	reading atomic.Bool
+}
+
+func (b *requestBodyReader) Read(p []byte) (int, error) {
+	b.reading.Store(true)
+	n, err := b.ReadCloser.Read(p)
+	b.reading.Store(false)
+	if err != nil && err != io.EOF {
+		err = &requestBodyReadError{cause: err}
+	}
+	return n, err
+}
+
+func isRequestBodyReadError(err error) bool {
+	var bodyErr *requestBodyReadError
+	return errors.As(err, &bodyErr)
 }
 
 func (s *requestBodySource) canRetryRequestError(decision keyDecision) bool {
@@ -65,7 +97,7 @@ func isRetryableStatusForUnsafeMethod(statusCode int) bool {
 }
 
 func prepareRequestBody(req *http.Request, allowReplay bool) (*requestBodySource, error) {
-	safeRetry := isSafeRetryMethod(req.Method)
+	safeRetry := req != nil && isSafeRetryMethod(req.Method)
 
 	if req == nil || req.Body == nil || req.Body == http.NoBody || req.ContentLength == 0 {
 		return &requestBodySource{
@@ -180,7 +212,7 @@ func isClientDisconnectError(err error) bool {
 }
 
 func isCanceledUpstreamError(ctx context.Context, err error) bool {
-	if ctx == nil || err == nil || ctx.Err() == nil || errors.Is(err, errUpstreamBodyTimeout) {
+	if ctx == nil || err == nil || ctx.Err() == nil || errors.Is(err, errUpstreamBodyTimeout) || errors.Is(err, errUpstreamUploadTimeout) {
 		return false
 	}
 	if errors.Is(err, ctx.Err()) ||

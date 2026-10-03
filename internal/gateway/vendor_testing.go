@@ -183,8 +183,8 @@ func (v *vendorGateway) executeTest(ctx context.Context, req VendorTestRequest) 
 		}
 	}
 
-	resolvedPath := v.rewrites.Apply(config.NormalizePath(endpointPath))
-	targetURL, err := buildTargetURLFromBase(baseURL, resolvedPath, rawQuery, strings.TrimSpace(req.Key), v.resinRuntime)
+	resolvedPath := v.rewrites.applyPath(endpointPath)
+	targetURL, err := buildTargetURLFromBase(baseURL, resolvedPath.path, rawQuery, strings.TrimSpace(req.Key), v.resinRuntime, resolvedPath.rawPath)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +211,7 @@ func (v *vendorGateway) executeTest(ctx context.Context, req VendorTestRequest) 
 	defer resp.Body.Close()
 
 	maxBytes := vendorTestMaxResponseBytes
-	if isModelListEndpoint(endpointPath) {
+	if isModelListEndpoint(endpointPath.path) {
 		maxBytes = modelListMaxResponseBytes
 	}
 	body, truncated, err := readVendorTestBody(resp.Body, int64(maxBytes))
@@ -284,35 +284,35 @@ func resolveVendorTestBaseURL(raw string, fallback *url.URL) (*url.URL, error) {
 		return &cloned, nil
 	}
 
-	baseURL, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
+	baseURL, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, fmt.Errorf("parse base_url: %w", err)
 	}
-	if baseURL.Scheme == "" || baseURL.Host == "" {
-		return nil, errors.New("invalid base_url")
+	if (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.Fragment != "" {
+		return nil, errors.New("invalid base_url (requires HTTP(S) without a fragment)")
 	}
 	return baseURL, nil
 }
 
-func resolveVendorTestEndpoint(raw string) (path string, rawQuery string, original string, err error) {
+func resolveVendorTestEndpoint(raw string) (path routedPath, rawQuery string, original string, err error) {
 	original = strings.TrimSpace(raw)
 	if original == "" {
-		return "", "", "", errors.New("endpoint is required")
+		return routedPath{}, "", "", errors.New("endpoint is required")
 	}
 
 	parsed, err := url.Parse(original)
 	if err != nil {
-		return "", "", "", fmt.Errorf("parse endpoint: %w", err)
+		return routedPath{}, "", "", fmt.Errorf("parse endpoint: %w", err)
 	}
-	if parsed.IsAbs() {
-		return "", "", "", errors.New("endpoint must be a relative path")
+	if parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
+		return routedPath{}, "", "", errors.New("endpoint must be a relative path without a fragment")
 	}
 
-	path = parsed.Path
-	if path == "" {
-		path = original
+	path = routedPath{path: config.NormalizePath(parsed.Path), rawPath: config.NormalizePath(parsed.EscapedPath())}
+	if path.rawPath == path.path {
+		path.rawPath = ""
 	}
-	return config.NormalizePath(path), parsed.RawQuery, original, nil
+	return path, parsed.RawQuery, original, nil
 }
 
 func readVendorTestBody(body io.Reader, maxBytes int64) (string, bool, error) {

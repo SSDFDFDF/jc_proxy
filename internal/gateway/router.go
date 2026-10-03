@@ -15,7 +15,7 @@ import (
 
 type preparedProxyRequest struct {
 	vendor           *vendorGateway
-	path             string
+	path             routedPath
 	bodySource       *requestBodySource
 	allowedKeyIdxs   []int
 	aggregateChildID string
@@ -156,7 +156,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	vendorName, upstreamPath, ok := splitVendorPath(req.URL.Path)
+	vendorName, upstreamPath, ok := splitVendorRequestPath(req.URL)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -261,7 +261,7 @@ func splitVendorPath(path string) (vendor, rest string, ok bool) {
 	return vendor, "/" + parts[1], true
 }
 
-func (r *Router) prepareNonAggregateRequest(req *http.Request, vg *vendorGateway, upstreamPath string) (*preparedProxyRequest, *proxyError) {
+func (r *Router) prepareNonAggregateRequest(req *http.Request, vg *vendorGateway, upstreamPath routedPath) (*preparedProxyRequest, *proxyError) {
 	if err := vg.authorizeClient(req); err != nil {
 		return nil, &proxyError{statusCode: http.StatusUnauthorized, message: err.Error()}
 	}
@@ -276,12 +276,12 @@ func (r *Router) prepareNonAggregateRequest(req *http.Request, vg *vendorGateway
 
 	return &preparedProxyRequest{
 		vendor:     vg,
-		path:       vg.rewrites.Apply(config.NormalizePath(upstreamPath)),
+		path:       vg.rewrites.applyPath(upstreamPath),
 		bodySource: bodySource,
 	}, nil
 }
 
-func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, path string, exclude map[string]struct{}, bodySource *requestBodySource, execution *requestExecution) (*preparedProxyRequest, *proxyError) {
+func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, path routedPath, exclude map[string]struct{}, bodySource *requestBodySource, execution *requestExecution) (*preparedProxyRequest, *proxyError) {
 	child := agg.aggPool.PickAvailable(aggregateChildAvailableForExecution(req, execution), exclude)
 	if child == nil {
 		return nil, &proxyError{statusCode: http.StatusServiceUnavailable, message: "no available child vendor"}
@@ -304,7 +304,7 @@ func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, 
 
 	return &preparedProxyRequest{
 		vendor:           child.vendor,
-		path:             child.vendor.rewrites.Apply(config.NormalizePath(path)),
+		path:             child.vendor.rewrites.applyPath(path),
 		bodySource:       bodySource,
 		allowedKeyIdxs:   child.keyIdxs,
 		aggregateChildID: child.id,
@@ -342,7 +342,7 @@ func aggregateChildAvailableForExecution(req *http.Request, execution *requestEx
 	}
 }
 
-func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request, agg *vendorGateway, path string) {
+func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request, agg *vendorGateway, path routedPath) {
 	if err := agg.authorizeClient(req); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -473,9 +473,22 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		// Budget is consumed, so this reflects whether attempt N+1 is allowed.
 		retryRemaining := attempts < maxAttempts && execution.hasBudget()
 
+		var downstream http.ResponseWriter
+		if prepared.bodySource != nil && !prepared.bodySource.replayable {
+			downstream = w
+		}
 		attempt.started = time.Now()
-		resp, err := vg.client.Do(attempt.request)
+		resp, err := vg.doUpstreamRequest(attempt.request, downstream)
 		if err != nil {
+			if isRequestBodyReadError(err) {
+				attempt.finish(vg, keyDecision{action: keyActionInterrupted}, -1)
+				// Our forced read deadline also cancels the HTTP/1 request
+				// context. Still send the failure instead of an implicit 200.
+				if req.Context().Err() == nil || errors.Is(err, errClientUploadTimeout) {
+					writeHTTPError(w, interim, "read request body failed", http.StatusBadRequest)
+				}
+				return vendorRequestDone
+			}
 			if isCanceledUpstreamError(req.Context(), err) {
 				attempt.finish(vg, keyDecision{action: keyActionInterrupted}, -1)
 				return vendorRequestDone

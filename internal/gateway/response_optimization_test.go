@@ -290,7 +290,7 @@ func TestSharedErrorSummaryPreservesClassificationAndMaskPriority(t *testing.T) 
 			headers := http.Header{"Retry-After": {"20"}}
 			preview := []byte(text)
 			wantDecision := classifyResponse("openai", policy, status, headers, preview)
-			body, _ := summarizeResponsePreview(headers, preview)
+			body, _, _ := summarizeResponsePreview(headers, preview)
 			wantRule, wantMatched := matchUpstreamErrorMask(policy, status, body)
 			if wantMatched {
 				wantDecision = extendDecisionCooldown(wantDecision, wantRule)

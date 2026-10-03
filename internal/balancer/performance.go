@@ -37,13 +37,18 @@ func (h *RuntimeStatsHandle) recordSampleAt(header, full time.Duration, success 
 	if h == nil {
 		return 0
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.recordSampleLocked(header, full, success, now)
+}
+
+// recordSampleLocked also participates in atomic attempt settlement.
+func (h *RuntimeStatsHandle) recordSampleLocked(header, full time.Duration, success bool, now time.Time) uint64 {
 	// Failed attempts must never look fast or disappear from timing averages,
 	// including network failures and bodies discarded before EOF.
 	if !success {
 		header, full = failedSamplePenalty, failedSamplePenalty
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if !h.lastSample.IsZero() && now.Sub(h.lastSample) >= sampleFreshness {
 		h.sampleCount, h.nextSample = 0, 0
 	}
@@ -155,29 +160,33 @@ func (p *Pool) RecordSample(idx int, header, full time.Duration, success bool, e
 	if idx >= 0 && idx < len(p.keys) && p.currentVersionLocked(idx, expectedVersion) {
 		state := p.keys[idx]
 		now := p.nowf()
-		tick := now.Sub(schedulerEpoch)
 		generation := state.stats.recordSampleAt(header, full, success, now)
-		state.syncStatsGeneration(generation, tick)
-		if tick >= state.sampleExpires {
-			state.liveSamples = 0
+		state.noteSample(generation, now.Sub(schedulerEpoch), success)
+	}
+}
+
+// Caller holds the pool mutex. Statistics are already committed to this generation.
+func (state *KeyState) noteSample(generation uint64, tick time.Duration, success bool) {
+	state.syncStatsGeneration(generation, tick)
+	if tick >= state.sampleExpires {
+		state.liveSamples = 0
+	}
+	state.sampleExpires = tick + sampleFreshness
+	if state.liveSamples < 2 {
+		state.liveSamples++
+	}
+	if success {
+		state.failedSamples = 0
+		state.nextExplore = math.MinInt64
+	} else {
+		if state.failedSamples < 4 {
+			state.failedSamples++
 		}
-		state.sampleExpires = tick + sampleFreshness
-		if state.liveSamples < 2 {
-			state.liveSamples++
+		delay := time.Minute * time.Duration(1<<(state.failedSamples-1))
+		if delay > sampleFreshness {
+			delay = sampleFreshness
 		}
-		if success {
-			state.failedSamples = 0
-			state.nextExplore = math.MinInt64
-		} else {
-			if state.failedSamples < 4 {
-				state.failedSamples++
-			}
-			delay := time.Minute * time.Duration(1<<(state.failedSamples-1))
-			if delay > sampleFreshness {
-				delay = sampleFreshness
-			}
-			state.nextExplore = tick + delay
-		}
+		state.nextExplore = tick + delay
 	}
 }
 

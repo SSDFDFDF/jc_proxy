@@ -1495,6 +1495,34 @@ code, .font-mono {
 .kh-dot-warning { background: var(--warning); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.12); }
 .kh-dot-danger { background: var(--danger); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12); }
 
+/* Live inflight marker (↑n): pulses wherever a vendor has requests in flight,
+   so busy vendors stand out on chips and tiles without being selected. */
+.kh-inflight {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  animation: khInflightPulse 1.2s ease-in-out infinite;
+}
+
+.kh-vendor-tile .kh-inflight {
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  font-size: 10px;
+}
+
+@keyframes khInflightPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kh-inflight { animation: none; }
+}
+
 /* Phone selector: current vendor line + wrapped avatar grid. Text avatars and
    counts replace sideways scrolling, so the grid stays usable with dozens of
    vendors. */

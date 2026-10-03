@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,47 @@ func BenchmarkResponsePipeline(b *testing.B) {
 				w := httptest.NewRecorder()
 				r.ServeHTTP(w, req)
 				if w.Code != want {
+					b.Fatal(w.Code)
+				}
+			}
+		})
+	}
+}
+
+// Compare the incremental cost of the upload watchdog on a non-empty request.
+func BenchmarkUploadWatchdog(b *testing.B) {
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		b.Run(name, func(b *testing.B) {
+			r := newBenchRouter(b, "http://unused.invalid")
+			v := r.vendors["openai"]
+			v.upstreamUploadTimeout = 0
+			if enabled {
+				v.upstreamUploadTimeout = 5 * time.Minute
+			}
+			v.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				_, err := io.Copy(io.Discard, req.Body)
+				_ = req.Body.Close()
+				if trace := httptrace.ContextClientTrace(req.Context()); trace != nil && trace.WroteRequest != nil {
+					trace.WroteRequest(httptrace.WroteRequestInfo{Err: err})
+				}
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+			})
+			req, err := http.NewRequest("POST", "http://proxy.invalid/openai/test", strings.NewReader(`{"model":"test","input":"hello"}`))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, req)
+				if w.Code != 200 {
 					b.Fatal(w.Code)
 				}
 			}

@@ -38,7 +38,7 @@ func (v *vendorGateway) authorizeClient(req *http.Request) error {
 	return nil
 }
 
-func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path string, bodySource *requestBodySource, excluded map[int]struct{}, allowedKeyIdxs []int) (*upstreamAttempt, *proxyError) {
+func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path routedPath, bodySource *requestBodySource, excluded map[int]struct{}, allowedKeyIdxs []int) (*upstreamAttempt, *proxyError) {
 	idx := -1
 	selectedVersion := int64(0)
 	selectedKey := v.passthroughUpstreamKey(req)
@@ -50,7 +50,7 @@ func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path 
 		}
 	}
 
-	targetURL, err := v.buildTargetURL(path, req.URL.RawQuery, selectedKey)
+	targetURL, err := v.buildTargetURL(path.path, req.URL.RawQuery, selectedKey, path.rawPath)
 	if err != nil {
 		if v.usesManagedUpstreamKeys() {
 			v.pool.Release(idx)
@@ -77,11 +77,12 @@ func (v *vendorGateway) newAttempt(ctx context.Context, req *http.Request, path 
 	}, nil
 }
 
-func (v *vendorGateway) buildTargetURL(path, rawQuery, selectedKey string) (string, error) {
-	if v.resinRuntime == nil && v.baseURLPrefix != "" && pathIsURLSafe(path) {
+func (v *vendorGateway) buildTargetURL(path, rawQuery, selectedKey string, rawPath ...string) (string, error) {
+	if v.resinRuntime == nil && v.baseURLPrefix != "" && v.baseURL.RawQuery == "" && !v.baseURL.ForceQuery && v.baseURL.Fragment == "" &&
+		(len(rawPath) == 0 || rawPath[0] == "") && pathIsURLSafe(path) {
 		return joinTargetURL(v.baseURLPrefix, path, rawQuery), nil
 	}
-	return buildTargetURLFromBase(v.baseURL, path, rawQuery, selectedKey, v.resinRuntime)
+	return buildTargetURLFromBase(v.baseURL, path, rawQuery, selectedKey, v.resinRuntime, rawPath...)
 }
 
 func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetURL string, headers http.Header, bodySource *requestBodySource, selectedKey string) (*http.Request, error) {
@@ -156,28 +157,6 @@ func (v *vendorGateway) shouldBufferRequestBody(method string) bool {
 	return false
 }
 
-func (v *vendorGateway) applyDecision(idx int, key string, version int64, decision keyDecision) {
-	if !v.usesManagedUpstreamKeys() || v.pool == nil || idx < 0 {
-		return
-	}
-	switch decision.action {
-	case keyActionInterrupted:
-		v.pool.ReleaseInterrupted(idx)
-	case keyActionSuccess:
-		v.pool.ReleaseSuccess(idx, version)
-	case keyActionObserve:
-		v.pool.Observe(idx, decision.statusCode, decision.reason, version)
-	case keyActionCooldown:
-		v.pool.Cooldown(idx, decision.statusCode, decision.reason, decision.cooldown, version)
-	case keyActionDisable:
-		if v.pool.Disable(idx, decision.statusCode, decision.reason, "system:auto", version) {
-			v.persistDisabledKeyAsync(key, version, decision.reason)
-		}
-	default:
-		v.pool.Release(idx)
-	}
-}
-
 func (v *vendorGateway) persistDisabledKeyAsync(key string, version int64, reason string) {
 	if v.keyCtrl == nil {
 		return
@@ -232,14 +211,27 @@ func singleJoiningSlash(a, b string) string {
 	}
 }
 
-func buildTargetURLFromBase(baseURL *url.URL, path, rawQuery, selectedKey string, resinRuntime *resin.RuntimeConfig) (string, error) {
+func buildTargetURLFromBase(baseURL *url.URL, path, rawQuery, selectedKey string, resinRuntime *resin.RuntimeConfig, rawPath ...string) (string, error) {
 	if baseURL == nil {
 		return "", errors.New("upstream base_url is empty")
 	}
 
+	requestURL := url.URL{Path: path}
+	if len(rawPath) > 0 {
+		requestURL.RawPath = rawPath[0]
+	}
 	target := *baseURL
-	target.Path = singleJoiningSlash(baseURL.Path, path)
-	target.RawQuery = rawQuery
+	target.Path, target.RawPath = joinURLPath(baseURL, &requestURL)
+	// Preserve raw query bytes and duplicate parameters, like ReverseProxy.
+	// Fixed base parameters precede incoming parameters; neither is silently lost.
+	target.RawQuery = baseURL.RawQuery
+	if rawQuery != "" {
+		if target.RawQuery != "" {
+			target.RawQuery += "&"
+		}
+		target.RawQuery += rawQuery
+	}
+	target.Fragment, target.RawFragment = "", ""
 	resolved := target.String()
 
 	if resinRuntime == nil {

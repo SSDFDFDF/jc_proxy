@@ -94,9 +94,13 @@ func (h *RuntimeStatsHandle) RecordSuccess(preserveLast ...bool) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.recordSuccessLocked(len(preserveLast) > 0 && preserveLast[0])
+}
+
+func (h *RuntimeStatsHandle) recordSuccessLocked(preserveLast bool) {
 	h.stats.TotalRequests++
 	h.stats.SuccessCount++
-	if len(preserveLast) == 0 || !preserveLast[0] {
+	if !preserveLast {
 		h.stats.LastStatus = http.StatusOK
 		h.stats.LastError = ""
 	}
@@ -109,8 +113,12 @@ func (h *RuntimeStatsHandle) RecordError(statusCode int, reason string, preserve
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.recordErrorLocked(statusCode, reason, len(preserveLast) > 0 && preserveLast[0])
+}
+
+func (h *RuntimeStatsHandle) recordErrorLocked(statusCode int, reason string, preserveLast bool) {
 	h.stats.TotalRequests++
-	if len(preserveLast) == 0 || !preserveLast[0] {
+	if !preserveLast {
 		h.stats.LastStatus = statusCode
 		h.stats.LastError = normalizeLastError(reason)
 	}

@@ -1,27 +1,26 @@
 package gateway
 
-import "time"
+import (
+	"time"
 
-// finish is the single accounting boundary for an upstream attempt. Decisions
-// already made for retry/masking survive later client cancellation or body-close
-// errors. Successful timings are taken at EOF, before the final downstream write.
-// No response-body wrapper, extra timer or per-attempt allocation is needed.
+	"jc_proxy/internal/balancer"
+)
+
+// finish is the exactly-once boundary. Pool.CompleteAttempt commits the sample,
+// cumulative count and health together, so Reset cannot split this outcome.
+// A known HTTP failure survives later client cancellation or cleanup errors.
 func (a *upstreamAttempt) finish(v *vendorGateway, decision keyDecision, full time.Duration) {
 	if a.finished {
 		return
 	}
 	a.finished = true
-	if !v.usesManagedUpstreamKeys() {
+	if !v.usesManagedUpstreamKeys() || v.pool == nil || a.idx < 0 {
 		return
 	}
-	switch decision.action {
-	case keyActionSuccess:
-		v.pool.RecordSample(a.idx, a.headerElapsed, full, true, a.selectedVersion)
-	case keyActionInterrupted:
-		// Count traffic without changing the upstream's performance/health.
-	default:
-		// The balancer substitutes 999s/999s for every failed sample.
-		v.pool.RecordSample(a.idx, -1, -1, false, a.selectedVersion)
+	if v.pool.CompleteAttempt(a.idx, a.selectedVersion, balancer.AttemptResult{
+		Action: decision.action, StatusCode: decision.statusCode, Reason: decision.reason,
+		Cooldown: decision.cooldown, HeaderElapsed: a.headerElapsed, FullElapsed: full,
+	}) {
+		v.persistDisabledKeyAsync(a.selectedKey, a.selectedVersion, decision.reason)
 	}
-	v.applyDecision(a.idx, a.selectedKey, a.selectedVersion, decision)
 }

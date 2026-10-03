@@ -12,17 +12,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"jc_proxy/internal/balancer"
 	"jc_proxy/internal/config"
 )
 
-type keyAction string
+type keyAction = balancer.AttemptAction
 
 const (
-	keyActionInterrupted keyAction = "interrupted"
-	keyActionSuccess     keyAction = "success"
-	keyActionObserve     keyAction = "observe"
-	keyActionCooldown    keyAction = "cooldown"
-	keyActionDisable     keyAction = "disable"
+	keyActionInterrupted = balancer.AttemptInterrupted
+	keyActionSuccess     = balancer.AttemptSuccess
+	keyActionObserve     = balancer.AttemptObserve
+	keyActionCooldown    = balancer.AttemptCooldown
+	keyActionDisable     = balancer.AttemptDisable
 )
 
 type keyDecision struct {
@@ -36,8 +37,8 @@ type keyDecision struct {
 // analyzeErrorResponse shares one parsed preview between health classification
 // and masking. Both continue to use the real upstream status and body.
 func analyzeErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte) (keyDecision, config.ErrorMaskingRule, bool) {
-	body, reason := summarizeResponsePreview(headers, preview)
-	decision := classifyErrorResponse(provider, policy, statusCode, headers, body, reason)
+	body, reason, credentialCode := summarizeResponsePreview(headers, preview)
+	decision := classifyErrorResponse(provider, policy, statusCode, headers, body, reason, credentialCode)
 	rule, matched := matchUpstreamErrorMask(policy, statusCode, body)
 	if matched {
 		decision = extendDecisionCooldown(decision, rule)
@@ -56,16 +57,16 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 		return keyDecision{action: keyActionSuccess, statusCode: statusCode}
 	}
 
-	body, reasonBody := summarizeResponsePreview(headers, preview)
-	return classifyErrorResponse(provider, policy, statusCode, headers, body, reasonBody)
+	body, reasonBody, credentialCode := summarizeResponsePreview(headers, preview)
+	return classifyErrorResponse(provider, policy, statusCode, headers, body, reasonBody, credentialCode)
 }
 
-func classifyErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, body, reasonBody string) keyDecision {
+func classifyErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, body, reasonBody, credentialCode string) keyDecision {
 	retryAfter := parseRetryAfter(headers.Get("Retry-After"))
 	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), reasonBody)
 	responseFailover := shouldFailoverResponse(statusCode, policy)
 
-	if shouldDisable, autoReason := classifyAutoDisable(policy.AutoDisable, statusCode, body); shouldDisable {
+	if shouldDisable, autoReason := classifyAutoDisable(policy.AutoDisable, statusCode, body, credentialCode); shouldDisable {
 		return disableDecision(statusCode, compactReason("auto disabled: "+autoReason, reasonBody), responseFailover)
 	}
 
@@ -174,7 +175,7 @@ func boolOrDefault(v *bool, fallback bool) bool {
 	return *v
 }
 
-func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, body string) (bool, string) {
+func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, body, credentialCode string) (bool, string) {
 	if !boolOrDefault(auto.Enabled, true) {
 		return false, ""
 	}
@@ -184,11 +185,21 @@ func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, bod
 		}
 		return true, "invalid key"
 	}
-	if match, ok := matchKeyword(body, auto.Keywords); ok {
-		if isQuotaKeyword(match) {
-			return true, "quota exhausted"
+	for _, keyword := range auto.Keywords {
+		// These built-in identifiers must be error codes, not reflected model
+		// names, parameters or messages. Custom text patterns retain their semantics.
+		if code := normalizedCredentialCode(keyword); code != "" {
+			if code == credentialCode {
+				return true, "invalid key"
+			}
+			continue
 		}
-		return true, "invalid key"
+		if match, ok := matchKeyword(body, []string{keyword}); ok {
+			if isQuotaKeyword(match) {
+				return true, "quota exhausted"
+			}
+			return true, "invalid key"
+		}
 	}
 	return false, ""
 }
@@ -279,46 +290,79 @@ func compactReason(prefix, body string) string {
 	return prefix + ": " + body
 }
 
-func summarizeResponsePreview(headers http.Header, preview []byte) (string, string) {
+func summarizeResponsePreview(headers http.Header, preview []byte) (string, string, string) {
 	preview = bytes.TrimSpace(preview)
 	if len(preview) == 0 {
-		return "", ""
+		return "", "", ""
 	}
 
-	if matchText, reasonText, ok := summarizeJSONPreview(preview); ok {
-		return strings.ToLower(matchText), reasonText
+	if matchText, reasonText, credentialCode, ok := summarizeJSONPreview(preview); ok {
+		return strings.ToLower(matchText), reasonText, credentialCode
 	}
 
 	if isLikelyTextPreview(headers, preview) {
 		text := strings.TrimSpace(string(preview))
-		return strings.ToLower(text), text
+		return strings.ToLower(text), text, ""
 	}
 
-	return "", describeNonTextPreview(headers, len(preview))
+	return "", describeNonTextPreview(headers, len(preview)), ""
 }
 
-func summarizeJSONPreview(preview []byte) (string, string, bool) {
+func summarizeJSONPreview(preview []byte) (string, string, string, bool) {
 	if !looksLikeJSON(preview) {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	var payload any
 	if err := json.Unmarshal(preview, &payload); err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 
+	credentialCode := previewCredentialCode(payload)
 	parts := collectJSONPreviewStrings(payload)
 	if len(parts) > 0 {
 		reasonText := strings.Join(parts, " | ")
-		return strings.Join(parts, " "), reasonText, true
+		return strings.Join(parts, " "), reasonText, credentialCode, true
 	}
 
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, preview); err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	text := compact.String()
-	return text, text, true
+	return text, text, credentialCode, true
+}
+
+func normalizedCredentialCode(value string) string {
+	switch code := strings.ToLower(strings.TrimSpace(value)); code {
+	case "invalid_api_key", "incorrect_api_key":
+		return code
+	default:
+		return ""
+	}
+}
+
+func previewCredentialCode(payload any) string {
+	object, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	// Inspect only the error envelope, never recursively scan user data.
+	if nested, ok := object["error"].(map[string]any); ok {
+		object = nested
+	} else if value, ok := object["error"].(string); ok {
+		if code := normalizedCredentialCode(value); code != "" {
+			return code
+		}
+	}
+	for _, field := range []string{"code", "type"} {
+		if value, ok := object[field].(string); ok {
+			if code := normalizedCredentialCode(value); code != "" {
+				return code
+			}
+		}
+	}
+	return ""
 }
 
 func collectJSONPreviewStrings(value any) []string {

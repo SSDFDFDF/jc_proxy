@@ -166,6 +166,7 @@ type VendorConfig struct {
 
 type UpstreamConfig struct {
 	BaseURL                 string         `yaml:"base_url" json:"base_url"`
+	UploadTimeout           *time.Duration `yaml:"upload_timeout,omitempty" json:"upload_timeout,omitempty"`
 	ResponseHeaderTimeout   *time.Duration `yaml:"response_header_timeout,omitempty" json:"response_header_timeout,omitempty"`
 	BodyTimeout             time.Duration  `yaml:"body_timeout,omitempty" json:"body_timeout,omitempty"`
 	InterimResponseInterval *time.Duration `yaml:"interim_response_interval,omitempty" json:"interim_response_interval,omitempty"`
@@ -869,6 +870,9 @@ func (c *Config) applyDefaults() {
 		if v.Upstream.BodyTimeout == 0 {
 			v.Upstream.BodyTimeout = 5 * time.Minute
 		}
+		if v.Upstream.UploadTimeout == nil {
+			v.Upstream.UploadTimeout = durationPtr(300 * time.Second)
+		}
 		if v.Upstream.ResponseHeaderTimeout == nil {
 			v.Upstream.ResponseHeaderTimeout = durationPtr(300 * time.Second)
 		}
@@ -1021,6 +1025,9 @@ func (c *Config) validate(requireVendors bool) error {
 		}
 		if vendor.Upstream.BodyTimeout < 0 {
 			return fmt.Errorf("vendor %q upstream.body_timeout must be >= 0", vendorName)
+		}
+		if vendor.Upstream.UploadTimeout != nil && *vendor.Upstream.UploadTimeout < 0 {
+			return fmt.Errorf("vendor %q upstream.upload_timeout must be >= 0", vendorName)
 		}
 		if vendor.Upstream.ResponseHeaderTimeout != nil && *vendor.Upstream.ResponseHeaderTimeout < 0 {
 			return fmt.Errorf("vendor %q upstream.response_header_timeout must be >= 0", vendorName)

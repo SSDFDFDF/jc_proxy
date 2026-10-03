@@ -144,9 +144,9 @@ func (s *AsyncStatusStore) Append(vendorID string, keys []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for _, key := range NormalizeKeys(keys) {
-		s.clearKeyPending(vendorID, key)
-	}
+	// Append is not an enable/recover operation. In particular, duplicate
+	// inputs must not erase an auto-disable that is still awaiting persistence.
+	// The worker's conditional version check rejects obsolete updates.
 	return added, nil
 }
 

@@ -46,7 +46,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("init admin store failed: %v", err)
 	}
-	defer store.Close()
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close config store failed: %v", err)
+		}
+	}()
 
 	cfg, err := store.GetConfig()
 	if err != nil {
@@ -68,7 +72,11 @@ func main() {
 		_ = rawKeyStore.Close()
 		log.Fatalf("init async upstream key store failed: %v", err)
 	}
-	defer keyStore.Close()
+	defer func() {
+		if err := keyStore.Close(); err != nil {
+			log.Printf("close upstream key store failed: %v", err)
+		}
+	}()
 
 	runtime, err := gateway.NewRuntime(cfg, keyStore)
 	if err != nil {
@@ -83,7 +91,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("init runtime stats persister failed: %v", err)
 	}
-	defer statsPersister.Close()
+	defer func() {
+		if err := statsPersister.Close(); err != nil {
+			log.Printf("final runtime stats flush failed: %v", err)
+		}
+	}()
 
 	sessions := admin.NewSessionManager(cfg.Admin.SessionTTL)
 	audit := admin.NewAuditLogger(cfg.Admin.AuditLogPath)
@@ -94,9 +106,10 @@ func main() {
 	adminHandler.Register(mux)
 	mux.Handle("/", runtime)
 
+	handler := &drainingHandler{next: mux}
 	srv := &http.Server{
 		Addr:         cfg.Server.Listen,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		IdleTimeout:  cfg.Server.IdleTimeout,
@@ -130,7 +143,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := shutdownHTTPServer(ctx, srv, handler); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
 }
