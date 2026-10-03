@@ -81,14 +81,34 @@ func (r *Router) VendorTestMeta(vendorID string) (VendorTestMeta, error) {
 		return VendorTestMeta{}, err
 	}
 
+	baseURL, err := vg.requireOwnBaseURL()
+	if err != nil {
+		return VendorTestMeta{}, err
+	}
+
 	return VendorTestMeta{
 		VendorID:       vg.id,
 		Vendor:         vg.name,
 		Provider:       vg.provider,
-		BaseURL:        vg.baseURL.String(),
+		BaseURL:        baseURL.String(),
 		ModelEndpoints: suggestedModelEndpoints(vg.provider),
 		RequestPresets: suggestedRequestPresets(vg.provider),
 	}, nil
+}
+
+// requireOwnBaseURL returns the vendor's own upstream base URL. Aggregate
+// vendors intentionally have none: their children own the upstream addresses, so
+// there is no single target for a probe. Returning a descriptive error here keeps
+// the vendor-test paths from dereferencing a nil *url.URL.
+func (v *vendorGateway) requireOwnBaseURL() (*url.URL, error) {
+	if v != nil && v.baseURL != nil {
+		return v.baseURL, nil
+	}
+	name := "vendor"
+	if v != nil && v.name != "" {
+		name = v.name
+	}
+	return nil, fmt.Errorf("vendor %q has no upstream base_url of its own; aggregate vendors must be tested through a child vendor or an explicit base_url", name)
 }
 
 func (r *Router) ExecuteVendorTest(ctx context.Context, vendorID string, req VendorTestRequest) (*VendorTestResult, error) {
@@ -162,6 +182,12 @@ func suggestedRequestPresets(provider string) []VendorTestPreset {
 func (v *vendorGateway) executeTest(ctx context.Context, req VendorTestRequest) (*VendorTestResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if strings.TrimSpace(req.BaseURL) == "" {
+		if _, err := v.requireOwnBaseURL(); err != nil {
+			return nil, err
+		}
 	}
 
 	baseURL, err := resolveVendorTestBaseURL(req.BaseURL, v.baseURL)
