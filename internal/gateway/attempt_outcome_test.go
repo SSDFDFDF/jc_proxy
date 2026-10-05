@@ -48,7 +48,10 @@ func TestAttemptOutcomesPersistAfterUpload(t *testing.T) {
 		{"client-cancel-before-headers", "cancel", 0, 0, 0, 0, 1},
 		{"client-deadline-after-upload", "deadline", 0, 0, 0, 0, 1},
 		{"client-cancel-during-body", "body-cancel", 200, 0, 0, 0, 1},
+		{"client-cancel-at-eof", "body-cancel-eof", 200, 0, 0, 0, 1},
+		{"client-cancel-at-empty-eof", "empty-cancel-eof", 200, 0, 0, 0, 1},
 		{"known-502-before-cancel", "body-cancel", 502, 0, 0, 1, 0},
+		{"known-502-before-cancel-at-eof", "body-cancel-eof", 502, 0, 0, 1, 0},
 		{"known-504-before-body-timeout", "stall", 504, 502, 0, 1, 0},
 		{"downstream-write-error", "write-fail", 200, 0, 0, 0, 1},
 		{"known-502-before-write-error", "write-fail", 502, 0, 0, 1, 0},
@@ -113,6 +116,10 @@ func TestAttemptOutcomesPersistAfterUpload(t *testing.T) {
 					body = timingErrorBody{}
 				case "body-cancel":
 					body = cancelResponseBody{cancel}
+				case "body-cancel-eof":
+					body = &cancelAtEOFBody{ReadCloser: body, cancel: cancel}
+				case "empty-cancel-eof":
+					body = &cancelAtEOFBody{ReadCloser: http.NoBody, cancel: cancel}
 				case "read-and-write-fail":
 					body = &bytesAndErrorBody{}
 				}

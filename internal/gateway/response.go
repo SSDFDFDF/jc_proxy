@@ -194,6 +194,12 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 			continue
 		}
 		if errors.Is(readErr, io.EOF) {
+			// Cancellation can leave buffered bytes followed by a normal EOF.
+			// Drop both timings, and do not mistake a cancelled empty response
+			// for an upstream failure. Already-settled failures remain intact.
+			if req.Context().Err() != nil {
+				return nil
+			}
 			if !hasBody && expectsUpstreamResponseBody(attempt.request, resp) {
 				finishReadFailure(errors.New("empty upstream response"))
 				writeHTTPError(w, interim, "upstream returned an empty response", http.StatusBadGateway)
@@ -206,7 +212,11 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 					return nil
 				}
 			}
-			attempt.finish(vg, decision, full)
+			// Committing headers or flushing an empty stream can observe a
+			// disconnect without returning an error. Recheck before sampling.
+			if req.Context().Err() == nil {
+				attempt.finish(vg, decision, full)
+			}
 			return nil
 		}
 		if canceled {

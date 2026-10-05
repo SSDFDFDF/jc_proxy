@@ -33,7 +33,7 @@ export function KeyDetailDrawer({ item, showSecrets, busy, onClose, onSetRemark,
   const canRecover = metrics.backoff > 0
   const showFull = showSecrets || revealed
   const lastError = item.displayDisableReason
-  const timingTitle = `首包 ${formatSampleSeconds(rt.avg_header_ms, rt.header_samples)} / 整包 ${formatSampleSeconds(rt.avg_response_ms, rt.response_samples)}（样本 ${Number(rt.header_samples || 0)}/${Number(rt.response_samples || 0)}；上游失败按999s/999s计入均值）`
+  const timingTitle = `响应 ${formatSampleSeconds(rt.avg_header_ms, rt.header_samples)} / 耗时 ${formatSampleSeconds(rt.avg_response_ms, rt.response_samples)}（样本 ${Number(rt.header_samples || 0)}/${Number(rt.response_samples || 0)}；上游失败按999s/999s计入均值）`
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -126,7 +126,7 @@ export function KeyDetailDrawer({ item, showSecrets, busy, onClose, onSetRemark,
               </DetailRow>
               <DetailRow label="取消 / 下游中断">{metrics.interruptedCount}</DetailRow>
               <DetailRow label="成功率（不含中断）">{metrics.evaluatedRequests > 0 ? `${metrics.successRate}%` : '--'}</DetailRow>
-              <DetailRow label="近5次首包/整包">
+              <DetailRow label="近5次响应/耗时">
                 <span title={timingTitle}>
                   {formatSampleSeconds(rt.avg_header_ms, rt.header_samples)} / {formatSampleSeconds(rt.avg_response_ms, rt.response_samples)}
                 </span>

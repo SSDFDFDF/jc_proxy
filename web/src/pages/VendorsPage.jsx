@@ -838,7 +838,7 @@ export function VendorsPage({
                   {!isAggregate && (
                     <>
                       <label className="field-wrap">
-                        <span className="field-label">上游首包超时</span>
+                        <span className="field-label">上游响应超时</span>
                         <input
                           className="input-base"
                           placeholder="例如 15s / 30s / 2m"
