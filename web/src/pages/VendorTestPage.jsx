@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { buttonClass, panelClass } from '../app/utils'
+import {
+  USER_AGENT_PRESETS,
+  applyUserAgentToHeaders,
+  normalizeHeaderRows
+} from '../app/vendorTest'
 import { MapRowsEditor } from '../components/MapRowsEditor'
 
 const CUSTOM_OPTION = '__custom__'
@@ -62,15 +67,6 @@ function extractModelIds(bodyText) {
   return []
 }
 
-function normalizeHeaderRows(rows) {
-  return (rows || [])
-    .filter((row) => String(row?.key || '').trim())
-    .map((row) => ({
-      key: String(row.key || '').trim(),
-      value: String(row.value || '')
-    }))
-}
-
 function fillModelTemplate(value, modelName) {
   const template = String(value || '')
   if (!template.includes('{model}')) return template
@@ -85,7 +81,7 @@ function resultTone(statusCode) {
   return Number(statusCode) >= 400 ? 'pill-err' : 'pill-ok'
 }
 
-function ResultBlock({ title, result, models, selectedModel, onPickModel }) {
+function ResultBlock({ title, result, models, selectedModel, onPickModel, usedUA }) {
   if (!result) {
     return (
       <div className="rounded-lg border border-dashed border-[var(--border)] px-4 py-6 text-sm text-[var(--text-muted)]">
@@ -102,8 +98,11 @@ function ResultBlock({ title, result, models, selectedModel, onPickModel }) {
           <span className={`status-pill ${resultTone(result.status_code)}`}>{result.status_code}</span>
           <span className="text-xs text-[var(--text-muted)]">{result.duration_ms} ms</span>
         </div>
-        <div className="text-xs text-[var(--text-muted)]">
-          Key: {result.used_key_source === 'none' ? '未注入' : `${result.used_key_source} · ${result.used_key_masked || '--'}`}
+        <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--text-muted)]">
+          {usedUA && (
+            <span title={usedUA}>UA: {usedUA.length > 30 ? `${usedUA.slice(0, 30)}…` : usedUA}</span>
+          )}
+          <span>Key: {result.used_key_source === 'none' ? '未注入' : `${result.used_key_source} · ${result.used_key_masked || '--'}`}</span>
         </div>
       </div>
 
@@ -171,12 +170,15 @@ export function VendorTestPage({
   const [keyMode, setKeyMode] = useState('default')
   const [manualKey, setManualKey] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
+  const [userAgentChoice, setUserAgentChoice] = useState('default')
+  const [userAgent, setUserAgent] = useState('')
   const [headerRows, setHeaderRows] = useState(EMPTY_ROWS)
 
   const [modelEndpointChoice, setModelEndpointChoice] = useState(CUSTOM_OPTION)
   const [modelEndpoint, setModelEndpoint] = useState('/v1/models')
   const [modelResult, setModelResult] = useState(null)
   const [modelError, setModelError] = useState('')
+  const [modelTestUA, setModelTestUA] = useState('')
 
   const [requestPresetChoice, setRequestPresetChoice] = useState(CUSTOM_OPTION)
   const [requestEndpointChoice, setRequestEndpointChoice] = useState(CUSTOM_OPTION)
@@ -185,6 +187,7 @@ export function VendorTestPage({
   const [requestBody, setRequestBody] = useState('')
   const [requestResult, setRequestResult] = useState(null)
   const [requestError, setRequestError] = useState('')
+  const [requestTestUA, setRequestTestUA] = useState('')
   const [vendorSearchQuery, setVendorSearchQuery] = useState('')
 
   const modelIds = useMemo(() => extractModelIds(modelResult?.body), [modelResult?.body])
@@ -237,12 +240,15 @@ export function VendorTestPage({
         }
         
         setSelectedModel('')
+        setUserAgentChoice('default')
+        setUserAgent('')
         setHeaderRows(EMPTY_ROWS)
 
         setModelEndpointChoice(defaultModelEndpoint)
         setModelEndpoint(defaultModelEndpoint)
         setModelResult(null)
         setModelError('')
+        setModelTestUA('')
 
         if (firstPreset) {
           setRequestPresetChoice('0')
@@ -259,6 +265,7 @@ export function VendorTestPage({
         }
         setRequestResult(null)
         setRequestError('')
+        setRequestTestUA('')
       })
       .catch((err) => {
         if (!cancelled) {
@@ -282,6 +289,35 @@ export function VendorTestPage({
     setRequestBody(preset.body || '')
   }
 
+  const handleSelectUserAgentPreset = (preset) => {
+    setUserAgentChoice(preset.id)
+    setUserAgent(preset.value)
+  }
+
+  const handleUserAgentChoiceChange = (e) => {
+    const val = e.target.value
+    setUserAgentChoice(val)
+    if (val === CUSTOM_OPTION) {
+      return
+    }
+    const match = USER_AGENT_PRESETS.find((p) => p.id === val)
+    if (match) {
+      setUserAgent(match.value)
+    }
+  }
+
+  const handleUserAgentChange = (e) => {
+    const nextVal = e.target.value
+    setUserAgent(nextVal)
+    const trimmed = nextVal.trim()
+    if (!trimmed) {
+      setUserAgentChoice('default')
+    } else {
+      const match = USER_AGENT_PRESETS.find((p) => p.value && p.value === trimmed)
+      setUserAgentChoice(match ? match.id : CUSTOM_OPTION)
+    }
+  }
+
   const buildPayload = ({ method, endpoint, body = '' }) => ({
     base_url: baseURL,
     method,
@@ -295,7 +331,7 @@ export function VendorTestPage({
       }
       return key
     })(),
-    headers: normalizeHeaderRows(headerRows)
+    headers: applyUserAgentToHeaders(headerRows, userAgent)
   })
 
   const runModelFetch = async () => {
@@ -303,11 +339,14 @@ export function VendorTestPage({
     setModelError('')
     try {
       const endpoint = fillModelTemplate(modelEndpoint, selectedModel)
-      const result = await onRunTest(selectedVendorID, buildPayload({
+      const payload = buildPayload({
         method: 'GET',
         endpoint,
         body: ''
-      }))
+      })
+      const uaUsed = payload.headers.find((h) => h.key.toLowerCase() === 'user-agent')?.value || '默认 (JCProxy-Admin-Test)'
+      setModelTestUA(uaUsed)
+      const result = await onRunTest(selectedVendorID, payload)
       setModelResult(result)
       const nextModels = extractModelIds(result?.body)
       if (nextModels.length > 0) {
@@ -325,11 +364,14 @@ export function VendorTestPage({
     try {
       const endpoint = fillModelTemplate(requestEndpoint, selectedModel)
       const body = fillModelTemplate(requestBody, selectedModel)
-      const result = await onRunTest(selectedVendorID, buildPayload({
+      const payload = buildPayload({
         method: requestMethod,
         endpoint,
         body
-      }))
+      })
+      const uaUsed = payload.headers.find((h) => h.key.toLowerCase() === 'user-agent')?.value || '默认 (JCProxy-Admin-Test)'
+      setRequestTestUA(uaUsed)
+      const result = await onRunTest(selectedVendorID, payload)
       setRequestResult(result)
     } catch (err) {
       setRequestResult(null)
@@ -414,7 +456,7 @@ export function VendorTestPage({
               <div className="section-card-header">
                 <div>
                   <h4>连接参数</h4>
-                  <p>支持修改供应商 base_url、切换默认 key / 手动 key，并附加额外 Header。</p>
+                  <p>支持修改供应商 base_url、切换默认 key / 手动 key、模拟常用或自定义 User-Agent，并附加额外 Header。</p>
                 </div>
               </div>
 
@@ -456,6 +498,69 @@ export function VendorTestPage({
                     value={selectedModel}
                     onChange={(e) => setSelectedModel(e.target.value)}
                     placeholder="可先拉取模型后点击模型名自动填入，也可手动输入"
+                  />
+                </label>
+
+                <div className="space-y-2 xl:col-span-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="field-label">常用 User-Agent (点击快速填入，支持下方自由修改与自定义输入)</span>
+                    {userAgent && (
+                      <button
+                        type="button"
+                        className="text-xs text-[var(--accent)] hover:underline"
+                        onClick={() => handleSelectUserAgentPreset(USER_AGENT_PRESETS[0])}
+                      >
+                        清空 / 恢复默认
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {USER_AGENT_PRESETS.map((preset) => {
+                      const isActive = preset.id === 'default'
+                        ? !userAgent.trim()
+                        : userAgentChoice === preset.id || (preset.value && userAgent.trim() === preset.value)
+                      return (
+                        <button
+                          key={preset.id}
+                          className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                            isActive
+                              ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
+                              : 'border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                          }`}
+                          type="button"
+                          onClick={() => handleSelectUserAgentPreset(preset)}
+                          title={preset.value || '默认 (JCProxy-Admin-Test)'}
+                        >
+                          {preset.shortLabel || preset.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <label className="field-wrap">
+                  <span className="field-label">User-Agent 预置</span>
+                  <select
+                    className="select-base w-full"
+                    value={userAgentChoice}
+                    onChange={handleUserAgentChoiceChange}
+                  >
+                    {USER_AGENT_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_OPTION}>自定义输入</option>
+                  </select>
+                </label>
+
+                <label className="field-wrap">
+                  <span className="field-label">User-Agent 请求头 (可自由输入 / 修改)</span>
+                  <input
+                    className="input-base w-full font-mono text-xs"
+                    value={userAgent}
+                    onChange={handleUserAgentChange}
+                    placeholder="留空默认 JCProxy-Admin-Test，可自由输入任意 UA"
                   />
                 </label>
               </div>
@@ -521,6 +626,7 @@ export function VendorTestPage({
                   models={modelIds}
                   selectedModel={selectedModel}
                   onPickModel={setSelectedModel}
+                  usedUA={modelTestUA}
                 />
               </section>
 
@@ -625,6 +731,7 @@ export function VendorTestPage({
                   models={[]}
                   selectedModel={selectedModel}
                   onPickModel={setSelectedModel}
+                  usedUA={requestTestUA}
                 />
               </section>
             </div>
