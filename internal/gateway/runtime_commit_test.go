@@ -12,7 +12,7 @@ import (
 
 func commitTestRuntime(t *testing.T) (*Runtime, *config.Config, *keystore.FileStore) {
 	t.Helper()
-	cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "https://example.invalid"}}})}
+	cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "https://example.invalid"}}})}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}

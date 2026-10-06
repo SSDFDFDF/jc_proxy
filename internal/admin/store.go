@@ -190,9 +190,6 @@ func (s *Store) SnapshotJSON(maskSecrets bool) ([]byte, error) {
 	}
 	if maskSecrets {
 		for i := range cfg.Vendors {
-			if !cfg.Vendors[i].ClientAuth.Enabled {
-				continue
-			}
 			keys := cfg.Vendors[i].ClientAuth.Keys
 			for j := range keys {
 				keys[j] = mask(keys[j])

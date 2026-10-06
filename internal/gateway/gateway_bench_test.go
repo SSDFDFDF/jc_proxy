@@ -17,7 +17,7 @@ func newBenchRouter(b *testing.B, upstreamURL string) *Router {
 	zero := time.Duration(0)
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:                 upstreamURL,

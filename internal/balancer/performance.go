@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
 )
 
@@ -11,7 +12,6 @@ const (
 	recentWindowSize    = 5
 	failedSamplePenalty = 999 * time.Second
 	sampleFreshness     = 5 * time.Minute
-	explorationInterval = 10
 )
 
 // Process-local monotonic offsets keep scheduling state compact and let one
@@ -49,7 +49,7 @@ func (h *RuntimeStatsHandle) recordSampleLocked(header, full time.Duration, succ
 	if !success {
 		header, full = failedSamplePenalty, failedSamplePenalty
 	}
-	if !h.lastSample.IsZero() && now.Sub(h.lastSample) >= sampleFreshness {
+	if !h.lastSample.IsZero() && now.Sub(h.lastSample) >= h.sampleTTL {
 		h.sampleCount, h.nextSample = 0, 0
 	}
 	h.lastSample = now
@@ -83,8 +83,8 @@ func (h *RuntimeStatsHandle) recordSampleLocked(header, full time.Duration, succ
 	return h.generation.Load()
 }
 
-// Costs are precomputed on completion, so selection loads only one atomic per
-// candidate rather than acquiring every key's statistics mutex under pool.mu.
+// Default costs and successful timing inputs are precomputed on completion.
+// Custom factors use two atomic inputs without taking per-key statistics locks.
 func (h *RuntimeStatsHandle) updateCostsLocked() {
 	s := h.stats.RecentStats
 	if s.RecentRequests > 0 && s.RecentSuccessCount == 0 {
@@ -92,19 +92,20 @@ func (h *RuntimeStatsHandle) updateCostsLocked() {
 		// back of the queue regardless of tiny error-response timings; normal
 		// age-based exploration still allows them to recover.
 		penalty := math.Float64bits(1e12)
+		h.successRate.Store(math.Float64bits(0))
 		h.latencyCost.Store(penalty)
 		h.successCost.Store(penalty)
 		h.adaptiveCost.Store(penalty)
 		return
 	}
 	p := float64(s.RecentSuccessCount+1) / float64(s.RecentRequests+2) // Laplace smoothing
-	header := 1000.0                                                   // neutral 1s prior when timing is unknown
-	full := header
+	hasHeader := false
+	header := 1000.0 // neutral 1s prior when timing is unknown
 	// Display averages include fixed failure penalties. Scheduling continues to
 	// use successful timings plus the success-rate penalty (not both penalties).
 	if h.sampleCount > 0 {
-		var hs, fs int
-		var ht, ft float64
+		var hs int
+		var ht float64
 		for _, sample := range h.window[:h.sampleCount] {
 			if !sample.success {
 				continue
@@ -113,34 +114,32 @@ func (h *RuntimeStatsHandle) updateCostsLocked() {
 				hs++
 				ht += float64(sample.header) / float64(time.Millisecond)
 			}
-			if sample.full >= 0 {
-				fs++
-				ft += float64(sample.full) / float64(time.Millisecond)
-			}
 		}
 		if hs > 0 {
 			header = ht / float64(hs)
-		}
-		full = header
-		if fs > 0 {
-			full = ft / float64(fs)
+			hasHeader = true
 		}
 	} else if s.RecentRequests == s.RecentSuccessCount {
 		// Persisted summaries have no separate successful timings. Only an
 		// all-success summary can safely seed latency costs after restart.
 		if s.HeaderSamples > 0 {
 			header = s.AvgHeaderMS
-		}
-		full = header
-		if s.ResponseSamples > 0 {
-			full = s.AvgResponseMS
+			hasHeader = true
 		}
 	}
 	header = math.Max(1, math.Min(header, 3_600_000))
-	full = math.Max(header, math.Min(full, 3_600_000))
+	h.successRate.Store(math.Float64bits(p))
+	if hasHeader {
+		h.successHeader.Store(math.Float64bits(header))
+	} else {
+		h.successHeader.Store(math.Float64bits(-1))
+	}
 	h.latencyCost.Store(math.Float64bits(header / p))
 	h.successCost.Store(math.Float64bits(1 / (p * p)))
-	h.adaptiveCost.Store(math.Float64bits((0.7*header + 0.3*full) / (p * p)))
+	// Full response time remains a diagnostic statistic only: output length,
+	// long-lived streams and downstream backpressure are not service latency.
+	// Adaptive favors reliability more strongly than lowest_latency.
+	h.adaptiveCost.Store(math.Float64bits(header / (p * p)))
 }
 
 func (h *RuntimeStatsHandle) performanceCost(strategy string) float64 {
@@ -154,13 +153,75 @@ func (h *RuntimeStatsHandle) performanceCost(strategy string) float64 {
 	}
 }
 
+func performanceBaseCost(strategy string, header, probability, power float64) float64 {
+	if probability == 0 {
+		return 1e12 // preserve all-failed protection even with success_power=0
+	}
+	if strategy == "highest_success" {
+		header = 1
+	}
+	// Fast paths retain default hot-path costs; custom fractional powers use Pow.
+	switch power {
+	case 0:
+		return header
+	case 1:
+		return header / probability
+	case 2:
+		return header / (probability * probability)
+	default:
+		return header / math.Pow(probability, power)
+	}
+}
+
+func (h *RuntimeStatsHandle) configuredCost(strategy string, settings config.PerformanceSettings) float64 {
+	probability := math.Float64frombits(h.successRate.Load())
+	header := math.Float64frombits(h.successHeader.Load())
+	if header < 0 {
+		header = float64(settings.LatencyPrior) / float64(time.Millisecond)
+	}
+	return performanceBaseCost(strategy, header, probability, settings.SuccessPower)
+}
+
+func explorationBackoff(settings config.PerformanceSettings, failures int) time.Duration {
+	delay := settings.ExplorationBackoffBase
+	for n := 1; n < failures && delay < settings.ExplorationBackoffMax; n++ {
+		delay = min(delay*2, settings.ExplorationBackoffMax)
+	}
+	return delay
+}
+
+// ActivatePerformance is a commit-only operation. Preparing a router must not
+// change a shared handle or an old pool's sampling policy before persistence.
+// Old in-flight attempts share KeyState and settle with the newly committed TTL.
+func (p *Pool) ActivatePerformance() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	tick := p.nowf().Sub(schedulerEpoch)
+	for _, state := range p.keys {
+		state.syncStatsGeneration(state.stats.generation.Load(), tick)
+		state.performance = &p.performance
+		state.sampleExpires = state.sampleTick + p.performance.SampleTTL
+		if state.failedSamples > 0 {
+			state.nextExplore = state.sampleTick + explorationBackoff(p.performance, state.failedSamples)
+		}
+		state.stats.mu.Lock()
+		state.stats.sampleTTL = p.performance.SampleTTL
+		state.stats.mu.Unlock()
+	}
+	// Keep earned exploration credit bounded when the interval changes.
+	p.exploration.credit = min(p.exploration.credit, p.performance.ExplorationInterval)
+}
+
 func (p *Pool) RecordSample(idx int, header, full time.Duration, success bool, expectedVersion ...int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if idx >= 0 && idx < len(p.keys) && p.currentVersionLocked(idx, expectedVersion) {
 		state := p.keys[idx]
 		now := p.nowf()
-		generation := state.stats.recordSampleAt(header, full, success, now)
+		state.stats.mu.Lock()
+		state.stats.sampleTTL = state.performance.SampleTTL
+		generation := state.stats.recordSampleLocked(header, full, success, now)
+		state.stats.mu.Unlock()
 		state.noteSample(generation, now.Sub(schedulerEpoch), success)
 	}
 }
@@ -171,7 +232,8 @@ func (state *KeyState) noteSample(generation uint64, tick time.Duration, success
 	if tick >= state.sampleExpires {
 		state.liveSamples = 0
 	}
-	state.sampleExpires = tick + sampleFreshness
+	state.sampleExpires = tick + state.performance.SampleTTL
+	state.sampleTick = tick
 	if state.liveSamples < 2 {
 		state.liveSamples++
 	}
@@ -179,14 +241,10 @@ func (state *KeyState) noteSample(generation uint64, tick time.Duration, success
 		state.failedSamples = 0
 		state.nextExplore = math.MinInt64
 	} else {
-		if state.failedSamples < 4 {
+		if state.failedSamples < 32 {
 			state.failedSamples++
 		}
-		delay := time.Minute * time.Duration(1<<(state.failedSamples-1))
-		if delay > sampleFreshness {
-			delay = sampleFreshness
-		}
-		state.nextExplore = tick + delay
+		state.nextExplore = tick + explorationBackoff(*state.performance, state.failedSamples)
 	}
 }
 
@@ -199,7 +257,8 @@ func (state *KeyState) syncStatsGeneration(generation uint64, tick time.Duration
 	}
 	state.statsGeneration = generation
 	state.lastAttempt, state.nextExplore = math.MinInt64, math.MinInt64
-	state.sampleExpires = tick + sampleFreshness
+	state.sampleTick = tick
+	state.sampleExpires = tick + state.performance.SampleTTL
 	state.liveSamples, state.failedSamples = 0, 0
 }
 
@@ -211,7 +270,8 @@ func (p *Pool) pickPerformanceLocked(now time.Time, excluded map[int]struct{}, a
 	bestCost := 0.0
 	bestDistance := len(p.keys) + 1
 	credit := p.exploration.credit
-	if credit < explorationInterval {
+	interval := p.performance.ExplorationInterval
+	if credit < interval {
 		credit++
 	}
 	consider := func(i int) {
@@ -221,23 +281,21 @@ func (p *Pool) pickPerformanceLocked(now time.Time, excluded map[int]struct{}, a
 		state := p.keys[i]
 		state.syncStatsGeneration(state.stats.generation.Load(), tick)
 		cost := state.stats.performanceCost(p.strategy)
+		if p.customPerformance {
+			cost = state.stats.configuredCost(p.strategy, p.performance)
+		}
 		expired := tick >= state.sampleExpires
 		if expired {
 			age := tick - state.sampleExpires
-			neutral := 4000.0
-			if p.strategy == "lowest_latency" {
-				neutral = 2000
-			} else if p.strategy == "highest_success" {
-				neutral = 4
-			}
-			if age >= sampleFreshness {
+			neutral := performanceBaseCost(p.strategy, float64(p.performance.LatencyPrior)/float64(time.Millisecond), 0.5, p.performance.SuccessPower)
+			if age >= p.performance.DecayDuration {
 				cost = neutral
 			} else {
-				weight := float64(age) / float64(sampleFreshness)
+				weight := float64(age) / float64(p.performance.DecayDuration)
 				cost += (neutral - cost) * weight
 			}
 		}
-		cost *= float64(state.Inflight + 1)
+		cost *= 1 + float64(state.Inflight)*p.performance.InflightWeight
 		distance := i - p.rrIdx
 		if distance < 0 {
 			distance += len(p.keys)
@@ -245,7 +303,7 @@ func (p *Pool) pickPerformanceLocked(now time.Time, excluded map[int]struct{}, a
 		if best < 0 || cost < bestCost || (cost == bestCost && distance < bestDistance) {
 			best, bestCost, bestDistance = i, cost, distance
 		}
-		if credit < explorationInterval || state.Inflight != 0 || tick < state.nextExplore {
+		if interval == 0 || credit < interval || state.Inflight != 0 || tick < state.nextExplore {
 			return
 		}
 		due := state.liveSamples < 2 || state.failedSamples > 0 || expired

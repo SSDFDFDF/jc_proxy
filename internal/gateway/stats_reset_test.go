@@ -14,7 +14,7 @@ import (
 
 func statsResetTestRuntime(t *testing.T) (*Runtime, *config.Config, *keystore.FileStore, *RuntimeStatsPersister) {
 	t.Helper()
-	cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+	cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 		"a": {Upstream: config.UpstreamConfig{BaseURL: "https://example.invalid"}, LoadBalance: "least_requests"},
 		"b": {Upstream: config.UpstreamConfig{BaseURL: "https://example.invalid"}, LoadBalance: "adaptive"},
 	})}

@@ -295,6 +295,11 @@ func (s *Service) RenameVendor(actor, vendorID, newName string) error {
 // Preserve un-submitted sub-fields on update so partial API payloads
 // do not silently reset runtime behavior configured elsewhere.
 func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.VendorConfig {
+	if next.Performance == nil {
+		// Older clients omit this section. An explicit object replaces it;
+		// {} or null fields inside it restore strategy-specific defaults.
+		next.Performance = prev.Performance
+	}
 	next.ErrorPolicy = mergeErrorPolicyForAdminUpsert(prev.ErrorPolicy, next.ErrorPolicy)
 	return next
 }
@@ -666,7 +671,8 @@ func (s *Service) AddClientKey(actor, vendorID, key string) error {
 			return errors.New("duplicate key")
 		}
 	}
-	cfg.Vendors[idx].ClientAuth.Enabled = true
+	enabled := true
+	cfg.Vendors[idx].ClientAuth.Enabled = &enabled
 	cfg.Vendors[idx].ClientAuth.Keys = append(cfg.Vendors[idx].ClientAuth.Keys, key)
 	name := cfg.Vendors[idx].Name
 	if err := s.updateConfigLocked(actor, cfg); err != nil {
@@ -702,7 +708,8 @@ func (s *Service) DeleteClientKey(actor, vendorID, key string) error {
 	}
 	cfg.Vendors[idx].ClientAuth.Keys = next
 	if len(next) == 0 {
-		cfg.Vendors[idx].ClientAuth.Enabled = false
+		enabled := true
+		cfg.Vendors[idx].ClientAuth.Enabled = &enabled
 	}
 	name := cfg.Vendors[idx].Name
 	if err := s.updateConfigLocked(actor, cfg); err != nil {

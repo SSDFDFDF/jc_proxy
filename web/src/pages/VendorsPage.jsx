@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { CLIENT_HEADER_PRESET_OPTIONS, CLIENT_HEADER_PRESET_PREVIEWS, DEFAULT_CLIENT_HEADER_DROP_PREVIEW } from '../app/constants'
 import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass, parseKeysText, recommendedClientHeaderPreset } from '../app/utils'
+import { PerformanceSettings } from '../components/PerformanceSettings'
 import { MapRowsEditor } from '../components/MapRowsEditor'
 
 const DEFAULT_EXPANDED_SECTIONS = {
@@ -197,7 +198,7 @@ export function VendorsPage({
       const hadKeys = normalizeKeys(draft.client_auth.keys || []).length > 0
       draft.client_auth.keys = nextKeys
       if (!nextKeys.length) {
-        draft.client_auth.enabled = false
+        draft.client_auth.enabled = true
       } else if (!hadKeys) {
         draft.client_auth.enabled = true
       }
@@ -640,8 +641,8 @@ export function VendorsPage({
 
             <CollapsibleSection
               title="客户端密钥"
-              description="密钥管理前置到这里，支持复制、删除、批量导入和自动生成。"
-              summary={`${vendorDraft.client_auth?.enabled ? '鉴权开启' : '鉴权关闭'} · ${clientKeys.length} 条`}
+              description="默认开启鉴权；未配置客户端密钥时拒绝接口访问。仅在已有密钥且手动关闭后允许免鉴权。"
+              summary={`${!clientKeys.length ? '接口访问已禁用' : vendorDraft.client_auth?.enabled !== false ? '鉴权开启' : '鉴权关闭'} · ${clientKeys.length} 条`}
               open={expandedSections.clientKeys}
               onToggle={() => toggleSection('clientKeys')}
               actions={(
@@ -650,7 +651,8 @@ export function VendorsPage({
                     <span className="field-label">启用鉴权</span>
                     <select
                       className="select-base"
-                      value={vendorDraft.client_auth?.enabled ? 'true' : 'false'}
+                      value={!clientKeys.length || vendorDraft.client_auth?.enabled !== false ? 'true' : 'false'}
+                      disabled={!clientKeys.length}
                       onChange={(e) => onMutateVendorDraft((draft) => { draft.client_auth.enabled = e.target.value === 'true' })}
                     >
                       <option value="false">关闭</option>
@@ -694,7 +696,7 @@ export function VendorsPage({
                   <div className="space-y-2">
                     {!clientKeys.length && (
                       <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
-                        暂无客户端密钥，可以先自动生成一条，或在右侧批量导入。
+                        未配置客户端密钥，接口访问已禁用。请自动生成一条，或在右侧批量导入。
                       </div>
                     )}
 
@@ -887,6 +889,8 @@ export function VendorsPage({
                   </div>
                 )}
               </div>
+
+              <PerformanceSettings vendor={vendorDraft} onMutate={onMutateVendorDraft} busy={busy} />
 
               {isAggregate && (
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] p-4 space-y-4">

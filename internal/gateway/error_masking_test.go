@@ -206,7 +206,7 @@ func routerWithMasking(t *testing.T, upstreamURL string, keys []string, mutate f
 	}
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider:    "openai",
 				Upstream:    config.UpstreamConfig{BaseURL: upstreamURL},
@@ -290,6 +290,9 @@ vendors:
     upstream:
       base_url: "` + upstream.URL + `"
     load_balance: "round_robin"
+    client_auth:
+      enabled: false
+      keys: ["unused-test-client-key"]
     error_policy:
       masking:
         rules:
@@ -626,7 +629,7 @@ func TestRouterMasksChildVendorErrorsThroughAggregateRouting(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"child": {
 				Provider:    "generic",
 				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},

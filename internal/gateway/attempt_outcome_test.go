@@ -66,7 +66,7 @@ func TestAttemptOutcomesPersistAfterUpload(t *testing.T) {
 			if _, err = store.Append("vid_openai", []string{"test-key"}); err != nil {
 				t.Fatal(err)
 			}
-			cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+			cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 				"openai": {Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid", BodyTimeout: 20 * time.Millisecond}, LoadBalance: "adaptive"},
 			})}
 			rt, err := NewRuntime(cfg, store)

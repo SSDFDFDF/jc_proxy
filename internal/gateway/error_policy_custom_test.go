@@ -90,7 +90,7 @@ func TestRouterCustomInvalidKeyKeywordDisablesKey(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -162,7 +162,7 @@ func TestRouterUsesCustomCooldownResponseRule(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -230,7 +230,7 @@ func TestRouterUsesCustomFailoverResponseCodesWithoutCooldown(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -469,4 +469,3 @@ func TestClassifyResponseAutoDisableMasterSwitchDisabled(t *testing.T) {
 		t.Fatalf("expected 402 not to auto-disable when Enabled=false, got %q", decision402.action)
 	}
 }
-

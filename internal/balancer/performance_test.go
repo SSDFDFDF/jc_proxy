@@ -98,23 +98,65 @@ func TestPerformanceStrategies(t *testing.T) {
 	}
 }
 
-func TestAdaptiveAccountsForFullResponseAndInflight(t *testing.T) {
+func TestAdaptiveIgnoresFullResponseButAccountsForInflight(t *testing.T) {
 	p, _ := NewPool("adaptive", []string{"long-stream", "short"})
 	for range 5 {
-		p.RecordSample(0, 10*time.Millisecond, 10*time.Second, true)
+		p.RecordSample(0, 10*time.Millisecond, 10*time.Minute, true)
 		p.RecordSample(1, 20*time.Millisecond, 100*time.Millisecond, true)
 	}
 	idx, _, _ := p.Acquire()
-	if idx != 1 {
-		t.Fatalf("adaptive ignored full response: %d", idx)
+	if idx != 0 {
+		t.Fatalf("adaptive penalized full response duration: %d", idx)
 	}
 	p.Release(idx)
-	p.keys[1].Inflight = 1000
+	p.keys[0].Inflight = 2
 	idx, _, _ = p.Acquire()
-	if idx != 0 {
+	if idx != 1 {
 		t.Fatalf("adaptive ignored inflight: %d", idx)
 	}
 	p.Release(idx)
+}
+
+func TestPerformanceCostsIgnoreFullTimingInLiveAndPersistedSamples(t *testing.T) {
+	for _, header := range []time.Duration{-1, 20 * time.Millisecond} {
+		for _, successes := range []int{0, 3, 5} {
+			var expected [3]float64
+			for i, full := range []time.Duration{-1, 30 * time.Millisecond, time.Hour, 24 * time.Hour} {
+				h := NewRuntimeStatsHandle(keystore.RuntimeStats{})
+				for n := range 5 {
+					h.RecordSample(header, full, n < successes)
+				}
+				for j, strategy := range []string{"lowest_latency", "highest_success", "adaptive"} {
+					cost := h.performanceCost(strategy)
+					if i == 0 {
+						expected[j] = cost
+					} else if cost != expected[j] {
+						t.Fatalf("%s cost changed with full=%v, header=%v, successes=%d: %v != %v", strategy, full, header, successes, cost, expected[j])
+					}
+				}
+				// All-success persisted summaries must use only the header too.
+				if successes == 5 {
+					restored := NewRuntimeStatsHandle(h.Snapshot())
+					if got := restored.performanceCost("adaptive"); got != expected[2] {
+						t.Fatalf("persisted full=%v affected adaptive cost: %v != %v", full, got, expected[2])
+					}
+					if full >= 0 && h.Snapshot().AvgResponseMS != float64(full)/float64(time.Millisecond) {
+						t.Fatal("full-response diagnostic statistic lost")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestAdaptivePenalizesFailuresMoreThanLowestLatency(t *testing.T) {
+	h := NewRuntimeStatsHandle(keystore.RuntimeStats{})
+	h.RecordSample(100*time.Millisecond, time.Hour, true)
+	latency, adaptive := h.performanceCost("lowest_latency"), h.performanceCost("adaptive")
+	h.RecordSample(-1, -1, false)
+	if h.performanceCost("adaptive")/adaptive <= h.performanceCost("lowest_latency")/latency {
+		t.Fatal("adaptive must apply a stronger success-rate penalty")
+	}
 }
 
 func TestRecentConcurrentRecordAndPick(t *testing.T) {

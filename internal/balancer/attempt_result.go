@@ -51,6 +51,7 @@ func (p *Pool) CompleteAttempt(idx int, version int64, result AttemptResult) boo
 	}
 	if current {
 		now := p.nowf()
+		h.sampleTTL = state.performance.SampleTTL
 		generation := h.recordSampleLocked(result.HeaderElapsed, result.FullElapsed, result.Action == AttemptSuccess, now)
 		state.noteSample(generation, now.Sub(schedulerEpoch), result.Action == AttemptSuccess)
 	}

@@ -447,7 +447,7 @@ func TestConsoleRoute(t *testing.T) {
 			Enabled:      true,
 			PasswordHash: "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
 		},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
@@ -532,7 +532,7 @@ func TestConsoleRouteHiddenForRemoteAddr(t *testing.T) {
 			PasswordHash: "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
 			AllowedCIDRs: []string{"127.0.0.1/32"},
 		},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
@@ -567,7 +567,7 @@ func TestConsoleRouteAllowsRemoteAddrWhenCIDRsEmpty(t *testing.T) {
 			Enabled:      true,
 			PasswordHash: "pbkdf2$120000$/8TGko7UMwVqb8htEpczLA$b7031a7a7ec82193cdcba4822bdfd18dbae2196528ba102b0bf26b85d67c8ec0",
 		},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
@@ -604,7 +604,7 @@ func TestConsoleRouteAllowsTrustedProxyForwardedAddr(t *testing.T) {
 			AllowedCIDRs:      []string{"203.0.113.8/32"},
 			TrustedProxyCIDRs: []string{"10.0.0.0/8"},
 		},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://api.openai.com",
@@ -898,7 +898,7 @@ func TestRouterUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 	responseHeaderTimeout := 7 * time.Second
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
@@ -930,7 +930,7 @@ func TestRouterCanDisableResponseHeaderTimeout(t *testing.T) {
 	responseHeaderTimeout := time.Duration(0)
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
@@ -961,7 +961,7 @@ func TestRouterCanDisableResponseHeaderTimeout(t *testing.T) {
 func TestRuntimeSharesTransportForEquivalentUpstreamSettings(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
 				LoadBalance: "round_robin",
@@ -989,7 +989,7 @@ func TestRuntimeSharesTransportForEquivalentUpstreamSettings(t *testing.T) {
 func TestRuntimeRefreshKeysReusesTransport(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream:    config.UpstreamConfig{BaseURL: "https://api.openai.com"},
 				LoadBalance: "round_robin",
@@ -1017,7 +1017,7 @@ func TestRuntimeSeparatesTransportsWhenUpstreamSettingsChange(t *testing.T) {
 	secondTimeout := 15 * time.Second
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:               "https://api.openai.com",
@@ -1057,7 +1057,7 @@ func TestRouterSendsInterimProcessingBeforeDelayedFinalResponse(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:                 "https://example.test",
@@ -1127,7 +1127,7 @@ func TestRouterCanDisableInterimProcessing(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:                 "https://example.test",
@@ -1188,7 +1188,7 @@ func TestRouterCanDisableInterimProcessing(t *testing.T) {
 func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL:     "https://example.test",
@@ -1248,7 +1248,7 @@ func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing
 func TestRouterAbortsClientConnectionWhenSuccessfulStreamBreaksMidBody(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://example.test",
@@ -1323,14 +1323,14 @@ func TestRouterSkipsClientAuthWhenDisabled(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
 				},
 				LoadBalance: "round_robin",
 				ClientAuth: config.ClientAuthConfig{
-					Enabled: false,
+					Enabled: boolPtrFalse(),
 					Keys:    []string{"client-key-a"},
 				},
 			},
@@ -1364,7 +1364,7 @@ func TestRouterDoesNotAddDefaultUserAgent(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -1405,7 +1405,7 @@ func TestRouterForwardsClientUserAgent(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -1444,7 +1444,7 @@ func TestRouterTracksUpstreamStatusStats(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -1499,7 +1499,7 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -1578,7 +1578,7 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -1647,7 +1647,7 @@ func TestRuntimeRefreshKeysPreservesCooldownState(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream:    config.UpstreamConfig{BaseURL: "http://upstream.invalid"},
 				LoadBalance: "round_robin",
@@ -1714,7 +1714,7 @@ func TestRuntimeRecoverUpstreamKeyClearsCooldownState(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream:    config.UpstreamConfig{BaseURL: "http://upstream.invalid"},
 				LoadBalance: "round_robin",
@@ -1768,7 +1768,7 @@ func TestRuntimeRefreshKeysPreservesRuntimeStats(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -1824,7 +1824,7 @@ func TestRuntimeRefreshKeysDoesNotBlockInflightRequestsAndPreservesRuntimeStats(
 	}
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -1935,7 +1935,7 @@ func TestRuntimeStatsPersistAcrossRestart(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -2012,7 +2012,7 @@ func TestRuntimeStatsPersistAfterRefreshDuringInflightRequest(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -2098,7 +2098,7 @@ func TestRouterFlushesStreamingResponses(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -2279,7 +2279,7 @@ func TestRouterAggregateChildUsesOnlySelectedKeys(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"child": {
 				Provider:    "generic",
 				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
@@ -2328,7 +2328,7 @@ func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"child": {
 				Provider:    "generic",
 				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
@@ -2375,7 +2375,7 @@ func TestRouterAggregateDoesNotRetrySameKeyAcrossOverlappingChildren(t *testing.
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"child": {
 				Provider:    "generic",
 				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
@@ -2883,7 +2883,7 @@ func TestRouterDoesNotCooldownHealthyKeyOnClientDisconnect(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -2929,7 +2929,7 @@ func TestRouterStillClassifiesErrorResponseOnClientDisconnect(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -2986,7 +2986,7 @@ func TestRouterFailsOverBufferedPostOnRateLimit(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3053,7 +3053,7 @@ func TestRouterDoesNotRetryMultipartPost(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3089,7 +3089,7 @@ func TestRouterDoesNotRetryMultipartPost(t *testing.T) {
 func TestRouterRetriesSafeGetOnRequestError(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3149,7 +3149,7 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3211,7 +3211,7 @@ func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testi
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3273,7 +3273,7 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3333,7 +3333,7 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 func TestRouterDoesNotCooldownKeyOnCanceledRequestContext(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: "https://example.test",
@@ -3401,7 +3401,7 @@ func TestRouterPassthroughModeDoesNotRequireManagedKeys(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"generic": {
 				Provider: "generic",
 				Upstream: config.UpstreamConfig{
@@ -3458,7 +3458,7 @@ func TestRouterResinReverseProxySetsAccountHeaderForManagedKey(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3515,7 +3515,7 @@ func TestRouterResinReverseProxySetsAccountHeaderForPassthroughKey(t *testing.T)
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Provider: "openai",
 				Upstream: config.UpstreamConfig{
@@ -3580,7 +3580,7 @@ func TestRouterDoesNotFollowUpstreamRedirects(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"openai": {
 				Upstream: config.UpstreamConfig{
 					BaseURL: upstream.URL,
@@ -3630,7 +3630,7 @@ func TestRouterClientDisconnectDuringBodyUploadDoesNotPanic(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8095"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"solo": {
 				Provider:    "generic",
 				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
@@ -3674,7 +3674,7 @@ func TestRouterBudgetExhaustionForwardsUpstreamStatus(t *testing.T) {
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{Listen: ":8089"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"child_a": {
 				Provider:            "generic",
 				Upstream:            config.UpstreamConfig{BaseURL: upstream.URL},
@@ -3724,7 +3724,7 @@ func configBoolPtr(v bool) *bool {
 func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Config {
 	return &config.Config{
 		Server: config.ServerConfig{Listen: ":8092"},
-		Vendors: config.VendorsFromMap(map[string]config.VendorConfig{
+		Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{
 			"child_a": {
 				Provider: "generic",
 				Upstream: config.UpstreamConfig{

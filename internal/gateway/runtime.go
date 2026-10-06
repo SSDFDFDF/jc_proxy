@@ -44,6 +44,7 @@ func NewRuntime(cfg *config.Config, keySource UpstreamKeySource) (*Runtime, erro
 	if err != nil {
 		return nil, err
 	}
+	r.ActivatePerformance()
 	rt.router.Store(r)
 	rt.transports.Retain(r.upstreamTransports())
 	return rt, nil
@@ -87,6 +88,7 @@ func (rt *Runtime) updateLocked(cfg *config.Config, persist func(*config.Config)
 		}
 	}
 	r.ShareRuntimeStateFrom(prev)
+	r.ActivatePerformance()
 	rt.router.Store(r)
 	rt.cfg.Store(cloned)
 	rt.transports.Retain(r.upstreamTransports())

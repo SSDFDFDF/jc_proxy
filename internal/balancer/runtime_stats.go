@@ -17,6 +17,9 @@ type RuntimeStatsHandle struct {
 	nextSample    int
 	sampleCount   int
 	lastSample    time.Time
+	sampleTTL     time.Duration // committed pool policy; protected by mu
+	successHeader atomic.Uint64 // successful header mean; -1 means unknown
+	successRate   atomic.Uint64 // smoothed probability; 0 marks an all-failed window
 	latencyCost   atomic.Uint64
 	successCost   atomic.Uint64
 	adaptiveCost  atomic.Uint64
@@ -24,7 +27,7 @@ type RuntimeStatsHandle struct {
 }
 
 func NewRuntimeStatsHandle(initial keystore.RuntimeStats) *RuntimeStatsHandle {
-	handle := &RuntimeStatsHandle{}
+	handle := &RuntimeStatsHandle{sampleTTL: sampleFreshness}
 	handle.MergeBaseline(initial)
 	return handle
 }

@@ -91,7 +91,7 @@ func TestTimingBatchPersistenceReloadAndRetry(t *testing.T) {
 	if _, err := store.Append("vid_openai", []string{"k"}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid"}, LoadBalance: "adaptive"}})}
+	cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid"}, LoadBalance: "adaptive"}})}
 	rt, err := NewRuntime(cfg, store)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestTimingBatchPersistenceReloadAndRetry(t *testing.T) {
 }
 
 func TestTimingNetworkFailoverRecordsEachKey(t *testing.T) {
-	cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid"}}})}
+	cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid"}}})}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}

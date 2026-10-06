@@ -7,6 +7,21 @@ import (
 	"jc_proxy/internal/keystore"
 )
 
+// testVendorsWithoutClientAuth explicitly opts legacy forwarding/statistics
+// fixtures out of auth. Auth tests use config.VendorsFromMap directly.
+func testVendorsWithoutClientAuth(vendors map[string]config.VendorConfig) []config.VendorEntry {
+	for name, vendor := range vendors {
+		if vendor.ClientAuth.Enabled == nil && len(vendor.ClientAuth.Keys) == 0 {
+			vendor.ClientAuth = config.ClientAuthConfig{
+				Enabled: boolPtrFalse(),
+				Keys:    []string{"unused-test-client-key"},
+			}
+			vendors[name] = vendor
+		}
+	}
+	return config.VendorsFromMap(vendors)
+}
+
 // seedUpstreamKeys turns a vendor-name keyed seed map into the vendor-id keyed
 // record map the router consumes. Tests declare seeds by name because that is
 // what reads well in a fixture, while production storage is partitioned by the

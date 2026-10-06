@@ -155,6 +155,7 @@ type VendorConfig struct {
 	Upstream            UpstreamConfig      `yaml:"upstream" json:"upstream"`
 	Aggregate           AggregateConfig     `yaml:"aggregate,omitempty" json:"aggregate,omitempty"`
 	LoadBalance         string              `yaml:"load_balance" json:"load_balance"`
+	Performance         *PerformanceConfig  `yaml:"performance,omitempty" json:"performance,omitempty"`
 	UpstreamAuth        UpstreamAuthConfig  `yaml:"upstream_auth" json:"upstream_auth"`
 	ClientAuth          ClientAuthConfig    `yaml:"client_auth" json:"client_auth"`
 	ClientHeaders       ClientHeadersConfig `yaml:"client_headers" json:"client_headers"`
@@ -179,8 +180,13 @@ type UpstreamAuthConfig struct {
 }
 
 type ClientAuthConfig struct {
-	Enabled bool     `yaml:"enabled" json:"enabled"`
+	// Nil means enabled. Disabling is effective only with non-empty Keys.
+	Enabled *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Keys    []string `yaml:"keys" json:"keys"`
+}
+
+func (c ClientAuthConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 type ClientHeadersConfig struct {
@@ -845,6 +851,12 @@ func (c *Config) applyDefaults() {
 		if v.LoadBalance == "" {
 			v.LoadBalance = "round_robin"
 		}
+		v.ClientAuth.Keys = normalizeStringList(v.ClientAuth.Keys)
+		// Keep unconfigured vendors editable, but closed to public requests.
+		// Clearing the last key also clears any previous opt-out from auth.
+		if v.ClientAuth.Enabled == nil || len(v.ClientAuth.Keys) == 0 {
+			v.ClientAuth.Enabled = boolPtr(true)
+		}
 		// Aggregate vendors skip upstream-specific defaults
 		if v.Provider == "aggregate" {
 			for j := range v.Aggregate.Children {
@@ -985,6 +997,9 @@ func (c *Config) validate(requireVendors bool) error {
 		default:
 			return fmt.Errorf("vendor %q invalid load_balance: %s", vendorName, vendor.LoadBalance)
 		}
+		if err := vendor.Performance.Validate(); err != nil {
+			return fmt.Errorf("vendor %q: %w", vendorName, err)
+		}
 		switch NormalizeProvider(vendor.Provider, vendorName) {
 		case "openai", "anthropic", "gemini", "deepseek", "azure_openai", "generic":
 		case "aggregate":
@@ -1009,9 +1024,6 @@ func (c *Config) validate(requireVendors bool) error {
 				if len(child.KeyIDs) > 0 && childEntry.UpstreamAuth.Mode == "passthrough" {
 					return fmt.Errorf("vendor %q aggregate child %q cannot select keys in passthrough mode", vendorName, childEntry.Name)
 				}
-			}
-			if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
-				return fmt.Errorf("vendor %q client_auth enabled but keys empty", vendorName)
 			}
 			if err := validateAggregateRetry(vendor.Aggregate.Retry, vendorName); err != nil {
 				return err
@@ -1039,9 +1051,6 @@ func (c *Config) validate(requireVendors bool) error {
 		case "bearer", "header", "passthrough":
 		default:
 			return fmt.Errorf("vendor %q invalid upstream_auth.mode: %s", vendorName, vendor.UpstreamAuth.Mode)
-		}
-		if vendor.ClientAuth.Enabled && len(vendor.ClientAuth.Keys) == 0 {
-			return fmt.Errorf("vendor %q client_auth enabled but keys empty", vendorName)
 		}
 		if _, ok := ClientHeaderAllowlistPreset(vendor.ClientHeaders.Preset); vendor.ClientHeaders.Preset != "" && !ok {
 			return fmt.Errorf("vendor %q invalid client_headers.preset: %s", vendorName, vendor.ClientHeaders.Preset)

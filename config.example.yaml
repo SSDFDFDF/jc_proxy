@@ -70,11 +70,24 @@ vendors:
       # 这是 interim response，不会写入最终响应体；设为 0s 可关闭。
       interim_response_interval: 30s
     load_balance: "round_robin" # round_robin | random | least_used | least_requests | lowest_latency | highest_success | adaptive
+    # 仅 lowest_latency / highest_success / adaptive 使用；聚合入口应在 child 上配置。
+    # 以下均为默认值，省略字段自动采用默认；时长在 JSON API 中为纳秒数。
+    # performance:
+    #   sample_ttl: 5m
+    #   decay_duration: 5m          # 0s = TTL 到期立即回归中性评分
+    #   exploration_interval: 10    # 每 N 次选 Key 可探索一次；0 禁用探索
+    #   exploration_backoff_base: 1m
+    #   exploration_backoff_max: 5m
+    #   success_power: 2           # lowest_latency 默认 1，其余默认 2；范围 0–4
+    #   inflight_weight: 1         # 范围 0–10，0 忽略当前并发
+    #   latency_prior: 1s          # 无成功头耗时的初始参考；highest_success 不使用
     upstream_auth:
       mode: "bearer"
       header: "Authorization"
       prefix: "Bearer "
     client_auth:
+      # 默认开启；无非空客户端密钥时接口返回 401，即使 enabled: false 也不放行。
+      # 仅在配置了客户端密钥且显式设为 false 后，才允许匿名访问。
       enabled: true
       keys:
         - "client-key-a"

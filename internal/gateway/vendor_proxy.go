@@ -24,8 +24,21 @@ type rewriteMatcher struct {
 	prefixes []rewriteRule
 }
 
+func clientAuthKeys(auth config.ClientAuthConfig) map[string]struct{} {
+	keys := make(map[string]struct{}, len(auth.Keys))
+	for _, key := range auth.Keys {
+		if key = strings.TrimSpace(key); key != "" {
+			keys[key] = struct{}{}
+		}
+	}
+	return keys
+}
+
 func (v *vendorGateway) authorizeClient(req *http.Request) error {
 	if len(v.clientAuth) == 0 {
+		return errors.New("client access disabled: no client api keys configured")
+	}
+	if v.clientAuthDisabled {
 		return nil
 	}
 	auth := headerCredential(req.Header)

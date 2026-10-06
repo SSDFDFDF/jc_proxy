@@ -144,7 +144,7 @@ export function emptyVendorConfig() {
     },
     load_balance: 'round_robin',
     upstream_auth: { mode: 'bearer', header: 'Authorization', prefix: 'Bearer ' },
-    client_auth: { enabled: false, keys: [] },
+    client_auth: { enabled: true, keys: [] },
     client_headers: { preset: '', allowlist: [], drop: [] },
     inject_headers: {},
     path_rewrites: {},
@@ -175,6 +175,7 @@ export function emptyVendorConfig() {
 export function withVendorDefaults(vendor) {
   const base = emptyVendorConfig()
   const next = clone(vendor || {})
+  const clientKeys = normalizeKeys(Array.isArray(next.client_auth?.keys) ? next.client_auth.keys : [])
   return {
     provider: next.provider || base.provider,
     max_upstream_attempts: next.max_upstream_attempts > 0 ? next.max_upstream_attempts : base.max_upstream_attempts,
@@ -200,11 +201,13 @@ export function withVendorDefaults(vendor) {
       }
     },
     load_balance: next.load_balance || base.load_balance,
+    performance: { ...(next.performance || {}) },
     upstream_auth: { ...base.upstream_auth, ...(next.upstream_auth || {}) },
     client_auth: {
       ...base.client_auth,
       ...(next.client_auth || {}),
-      keys: Array.isArray(next.client_auth?.keys) ? [...next.client_auth.keys] : []
+      enabled: clientKeys.length === 0 || next.client_auth?.enabled !== false,
+      keys: clientKeys
     },
     client_headers: {
       ...base.client_headers,

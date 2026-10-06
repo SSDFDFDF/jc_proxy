@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
 )
 
@@ -40,6 +41,8 @@ type KeyState struct {
 	retired         bool // removed from the current plan; old routers must not reuse it
 	lastAttempt     time.Duration
 	sampleExpires   time.Duration
+	sampleTick      time.Duration // last completion, or creation/reset for cold state
+	performance     *config.PerformanceSettings
 	nextExplore     time.Duration
 	liveSamples     int
 	failedSamples   int
@@ -70,10 +73,12 @@ type Pool struct {
 	rrIdx       int
 	exploration *explorationState // shared across overlapping router generations
 
-	rng           *rand.Rand
-	mu            *sync.Mutex // shared by all overlapping router generations of this vendor
-	nowf          func() time.Time
-	pickerScratch []int // reusable scratch slice for random picks; protected by mu
+	rng               *rand.Rand
+	mu                *sync.Mutex // shared by all overlapping router generations of this vendor
+	nowf              func() time.Time
+	pickerScratch     []int // reusable scratch slice for random picks; protected by mu
+	performance       config.PerformanceSettings
+	customPerformance bool
 }
 
 func NewPool(strategy string, keys []string) (*Pool, error) {
@@ -87,7 +92,21 @@ func NewPool(strategy string, keys []string) (*Pool, error) {
 	return NewPoolWithConfigs(strategy, configs)
 }
 
-func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
+func NewPoolWithConfigs(strategy string, keys []KeyConfig, performance ...*config.PerformanceConfig) (*Pool, error) {
+	var tuning *config.PerformanceConfig
+	if len(performance) > 0 {
+		tuning = performance[0]
+	}
+	if err := tuning.Validate(); err != nil {
+		return nil, err
+	}
+	settings := tuning.Resolve(strategy)
+	defaults := (*config.PerformanceConfig)(nil).Resolve(strategy)
+	custom := config.IsPerformanceStrategy(strategy) && (settings.SuccessPower != defaults.SuccessPower || settings.LatencyPrior != defaults.LatencyPrior)
+	if !config.IsPerformanceStrategy(strategy) {
+		// Store inactive tuning in config, but do not alter non-performance pools.
+		settings = (*config.PerformanceConfig)(nil).Resolve(strategy)
+	}
 	switch strategy {
 	case "round_robin", "random", "least_used", "least_requests", "lowest_latency", "highest_success", "adaptive":
 	default:
@@ -104,6 +123,7 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
 		stats := cfg.Stats
 		if stats == nil {
 			stats = NewRuntimeStatsHandle(cfg.RuntimeStats)
+			stats.sampleTTL = settings.SampleTTL
 		}
 		status := keystore.NormalizeStatus(cfg.Status)
 		states = append(states, &KeyState{
@@ -114,19 +134,23 @@ func NewPoolWithConfigs(strategy string, keys []KeyConfig) (*Pool, error) {
 			DisabledBy:    strings.TrimSpace(cfg.DisabledBy),
 			Version:       cfg.Version,
 			stats:         stats,
-			sampleExpires: createdAt + sampleFreshness,
+			sampleExpires: createdAt + settings.SampleTTL,
+			sampleTick:    createdAt,
+			performance:   &settings,
 			lastAttempt:   math.MinInt64,
 			nextExplore:   math.MinInt64,
 		})
 	}
 
 	return &Pool{
-		strategy:    strategy,
-		exploration: &explorationState{},
-		keys:        states,
-		mu:          &sync.Mutex{},
-		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
-		nowf:        time.Now,
+		strategy:          strategy,
+		performance:       settings,
+		customPerformance: custom,
+		exploration:       &explorationState{},
+		keys:              states,
+		mu:                &sync.Mutex{},
+		rng:               rand.New(rand.NewSource(time.Now().UnixNano())),
+		nowf:              time.Now,
 	}, nil
 }
 

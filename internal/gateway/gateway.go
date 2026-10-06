@@ -46,6 +46,7 @@ type vendorGateway struct {
 	managedKeyCount       int
 	client                *http.Client
 	clientAuth            map[string]struct{}
+	clientAuthDisabled    bool // explicit opt-out; an empty key set still denies access
 	allowlist             map[string]struct{}
 	dropHeaders           map[string]struct{}
 	injectHeaders         map[string]string
@@ -310,7 +311,11 @@ func New(cfg *config.Config) (*Router, error) {
 }
 
 func NewWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string][]keystore.Record, keyCtrl UpstreamKeyController) (*Router, error) {
-	return newRouterWithUpstreamKeyRecords(cfg, upstreamKeys, keyCtrl, nil, newTransportManager())
+	router, err := newRouterWithUpstreamKeyRecords(cfg, upstreamKeys, keyCtrl, nil, newTransportManager())
+	if err == nil {
+		router.ActivatePerformance()
+	}
+	return router, err
 }
 
 // newRouterWithUpstreamKeyRecords builds the routing table. upstreamKeys is
@@ -389,22 +394,18 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			})
 		}
 
-		clientAuthSet := make(map[string]struct{}, len(vendor.ClientAuth.Keys))
-		if vendor.ClientAuth.Enabled {
-			for _, key := range vendor.ClientAuth.Keys {
-				clientAuthSet[key] = struct{}{}
-			}
-		}
+		clientAuthSet := clientAuthKeys(vendor.ClientAuth)
 
 		agg := &vendorGateway{
-			id:                entry.ID,
-			name:              name,
-			provider:          "aggregate",
-			isAggregate:       true,
-			clientAuth:        clientAuthSet,
-			aggPool:           newAggregatePool(vendor.LoadBalance, entries),
-			aggRetry:          vendor.Aggregate.Retry,
-			maxAttemptsBudget: vendor.MaxUpstreamAttempts,
+			id:                 entry.ID,
+			name:               name,
+			provider:           "aggregate",
+			isAggregate:        true,
+			clientAuth:         clientAuthSet,
+			clientAuthDisabled: !vendor.ClientAuth.IsEnabled(),
+			aggPool:            newAggregatePool(vendor.LoadBalance, entries),
+			aggRetry:           vendor.Aggregate.Retry,
+			maxAttemptsBudget:  vendor.MaxUpstreamAttempts,
 		}
 		vendors[name] = agg
 		vendorsByID[entry.ID] = agg
@@ -425,6 +426,15 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 		adminCIDRs:             adminCIDRs,
 		adminTrustedProxyCIDRs: adminTrustedProxyCIDRs,
 	}, nil
+}
+
+// ActivatePerformance applies sampling settings only after a router is committed.
+func (r *Router) ActivatePerformance() {
+	for _, vendor := range r.vendorsByID {
+		if vendor.pool != nil {
+			vendor.pool.ActivatePerformance()
+		}
+	}
 }
 
 // VendorStats returns per-key statistics keyed by vendor id.
@@ -547,7 +557,7 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 		}
 	}
 
-	pool, err := balancer.NewPoolWithConfigs(vendor.LoadBalance, keyConfigs)
+	pool, err := balancer.NewPoolWithConfigs(vendor.LoadBalance, keyConfigs, vendor.Performance)
 	if err != nil {
 		return nil, fmt.Errorf("vendor %s init key pool: %w", name, err)
 	}
@@ -559,12 +569,7 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 		},
 	}
 
-	clientAuthSet := make(map[string]struct{}, len(vendor.ClientAuth.Keys))
-	if vendor.ClientAuth.Enabled {
-		for _, key := range vendor.ClientAuth.Keys {
-			clientAuthSet[key] = struct{}{}
-		}
-	}
+	clientAuthSet := clientAuthKeys(vendor.ClientAuth)
 
 	var rr *resin.RuntimeConfig
 	if vendor.Resin.Enabled {
@@ -589,6 +594,7 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 		managedKeyCount:       len(keyConfigs),
 		client:                client,
 		clientAuth:            clientAuthSet,
+		clientAuthDisabled:    !vendor.ClientAuth.IsEnabled(),
 		allowlist:             headerNameSet(config.ResolveClientHeaderAllowlist(vendor.ClientHeaders)),
 		dropHeaders:           headerNameSet(config.ResolveClientHeaderDropList(vendor.ClientHeaders)),
 		injectHeaders:         vendor.InjectedHeader,

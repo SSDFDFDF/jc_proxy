@@ -29,7 +29,10 @@ func TestShutdownWaitsForCanceledAttemptsBeforeFinalFlush(t *testing.T) {
 				<-req.Context().Done()
 			}))
 			defer upstream.Close()
-			cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: upstream.URL}}})}
+			cfg := &config.Config{Vendors: config.VendorsFromMap(map[string]config.VendorConfig{"openai": {
+				Upstream:   config.UpstreamConfig{BaseURL: upstream.URL},
+				ClientAuth: config.ClientAuthConfig{Keys: []string{"test-client-key"}},
+			}})}
 			store, err := keystore.NewFileStore(filepath.Join(t.TempDir(), "keys.json"))
 			if err != nil {
 				t.Fatal(err)
@@ -67,7 +70,9 @@ func TestShutdownWaitsForCanceledAttemptsBeforeFinalFlush(t *testing.T) {
 			client.Timeout = 3 * time.Second
 			go func() {
 				defer close(requestDone)
-				resp, _ := client.Get(server.URL + "/openai/test")
+				req, _ := http.NewRequest(http.MethodGet, server.URL+"/openai/test", nil)
+				req.Header.Set("Authorization", "Bearer test-client-key")
+				resp, _ := client.Do(req)
 				if resp != nil {
 					resp.Body.Close()
 				}

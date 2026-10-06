@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { validatePerformance } from '../app/performance'
 import { buildStatsResetPayload } from '../app/statsReset'
 
 import {
@@ -598,6 +599,7 @@ export function useAdminConsole() {
     setBusy(true)
     try {
       const next = clone(vendorDraft)
+      validatePerformance(next.performance, next.load_balance)
       next.upstream.response_header_timeout = parseDurationToNs(upstreamResponseHeaderTimeoutText, next.upstream.response_header_timeout)
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
       next.upstream.interim_response_interval = parseDurationToNs(upstreamInterimResponseIntervalText, next.upstream.interim_response_interval)
@@ -623,7 +625,7 @@ export function useAdminConsole() {
       next.inject_headers = rowsToMap(injectRows)
       next.path_rewrites = rowsToMap(rewriteRows)
       next.client_auth.keys = normalizeKeys(next.client_auth.keys || [])
-      if (next.client_auth.keys.length === 0) next.client_auth.enabled = false
+      if (next.client_auth.keys.length === 0) next.client_auth.enabled = true
 
       // Addressed by immutable id, and the payload carries config only: the
       // display/route name is changed through renameVendor.
@@ -1316,7 +1318,7 @@ export function useAdminConsole() {
           activeUpstreamKeys: keySummary.active_count || 0,
           disabledUpstreamKeys: keySummary.disabled_count || 0,
           clientKeys: entry.client_auth?.keys?.length || 0,
-          clientAuthEnabled: !!entry.client_auth?.enabled,
+          clientAuthEnabled: entry.client_auth?.enabled !== false,
           resinEnabled: !!entry.resin?.enabled,
           aggregateChildCount: entry.aggregate?.children?.length || 0,
           backoff: runtimeKeys.filter((item) => Number(item.backoff_remaining_seconds || 0) > 0).length,
@@ -1333,7 +1335,7 @@ export function useAdminConsole() {
     for (const vendor of vendorList(rawConfig)) {
       clientKeys += vendor.client_auth?.keys?.length || 0
       if (vendor.resin?.enabled) resinEnabled += 1
-      if (vendor.client_auth?.enabled) clientAuthEnabled += 1
+      if (vendor.client_auth?.enabled !== false) clientAuthEnabled += 1
     }
 
     let inflight = 0
