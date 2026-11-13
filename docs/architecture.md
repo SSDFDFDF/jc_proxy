@@ -44,6 +44,8 @@ Transport 由 `transportManager` 跨热更新复用（按配置区分，Transpor
 
 配置和上游 Key 存储都带版本标记：配置文件里的 `schema_version`，PGSQL Key 表旁的 `<table>_meta` 表。当前版本为 **v3**。
 
+供应商插件和 Makefile 不改变 v3 表结构。旧版 v3 配置可能在聚合入口保存了只适用于子供应商的 Key 策略；加载文件/PGSQL 时兼容忽略这些历史字段，保留错误屏蔽展示和子供应商策略，避免 `aggregate key health and key failover policies must be configured on child vendors` 阻止启动。加载不直接改库，正常保存配置时写入清理后的版本；管理 API 对新提交的不适用策略仍严格校验。字段边界见 [显式错误策略与聚合边界](gateway-behavior.md#5-显式错误策略与聚合边界)。
+
 服务只读取当前版本，遇到旧数据直接拒绝启动并提示升级，不做在线迁移：
 
 ```text

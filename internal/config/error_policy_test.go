@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestErrorRuleListsSurviveCloneAndSerialization(t *testing.T) {
@@ -53,6 +55,94 @@ func TestErrorRuleListsSurviveCloneAndSerialization(t *testing.T) {
 				t.Fatal("JSON must preserve empty lists for console editing")
 			}
 		}
+	}
+}
+
+func TestLoadLegacyAggregateErrorPolicy(t *testing.T) {
+	policy := ErrorPolicyConfig{
+		AutoDisable: ErrorAutoDisableConfig{Enabled: boolPtr(false), StatusCodes: []int{401}, Keywords: []string{"invalid_api_key"}},
+		Cooldown: ErrorCooldownConfig{
+			RequestError:  ErrorCooldownRule{Enabled: boolPtr(true), Duration: time.Second},
+			ResponseRules: []ErrorResponseCooldownRule{{StatusCodes: []int{429}, Duration: time.Minute}},
+		},
+		Failover: ErrorFailoverConfig{RequestError: boolPtr(false), ResponseStatusCodes: []int{429}, MaxAttempts: 5},
+		Masking: ErrorMaskingConfig{Enabled: boolPtr(false), Rules: []ErrorMaskingRule{
+			{StatusCodes: []int{503}, Keywords: []string{"overloaded"}, StatusCode: 429, Body: `{"error":"busy"}`, ContentType: "application/json", RetryAfter: "5s", Cooldown: time.Minute},
+		}},
+	}
+	legacy := &Config{SchemaVersion: CurrentSchemaVersion, Vendors: []VendorEntry{
+		{ID: "child", Name: "child", VendorConfig: VendorConfig{
+			Provider: "generic", Upstream: UpstreamConfig{BaseURL: "http://example.invalid"}, ErrorPolicy: policy,
+			Plugins: []PluginConfig{{Name: "history", Builtin: "codex-history-filter"}},
+		}},
+		{ID: "entry", Name: "cc", VendorConfig: VendorConfig{
+			Provider: "aggregate", ErrorPolicy: policy, Aggregate: AggregateConfig{
+				Children: []AggregateChild{{VendorID: "child", Weight: 2, KeyIDs: []string{"key-id"}}},
+				Retry:    AggregateRetryConfig{Enabled: boolPtr(true), NetworkError: boolPtr(true), StatusCodes: []int{429}, MaxAttempts: 3},
+			},
+		}},
+	}}
+	// Marshal directly: live config validation must continue rejecting this
+	// aggregate policy, even though old persisted payloads are loadable.
+	payload, err := yaml.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, load := range map[string]func([]byte) (*Config, error){
+		"file": LoadBytes, "bootstrap": LoadBootstrapBytes, "pgsql": LoadBootstrapBytesNoEnv,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := load(payload)
+			if err != nil {
+				t.Fatalf("legacy aggregate prevented startup: %v", err)
+			}
+			child, _ := cfg.VendorByID("child")
+			if !reflect.DeepEqual(child.ErrorPolicy, policy) || len(child.Plugins) != 1 {
+				t.Fatal("child policy or plugins changed")
+			}
+			agg, _ := cfg.VendorByID("entry")
+			wantMasking := policy.Masking
+			wantMasking.Rules = append([]ErrorMaskingRule(nil), policy.Masking.Rules...)
+			wantMasking.Rules[0].Cooldown = 0
+			if !reflect.DeepEqual(agg.ErrorPolicy, ErrorPolicyConfig{Masking: wantMasking}) {
+				t.Fatalf("unexpected aggregate policy: %+v", agg.ErrorPolicy)
+			}
+			if !reflect.DeepEqual(agg.Aggregate, legacy.Vendors[1].Aggregate) {
+				t.Fatal("aggregate routing or retry changed")
+			}
+			encoded, err := EncodeYAML(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := LoadBootstrapBytesNoEnv(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cfg.Vendors, reloaded.Vendors) {
+				t.Fatal("normalized config changed on reload")
+			}
+		})
+	}
+	if err := legacy.PrepareAndValidate(); err == nil {
+		t.Fatal("newly submitted aggregate key policy was silently accepted")
+	}
+	if _, err := legacy.Clone(); err == nil {
+		t.Fatal("runtime clone bypassed strict policy validation")
+	}
+}
+
+func TestLegacyAggregateNormalizationKeepsOtherValidation(t *testing.T) {
+	for _, tc := range []struct{ name, extra, want string }{
+		{"invalid masking", "    error_policy:\n      masking:\n        rules:\n          - status_codes: [503]\n            status_code: 200\n", "masking"},
+		{"plugins", "    plugins:\n      - name: history\n        builtin: codex-history-filter\n", "non-aggregate"},
+		{"key balancing", "    load_balance: adaptive\n", "managed-key strategy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadBootstrapBytesNoEnv([]byte("schema_version: 3\nvendors:\n  - id: cc\n    name: cc\n    provider: aggregate\n" + tc.extra))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("invalid aggregate accepted: %v", err)
+			}
+		})
 	}
 }
 

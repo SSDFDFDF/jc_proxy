@@ -395,6 +395,7 @@ func loadBytes(b []byte, bootstrap bool, lookup envLookup) (*Config, error) {
 		if err := yaml.Unmarshal(b, &cfg); err != nil {
 			return nil, fmt.Errorf("parse config yaml: %w", err)
 		}
+		cfg.normalizePersistedAggregatePolicies()
 	}
 	if err := cfg.ApplyCriticalEnvOverrides(lookup); err != nil {
 		return nil, err
@@ -409,6 +410,25 @@ func loadBytes(b []byte, bootstrap bool, lookup envLookup) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Older v3 writers persisted supplier-only policy fields on aggregate entries,
+// where the gateway never used them. Ignore those fields when reading stored
+// config so stricter ownership validation does not prevent an existing install
+// from starting. Keep this out of Prepare/Clone: newly submitted admin config
+// must still be validated strictly. Persistence happens through normal saves.
+func (c *Config) normalizePersistedAggregatePolicies() {
+	for i := range c.Vendors {
+		entry := &c.Vendors[i]
+		if NormalizeProvider(entry.Provider, entry.Name) != "aggregate" {
+			continue
+		}
+		masking := entry.ErrorPolicy.Masking
+		for j := range masking.Rules {
+			masking.Rules[j].Cooldown = 0
+		}
+		entry.ErrorPolicy = ErrorPolicyConfig{Masking: masking}
+	}
 }
 
 func loadDotEnv(configPath string) error {

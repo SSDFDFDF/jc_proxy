@@ -7,6 +7,11 @@ export function RequestPluginsEditor({ plugins = [], onChange, disabled }) {
     ;[next[index], next[index + offset]] = [next[index + offset], next[index]]
     onChange(next)
   }
+  const addPlugin = () => {
+    let suffix = plugins.length + 1
+    while (plugins.some((plugin) => plugin.name === `history-filter-${suffix}`)) suffix += 1
+    onChange([...plugins, { name: `history-filter-${suffix}`, builtin: 'codex-history-filter', methods: ['POST'], paths: ['/v1/responses', '/responses'] }])
+  }
   return (
     <fieldset disabled={disabled} className="space-y-4">
       <p className="text-xs text-[var(--text-muted)]">按顺序处理请求体，优先使用原生插件。方法和路径留空表示全部匹配；路径使用重写后的路径，支持末尾 *。错误与重试仍由供应商错误策略控制。</p>
@@ -45,7 +50,7 @@ export function RequestPluginsEditor({ plugins = [], onChange, disabled }) {
           </div>
         )
       })}
-      <button type="button" className={buttonClass('ghost')} disabled={disabled || plugins.length >= 16} onClick={() => onChange([...plugins, { name: `history-filter-${plugins.length + 1}`, builtin: 'codex-history-filter', methods: ['POST'], paths: ['/v1/responses', '/responses'] }])}>添加插件</button>
+      <button type="button" className={buttonClass('ghost')} disabled={disabled || plugins.length >= 16} onClick={addPlugin}>添加插件</button>
     </fieldset>
   )
 }

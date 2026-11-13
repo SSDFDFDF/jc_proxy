@@ -1035,7 +1035,7 @@ export function VendorsPage({
             </CollapsibleSection>
 
             <CollapsibleSection
-              title="错误适配"
+              title={isAggregate ? "最终错误屏蔽" : "错误适配"}
               description={isAggregate ? "配置聚合入口的最终错误屏蔽；密钥健康与切号策略由子供应商管理。" : "仅按显式配置执行禁用、退避、屏蔽与切号；空规则不触发动作。"}
               summary={isAggregate ? `${maskingRuleCount} 条屏蔽规则` : `${responseRuleCount} 条退避规则 · ${maskingRuleCount} 条屏蔽规则`}
               open={expandedSections.errorPolicy}
