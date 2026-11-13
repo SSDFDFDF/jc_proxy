@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,22 +35,60 @@ type keyDecision struct {
 	failover   bool
 }
 
+// Only health settings advance the pool's policy generation. Key refreshes,
+// retry edits and presentation-only masking edits keep in-flight health valid.
+func keyHealthPolicyRevision(policy config.ErrorPolicyConfig) string {
+	type maskingHealthRule struct {
+		StatusCodes []int
+		Keywords    []string
+		Cooldown    time.Duration
+	}
+	maskingHealthEnabled := false
+	if errorMaskingEnabled(policy.Masking) {
+		for _, rule := range policy.Masking.Rules {
+			maskingHealthEnabled = maskingHealthEnabled || rule.Cooldown > 0
+		}
+	}
+	rules := make([]maskingHealthRule, 0)
+	if maskingHealthEnabled {
+		for _, rule := range policy.Masking.Rules {
+			// Keep zero-cooldown rules too: an earlier presentation rule can
+			// shadow a later rule that would extend cooldown.
+			rules = append(rules, maskingHealthRule{rule.StatusCodes, rule.Keywords, rule.Cooldown})
+		}
+	}
+	revision, _ := json.Marshal(struct {
+		AutoDisable    config.ErrorAutoDisableConfig
+		Cooldown       config.ErrorCooldownConfig
+		MaskingEnabled bool
+		MaskingRules   []maskingHealthRule
+	}{policy.AutoDisable, policy.Cooldown, maskingHealthEnabled, rules})
+	return string(revision)
+}
+
 // analyzeErrorResponse shares one parsed preview between health classification
 // and masking. Both continue to use the real upstream status and body.
-func analyzeErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte) (keyDecision, config.ErrorMaskingRule, bool) {
-	body, reason, credentialCode := summarizeResponsePreview(headers, preview)
-	decision := classifyErrorResponse(provider, policy, statusCode, headers, body, reason, credentialCode)
+func analyzeErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte, responseMasking ...config.ErrorMaskingConfig) (keyDecision, config.ErrorMaskingRule, bool) {
+	body, reason := summarizeResponsePreview(headers, preview)
+	decision := classifyErrorResponse(provider, policy, statusCode, headers, body, reason)
 	rule, matched := matchUpstreamErrorMask(policy, statusCode, body)
 	if matched {
 		decision = extendDecisionCooldown(decision, rule)
 	}
+	if len(responseMasking) > 0 {
+		rule, matched = matchUpstreamErrorMask(config.ErrorPolicyConfig{Masking: responseMasking[0]}, statusCode, body)
+	}
 	return decision, rule, matched
 }
 
-func classifyRequestError(provider string, policy config.ErrorPolicyConfig, message string) keyDecision {
-	reason := compactReason("request error", message)
-	rule := applyNoDefaultBackoff(policy, policy.Cooldown.RequestError)
-	return cooldownDecision(0, reason, rule, boolOrDefault(policy.Failover.RequestError, true), 0, false)
+func classifyRequestError(_ string, policy config.ErrorPolicyConfig, message string) keyDecision {
+	decision := keyDecision{action: keyActionObserve, reason: compactReason("request error", message), failover: boolOrDefault(policy.Failover.RequestError, false)}
+	rule := policy.Cooldown.RequestError
+	if boolOrDefault(rule.Enabled, rule.Duration > 0) && rule.Duration > 0 {
+		decision.action = keyActionCooldown
+		decision.cooldown = rule.Duration
+	}
+	return decision
 }
 
 func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, preview []byte) keyDecision {
@@ -57,57 +96,20 @@ func classifyResponse(provider string, policy config.ErrorPolicyConfig, statusCo
 		return keyDecision{action: keyActionSuccess, statusCode: statusCode}
 	}
 
-	body, reasonBody, credentialCode := summarizeResponsePreview(headers, preview)
-	return classifyErrorResponse(provider, policy, statusCode, headers, body, reasonBody, credentialCode)
+	body, reasonBody := summarizeResponsePreview(headers, preview)
+	return classifyErrorResponse(provider, policy, statusCode, headers, body, reasonBody)
 }
 
-func classifyErrorResponse(provider string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, body, reasonBody, credentialCode string) keyDecision {
-	retryAfter := parseRetryAfter(headers.Get("Retry-After"))
+func classifyErrorResponse(_ string, policy config.ErrorPolicyConfig, statusCode int, headers http.Header, body, reasonBody string) keyDecision {
 	reason := compactReason(fmt.Sprintf("HTTP %d", statusCode), reasonBody)
-	responseFailover := shouldFailoverResponse(statusCode, policy)
-
-	if shouldDisable, autoReason := classifyAutoDisable(policy.AutoDisable, statusCode, body, credentialCode); shouldDisable {
-		return disableDecision(statusCode, compactReason("auto disabled: "+autoReason, reasonBody), responseFailover)
+	failover := shouldFailoverResponse(statusCode, policy)
+	if disable, match := classifyAutoDisable(policy.AutoDisable, statusCode, body); disable {
+		return disableDecision(statusCode, compactReason("auto-disable rule matched: "+match, reasonBody), failover)
 	}
-
 	if rule, ok := matchResponseCooldownRule(statusCode, body, policy.Cooldown.ResponseRules); ok {
-		return responseCooldownDecision(statusCode, reason, rule, responseFailover, retryAfter)
+		return responseCooldownDecision(statusCode, reason, rule, failover, parseRetryAfter(headers.Get("Retry-After")))
 	}
-
-	switch statusCode {
-	case http.StatusUnauthorized:
-		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.Unauthorized), responseFailover, 0, false)
-	case http.StatusPaymentRequired:
-		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.PaymentRequired), responseFailover, 0, false)
-	case http.StatusForbidden:
-		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.Forbidden), responseFailover, 0, false)
-	case http.StatusTooManyRequests:
-		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.RateLimit), responseFailover, retryAfter, false)
-	case 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		if provider == "openai" && strings.Contains(body, "slow down") {
-			return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.OpenAISlowDown), responseFailover, retryAfter, true)
-		}
-		return cooldownDecision(statusCode, reason, applyNoDefaultBackoff(policy, policy.Cooldown.ServerError), responseFailover, retryAfter, false)
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
-		if responseFailover {
-			return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason, failover: true}
-		}
-		return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason}
-	default:
-		if responseFailover {
-			return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason, failover: true}
-		}
-		return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason}
-	}
-}
-
-func applyNoDefaultBackoff(policy config.ErrorPolicyConfig, rule config.ErrorCooldownRule) config.ErrorCooldownRule {
-	if !policy.Cooldown.NoDefaultBackoff {
-		return rule
-	}
-	disabled := false
-	rule.Enabled = &disabled
-	return rule
+	return keyDecision{action: keyActionObserve, statusCode: statusCode, reason: reason, failover: failover}
 }
 
 func disableDecision(statusCode int, reason string, failover bool) keyDecision {
@@ -119,37 +121,9 @@ func disableDecision(statusCode int, reason string, failover bool) keyDecision {
 	}
 }
 
-func cooldownDecision(statusCode int, reason string, rule config.ErrorCooldownRule, failover bool, retryAfter time.Duration, useMaxRetryAfter bool) keyDecision {
-	if !boolOrDefault(rule.Enabled, true) {
-		return keyDecision{
-			action:     keyActionObserve,
-			statusCode: statusCode,
-			reason:     reason,
-			failover:   failover,
-		}
-	}
-
-	duration := rule.Duration
-	if retryAfter > 0 {
-		if useMaxRetryAfter {
-			duration = maxDuration(retryAfter, duration)
-		} else {
-			duration = retryAfter
-		}
-	}
-
-	return keyDecision{
-		action:     keyActionCooldown,
-		statusCode: statusCode,
-		cooldown:   duration,
-		reason:     reason,
-		failover:   failover,
-	}
-}
-
 func responseCooldownDecision(statusCode int, reason string, rule config.ErrorResponseCooldownRule, failover bool, retryAfter time.Duration) keyDecision {
 	duration := rule.Duration
-	switch retryAfterMode(rule.RetryAfter, statusCode) {
+	switch retryAfterMode(rule.RetryAfter) {
 	case "override":
 		if retryAfter > 0 {
 			duration = retryAfter
@@ -175,58 +149,25 @@ func boolOrDefault(v *bool, fallback bool) bool {
 	return *v
 }
 
-func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, body, credentialCode string) (bool, string) {
-	if !boolOrDefault(auto.Enabled, true) {
+func autoDisableEnabled(auto config.ErrorAutoDisableConfig) bool {
+	return boolOrDefault(auto.Enabled, true) && (len(auto.StatusCodes) > 0 || hasNonEmptyPattern(auto.Keywords))
+}
+
+func classifyAutoDisable(auto config.ErrorAutoDisableConfig, statusCode int, body string) (bool, string) {
+	if !autoDisableEnabled(auto) {
 		return false, ""
 	}
 	if containsStatusCode(auto.StatusCodes, statusCode) {
-		if statusCode == http.StatusPaymentRequired {
-			return true, "billing or quota exhausted"
-		}
-		return true, "invalid key"
+		return true, fmt.Sprintf("HTTP %d", statusCode)
 	}
-	for _, keyword := range auto.Keywords {
-		// These built-in identifiers must be error codes, not reflected model
-		// names, parameters or messages. Custom text patterns retain their semantics.
-		if code := normalizedCredentialCode(keyword); code != "" {
-			if code == credentialCode {
-				return true, "invalid key"
-			}
-			continue
-		}
-		if match, ok := matchKeyword(body, []string{keyword}); ok {
-			if isQuotaKeyword(match) {
-				return true, "quota exhausted"
-			}
-			return true, "invalid key"
-		}
+	if keyword, ok := matchKeyword(body, auto.Keywords); ok {
+		return true, "keyword " + keyword
 	}
 	return false, ""
 }
 
-func isQuotaKeyword(kw string) bool {
-	kw = strings.ToLower(kw)
-	return strings.Contains(kw, "quota") || strings.Contains(kw, "balance") || strings.Contains(kw, "billing") || strings.Contains(kw, "余额")
-}
-
 func shouldFailoverResponse(statusCode int, policy config.ErrorPolicyConfig) bool {
-	if len(policy.Failover.ResponseStatusCodes) > 0 {
-		return containsStatusCode(policy.Failover.ResponseStatusCodes, statusCode)
-	}
-	switch statusCode {
-	case http.StatusUnauthorized:
-		return boolOrDefault(policy.Failover.Unauthorized, true)
-	case http.StatusPaymentRequired:
-		return boolOrDefault(policy.Failover.PaymentRequired, true)
-	case http.StatusForbidden:
-		return boolOrDefault(policy.Failover.Forbidden, true)
-	case http.StatusTooManyRequests:
-		return boolOrDefault(policy.Failover.RateLimit, true)
-	case 529, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return boolOrDefault(policy.Failover.ServerError, true)
-	default:
-		return false
-	}
+	return statusCode >= http.StatusBadRequest && containsStatusCode(policy.Failover.ResponseStatusCodes, statusCode)
 }
 
 func matchResponseCooldownRule(statusCode int, body string, rules []config.ErrorResponseCooldownRule) (config.ErrorResponseCooldownRule, bool) {
@@ -245,13 +186,9 @@ func matchResponseCooldownRule(statusCode int, body string, rules []config.Error
 	return config.ErrorResponseCooldownRule{}, false
 }
 
-func retryAfterMode(raw string, statusCode int) string {
-	mode := strings.ToLower(strings.TrimSpace(raw))
-	if mode != "" {
+func retryAfterMode(raw string) string {
+	if mode := strings.ToLower(strings.TrimSpace(raw)); mode != "" {
 		return mode
-	}
-	if statusCode == http.StatusTooManyRequests {
-		return "override"
 	}
 	return "ignore"
 }
@@ -290,79 +227,46 @@ func compactReason(prefix, body string) string {
 	return prefix + ": " + body
 }
 
-func summarizeResponsePreview(headers http.Header, preview []byte) (string, string, string) {
+func summarizeResponsePreview(headers http.Header, preview []byte) (string, string) {
 	preview = bytes.TrimSpace(preview)
 	if len(preview) == 0 {
-		return "", "", ""
+		return "", ""
 	}
 
-	if matchText, reasonText, credentialCode, ok := summarizeJSONPreview(preview); ok {
-		return strings.ToLower(matchText), reasonText, credentialCode
+	if matchText, reasonText, ok := summarizeJSONPreview(preview); ok {
+		return strings.ToLower(matchText), reasonText
 	}
 
 	if isLikelyTextPreview(headers, preview) {
 		text := strings.TrimSpace(string(preview))
-		return strings.ToLower(text), text, ""
+		return strings.ToLower(text), text
 	}
 
-	return "", describeNonTextPreview(headers, len(preview)), ""
+	return "", describeNonTextPreview(headers, len(preview))
 }
 
-func summarizeJSONPreview(preview []byte) (string, string, string, bool) {
+func summarizeJSONPreview(preview []byte) (string, string, bool) {
 	if !looksLikeJSON(preview) {
-		return "", "", "", false
+		return "", "", false
 	}
 
 	var payload any
 	if err := json.Unmarshal(preview, &payload); err != nil {
-		return "", "", "", false
+		return "", "", false
 	}
 
-	credentialCode := previewCredentialCode(payload)
 	parts := collectJSONPreviewStrings(payload)
 	if len(parts) > 0 {
 		reasonText := strings.Join(parts, " | ")
-		return strings.Join(parts, " "), reasonText, credentialCode, true
+		return string(preview) + " " + strings.Join(parts, " "), reasonText, true
 	}
 
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, preview); err != nil {
-		return "", "", "", false
+		return "", "", false
 	}
 	text := compact.String()
-	return text, text, credentialCode, true
-}
-
-func normalizedCredentialCode(value string) string {
-	switch code := strings.ToLower(strings.TrimSpace(value)); code {
-	case "invalid_api_key", "incorrect_api_key":
-		return code
-	default:
-		return ""
-	}
-}
-
-func previewCredentialCode(payload any) string {
-	object, ok := payload.(map[string]any)
-	if !ok {
-		return ""
-	}
-	// Inspect only the error envelope, never recursively scan user data.
-	if nested, ok := object["error"].(map[string]any); ok {
-		object = nested
-	} else if value, ok := object["error"].(string); ok {
-		if code := normalizedCredentialCode(value); code != "" {
-			return code
-		}
-	}
-	for _, field := range []string{"code", "type"} {
-		if value, ok := object[field].(string); ok {
-			if code := normalizedCredentialCode(value); code != "" {
-				return code
-			}
-		}
-	}
-	return ""
+	return text, text, true
 }
 
 func collectJSONPreviewStrings(value any) []string {
@@ -381,7 +285,12 @@ func collectJSONPreviewStrings(value any) []string {
 		return dedupeStrings(out)
 	case map[string]any:
 		var out []string
-		for _, key := range []string{"message", "error_description", "description", "detail", "error", "type", "code", "param"} {
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
 			if child, ok := typed[key]; ok {
 				out = append(out, collectJSONPreviewStrings(child)...)
 			}

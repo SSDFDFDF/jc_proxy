@@ -27,7 +27,9 @@ func TestPreviewReadFailurePreservesRequestErrorRetryPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := routerWithMasking(t, "http://unused.invalid", []string{"k1", "k2"}, func(p *config.ErrorPolicyConfig) {
 				p.Failover.RequestError = &tc.requestError
-				p.Failover.ServerError = &tc.serverError
+				if tc.serverError {
+					p.Failover.ResponseStatusCodes = []int{502}
+				}
 			})
 			v := r.vendors["openai"]
 			v.interimInterval = 0

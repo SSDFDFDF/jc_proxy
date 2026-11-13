@@ -23,6 +23,7 @@ func TestErrorAttemptsCountOnceAcrossRetryMaskAndDelivery(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := routerWithMasking(t, "http://unused.invalid", tc.keys, func(p *config.ErrorPolicyConfig) {
+				p.Failover.ResponseStatusCodes = []int{502}
 				if tc.mask {
 					p.Masking.Rules = []config.ErrorMaskingRule{{StatusCodes: []int{502}, StatusCode: 500}}
 				}

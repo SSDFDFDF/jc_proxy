@@ -99,6 +99,7 @@ export function VendorsPage({
   runtimeStats,
   invalidKeyStatusCodesText,
   invalidKeyKeywordsText,
+  requestErrorCooldownText,
   responseRuleRows,
   maskingRuleRows,
   failoverResponseStatusCodesText,
@@ -120,6 +121,7 @@ export function VendorsPage({
   onSaveVendor,
   onDeleteVendor,
   onMutateVendorDraft,
+  onRequestErrorCooldownTextChange,
   onInvalidKeyStatusCodesTextChange,
   onInvalidKeyKeywordsTextChange,
   setResponseRuleRows,
@@ -812,7 +814,7 @@ export function VendorsPage({
                         </select>
                       </label>
                       <label className="field-wrap">
-                        <span className="field-label">最大尝试次数</span>
+                        <span className="field-label">最大子供应商尝试次数（含首次）</span>
                         <input
                           className="input-base"
                           type="number"
@@ -827,7 +829,7 @@ export function VendorsPage({
                         />
                       </label>
                       <label className="field-wrap lg:col-span-2">
-                        <span className="field-label">额外重试响应码</span>
+                        <span className="field-label">重试响应码（仅这些响应码触发）</span>
                         <input
                           className="input-base"
                           placeholder="逗号分隔，例如：408, 529"
@@ -872,8 +874,6 @@ export function VendorsPage({
                 {isAggregate && (
                   <div className="grid gap-3 md:grid-cols-3">
                     {[
-                      ['rate_limit', '429 限流重试'],
-                      ['server_error', '5xx 错误重试'],
                       ['network_error', '网络错误重试']
                     ].map(([field, label]) => (
                       <label key={field} className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm text-[var(--text-secondary)]">
@@ -1029,14 +1029,14 @@ export function VendorsPage({
               )}
             </CollapsibleSection>
 
-            {!isAggregate && (<>
             <CollapsibleSection
               title="错误适配"
-              description="无效密钥检测、退避规则、错误屏蔽和请求切换统一配置。"
-              summary={`${responseRuleCount} 条退避规则 · ${maskingRuleCount} 条屏蔽规则`}
+              description={isAggregate ? "配置聚合入口的最终错误屏蔽；密钥健康与切号策略由子供应商管理。" : "仅按显式配置执行禁用、退避、屏蔽与切号；空规则不触发动作。"}
+              summary={isAggregate ? `${maskingRuleCount} 条屏蔽规则` : `${responseRuleCount} 条退避规则 · ${maskingRuleCount} 条屏蔽规则`}
               open={expandedSections.errorPolicy}
               onToggle={() => toggleSection('errorPolicy')}
             >
+              {!isAggregate && (<>
               <div className="section-card">
                 <div className="section-card-header">
                   <div>
@@ -1073,7 +1073,7 @@ export function VendorsPage({
                         onChange={(e) => onInvalidKeyStatusCodesTextChange(e.target.value)}
                       />
                       <span className="text-[11px] text-[var(--text-muted)] mt-1">
-                        逗号分隔。当上游返回任一指定 HTTP 响应码时（如 401 凭证失效、402 余额耗尽），自动禁用该密钥。未匹配的状态码进入常规冷却退避。
+                        逗号分隔。当上游返回任一指定 HTTP 响应码时（如 401 凭证失效、402 余额耗尽），自动禁用该密钥。未匹配时仅记录错误；退避由单独配置的规则决定。
                       </span>
                     </label>
 
@@ -1099,18 +1099,7 @@ export function VendorsPage({
                 <div className="section-card-header">
                   <div>
                     <h4>退避规则</h4>
-                    <p>按顺序匹配响应码 / 关键字，并设置基础退避时长与 Retry-After 策略。连续命中会按该时长指数放大。</p>
-                  </div>
-                  <div className="field-inline">
-                    <span className="field-label">无默认退避</span>
-                    <select
-                      className="select-base"
-                      value={vendorDraft?.error_policy?.cooldown?.no_default_backoff ? 'true' : 'false'}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.cooldown.no_default_backoff = e.target.value === 'true' })}
-                    >
-                      <option value="false">关闭</option>
-                      <option value="true">开启</option>
-                    </select>
+                    <p>仅匹配已配置的规则，同时填写响应码和关键字时需同时命中；未匹配不退避。连续命中按配置时长指数放大。</p>
                   </div>
                   <button className={buttonClass('ghost')} onClick={addResponseRuleRow}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1120,6 +1109,19 @@ export function VendorsPage({
                   </button>
                 </div>
 
+                <div className="grid gap-3 xl:grid-cols-2">
+                  <label className="field-wrap">
+                    <span className="field-label">请求错误退避</span>
+                    <select className="select-base" value={vendorDraft.error_policy.cooldown.request_error.enabled ? 'true' : 'false'} onChange={(e) => onMutateVendorDraft((draft) => { draft.error_policy.cooldown.request_error.enabled = e.target.value === 'true' })}>
+                      <option value="false">关闭</option>
+                      <option value="true">开启</option>
+                    </select>
+                  </label>
+                  <label className="field-wrap">
+                    <span className="field-label">请求错误退避时长</span>
+                    <input className="input-base" placeholder="留空不退避，例如 5s" value={requestErrorCooldownText} onChange={(e) => onRequestErrorCooldownTextChange(e.target.value)} />
+                  </label>
+                </div>
                 <div className="space-y-3">
                   {responseRuleRows.map((row, index) => (
                     <div key={index} className="section-card" style={{ background: 'var(--bg-surface)' }}>
@@ -1164,7 +1166,7 @@ export function VendorsPage({
                             value={row.retryAfter || ''}
                             onChange={(e) => updateResponseRuleRow(index, { retryAfter: e.target.value })}
                           >
-                            <option value="">默认</option>
+                            <option value="">忽略（默认）</option>
                             <option value="ignore">ignore</option>
                             <option value="override">override</option>
                             <option value="max">max</option>
@@ -1176,11 +1178,13 @@ export function VendorsPage({
                 </div>
               </div>
 
+              </>)}
+
               <div className="section-card">
                 <div className="section-card-header">
                   <div>
                     <h4>错误屏蔽</h4>
-                    <p>命中规则的上游错误（响应码 / 关键字，先配先中）在下发客户端前统一替换，隐藏上游真实状态码、响应头与错误体；可顺带把密钥退避指定时长。密钥健康统计仍记录真实上游状态。</p>
+                    <p>响应码或关键字任一命中即屏蔽，按配置顺序采用首条匹配规则。统一处理当前入口的最终上游错误与网关错误；密钥统计保留真实上游状态。</p>
                   </div>
                   <div className="field-inline">
                     <span className="field-label">屏蔽开关</span>
@@ -1279,6 +1283,7 @@ export function VendorsPage({
                             onChange={(e) => updateMaskingRuleRow(index, { retryAfterText: e.target.value })}
                           />
                         </label>
+                        {!isAggregate && (
                         <label className="field-wrap">
                           <span className="field-label">密钥退避时长（可选）</span>
                           <input
@@ -1288,17 +1293,19 @@ export function VendorsPage({
                             onChange={(e) => updateMaskingRuleRow(index, { cooldownText: e.target.value })}
                           />
                         </label>
+                        )}
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
 
+              {!isAggregate && (
               <div className="section-card">
                 <div className="section-card-header">
                   <div>
                     <h4>请求切换</h4>
-                    <p>上游返回指定响应码时，自动切换到下一个上游。</p>
+                    <p>仅在配置的响应码或请求错误条件命中时切换当前供应商的 Key。</p>
                   </div>
                   <div className="field-inline">
                     <span className="field-label">请求错误切换</span>
@@ -1322,7 +1329,7 @@ export function VendorsPage({
                   />
                 </label>
                 <label className="field-wrap">
-                  <span className="field-label">最大切号次数</span>
+                  <span className="field-label">最大 Key 尝试次数（含首次）</span>
                   <input
                     className="input-base"
                     type="number"
@@ -1337,8 +1344,10 @@ export function VendorsPage({
                   />
                 </label>
               </div>
+              )}
             </CollapsibleSection>
 
+            {!isAggregate && (<>
             <CollapsibleSection
               title="Resin"
               description="可选的 Resin 转发配置，默认不启用。"

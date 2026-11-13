@@ -35,23 +35,13 @@ func errorMaskingEnabled(masking config.ErrorMaskingConfig) bool {
 	return boolOrDefault(masking.Enabled, true)
 }
 
-// matchErrorMaskRule applies the same matching semantics as cooldown
-// response_rules: a rule matches when the status code is listed (or the rule
-// lists none) and the body contains one of the keywords (or the rule lists
-// none); at least one of the two must be configured. The first matching rule
-// wins.
+// matchErrorMaskRule uses OR between configured status codes and keywords.
+// Empty rules never match; the first matching rule wins.
 func matchErrorMaskRule(statusCode int, body string, rules []config.ErrorMaskingRule) (config.ErrorMaskingRule, bool) {
 	for _, rule := range rules {
-		if len(rule.StatusCodes) > 0 && !containsStatusCode(rule.StatusCodes, statusCode) {
-			continue
+		if containsStatusCode(rule.StatusCodes, statusCode) || containsAnyKeyword(body, rule.Keywords) {
+			return rule, true
 		}
-		if hasNonEmptyPattern(rule.Keywords) && !containsAnyKeyword(body, rule.Keywords) {
-			continue
-		}
-		if len(rule.StatusCodes) == 0 && !hasNonEmptyPattern(rule.Keywords) {
-			continue
-		}
-		return rule, true
 	}
 	return config.ErrorMaskingRule{}, false
 }
@@ -74,7 +64,7 @@ func matchGatewayErrorMask(policy config.ErrorPolicyConfig, statusCode int, mess
 	if !errorMaskingEnabled(policy.Masking) {
 		return config.ErrorMaskingRule{}, false
 	}
-	return matchErrorMaskRule(statusCode, message, policy.Masking.Rules)
+	return matchErrorMaskRule(statusCode, strings.ToLower(message), policy.Masking.Rules)
 }
 
 // extendDecisionCooldown folds a masking rule's backoff extension into the

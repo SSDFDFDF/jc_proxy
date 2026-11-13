@@ -283,6 +283,7 @@ export function useAdminConsole() {
   const [vendorDraft, setVendorDraft] = useState(null)
   const [invalidKeyStatusCodesText, setInvalidKeyStatusCodesText] = useState('')
   const [invalidKeyKeywordsText, setInvalidKeyKeywordsText] = useState('')
+  const [requestErrorCooldownText, setRequestErrorCooldownText] = useState('')
   const [responseRuleRows, setResponseRuleRows] = useState(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
   const [maskingRuleRows, setMaskingRuleRows] = useState(buildMaskingRuleRows(buildNewVendorConfig('').error_policy))
   const [failoverResponseStatusCodesText, setFailoverResponseStatusCodesText] = useState('')
@@ -371,6 +372,7 @@ export function useAdminConsole() {
       setRenameDraft('')
       setInvalidKeyStatusCodesText('')
       setInvalidKeyKeywordsText('')
+      setRequestErrorCooldownText('')
       setResponseRuleRows(buildResponseRuleRows(buildNewVendorConfig('').error_policy))
       setMaskingRuleRows(buildMaskingRuleRows(buildNewVendorConfig('').error_policy))
       setFailoverResponseStatusCodesText('')
@@ -391,6 +393,7 @@ export function useAdminConsole() {
     const currentKeywords = draft.error_policy?.auto_disable?.keywords || []
     setInvalidKeyStatusCodesText(statusCodesToText(currentCodes))
     setInvalidKeyKeywordsText(listToText(currentKeywords))
+    setRequestErrorCooldownText(draft.error_policy?.cooldown?.request_error?.duration ? nsToText(draft.error_policy.cooldown.request_error.duration) : '')
     setResponseRuleRows(buildResponseRuleRows(draft.error_policy))
     setMaskingRuleRows(buildMaskingRuleRows(draft.error_policy))
     setFailoverResponseStatusCodesText(statusCodesToText(draft.error_policy?.failover?.response_status_codes || []))
@@ -603,21 +606,27 @@ export function useAdminConsole() {
       next.upstream.response_header_timeout = parseDurationToNs(upstreamResponseHeaderTimeoutText, next.upstream.response_header_timeout)
       next.upstream.body_timeout = parseDurationToNs(upstreamBodyTimeoutText, next.upstream.body_timeout)
       next.upstream.interim_response_interval = parseDurationToNs(upstreamInterimResponseIntervalText, next.upstream.interim_response_interval)
-      next.error_policy.auto_disable = {
-        enabled: vendorDraft.error_policy?.auto_disable?.enabled !== false,
-        status_codes: parseStatusCodesText(invalidKeyStatusCodesText),
-        keywords: textToList(invalidKeyKeywordsText)
-      }
-      next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
       next.error_policy.masking = {
         enabled: next.error_policy?.masking?.enabled ?? true,
         rules: parseMaskingRuleRows(maskingRuleRows)
       }
-      next.error_policy.failover.response_status_codes = parseStatusCodesText(failoverResponseStatusCodesText)
       if (next.provider === 'aggregate') {
         if (!next.aggregate) next.aggregate = { children: [] }
         if (!next.aggregate.retry) next.aggregate.retry = {}
         next.aggregate.retry.status_codes = parseStatusCodesText(aggregateRetryStatusCodesText)
+        next.error_policy = { masking: next.error_policy.masking }
+        if (next.error_policy.masking.rules.some((rule) => rule.cooldown)) throw new Error('聚合入口只配置错误屏蔽，密钥退避请配置在子供应商')
+      } else {
+        next.error_policy.auto_disable = {
+          enabled: vendorDraft.error_policy?.auto_disable?.enabled !== false,
+          status_codes: parseStatusCodesText(invalidKeyStatusCodesText),
+          keywords: textToList(invalidKeyKeywordsText)
+        }
+        const requestErrorDuration = parseDurationToNs(requestErrorCooldownText, 0)
+        if (requestErrorDuration < 0 || (next.error_policy.cooldown.request_error.enabled && requestErrorDuration <= 0)) throw new Error('启用请求错误退避时需填写大于 0 的时长')
+        next.error_policy.cooldown.request_error.duration = requestErrorDuration
+        next.error_policy.cooldown.response_rules = parseResponseRuleRows(responseRuleRows)
+        next.error_policy.failover.response_status_codes = parseStatusCodesText(failoverResponseStatusCodesText)
       }
       next.client_headers.preset = String(clientHeaderPreset || '').trim()
       next.client_headers.allowlist = textToList(allowlistText)
@@ -1401,6 +1410,7 @@ export function useAdminConsole() {
       vendorDraft,
       invalidKeyStatusCodesText,
       invalidKeyKeywordsText,
+      requestErrorCooldownText,
       responseRuleRows,
       maskingRuleRows,
       failoverResponseStatusCodesText,
@@ -1415,6 +1425,7 @@ export function useAdminConsole() {
       rewriteRows,
       newVendorForm,
       systemForm,
+      setRequestErrorCooldownText,
       setInvalidKeyStatusCodesText,
       setInvalidKeyKeywordsText,
       setResponseRuleRows,

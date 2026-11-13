@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"jc_proxy/internal/config"
 )
 
 func TestUploadDeadlineDoesNotLimitHeaderWaitOrStream(t *testing.T) {
@@ -193,7 +195,7 @@ func TestUploadDeadlinePreservesDownstreamReadTimeoutWhenStopped(t *testing.T) {
 }
 
 func TestUploadDeadlineOnReplayableBodyKeepsDownstreamUsable(t *testing.T) {
-	r, _ := routerWithMasking(t, "http://unused.invalid", []string{"key1", "key2"}, nil)
+	r, _ := routerWithMasking(t, "http://unused.invalid", []string{"key1", "key2"}, func(p *config.ErrorPolicyConfig) { p.Failover.RequestError = configBoolPtr(true) })
 	v := r.vendors["openai"]
 	v.interimInterval = 0
 	v.upstreamUploadTimeout = 20 * time.Millisecond

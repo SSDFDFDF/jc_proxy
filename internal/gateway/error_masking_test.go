@@ -28,10 +28,10 @@ func TestMatchErrorMaskRuleSemantics(t *testing.T) {
 		{"status only match", http.StatusMethodNotAllowed, "anything", true, http.StatusTooManyRequests},
 		{"status only mismatch", http.StatusForbidden, "anything", false, 0},
 		{"keyword match", http.StatusBadRequest, "server said quota exhausted twice", true, http.StatusInternalServerError},
-		{"keyword mismatch", http.StatusBadRequest, "bad request", false, 0},
-		{"status and keyword both required", http.StatusBadRequest, "invalid input", true, 418},
-		{"status matches but keyword missing", http.StatusBadRequest, "other error", false, 0},
-		{"keyword matches but status missing", http.StatusTeapot, "invalid input", false, 0},
+		{"keyword mismatch", http.StatusForbidden, "bad request", false, 0},
+		{"status and keyword match", http.StatusBadRequest, "invalid input", true, 418},
+		{"status matches but keyword missing", http.StatusBadRequest, "other error", true, 418},
+		{"keyword matches but status missing", http.StatusTeapot, "invalid input", true, 418},
 		{"first match wins", http.StatusMethodNotAllowed, "quota exhausted", true, http.StatusTooManyRequests},
 	}
 	for _, tc := range cases {
@@ -582,6 +582,7 @@ func TestRouterMasksAllKeysInCooldownErrorAs429(t *testing.T) {
 	defer upstream.Close()
 
 	router, _ := routerWithMasking(t, upstream.URL, []string{"k1"}, func(p *config.ErrorPolicyConfig) {
+		p.Cooldown.ResponseRules = []config.ErrorResponseCooldownRule{{StatusCodes: []int{429}, Duration: time.Hour}}
 		p.Masking.Rules = []config.ErrorMaskingRule{
 			{
 				Keywords:   []string{"all vendor keys in cooldown"},
@@ -617,9 +618,7 @@ func TestRouterMasksAllKeysInCooldownErrorAs429(t *testing.T) {
 }
 
 // TestRouterMasksChildVendorErrorsThroughAggregateRouting proves masking also
-// applies when the erroring vendor is reached through an aggregate vendor: the
-// child's error policy drives the mask, exactly like its cooldown and failover
-// policy already do.
+// The aggregate route owns final response presentation; its child owns health.
 func TestRouterMasksChildVendorErrorsThroughAggregateRouting(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -644,6 +643,7 @@ func TestRouterMasksChildVendorErrorsThroughAggregateRouting(t *testing.T) {
 			},
 			"agg": {
 				Provider:    "aggregate",
+				ErrorPolicy: config.ErrorPolicyConfig{Masking: config.ErrorMaskingConfig{Rules: []config.ErrorMaskingRule{{StatusCodes: []int{405}, StatusCode: 429}}}},
 				LoadBalance: "round_robin",
 				Aggregate: config.AggregateConfig{Children: []config.AggregateChild{{
 					VendorID: "vid_child",

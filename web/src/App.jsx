@@ -104,6 +104,7 @@ function App() {
           runtimeStats={statsView.stats}
           invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
+          requestErrorCooldownText={config.requestErrorCooldownText}
           responseRuleRows={config.responseRuleRows}
           maskingRuleRows={config.maskingRuleRows}
           failoverResponseStatusCodesText={config.failoverResponseStatusCodesText}
@@ -125,6 +126,7 @@ function App() {
           onSaveVendor={config.saveVendor}
           onDeleteVendor={config.deleteVendor}
           onMutateVendorDraft={config.mutateVendorDraft}
+          onRequestErrorCooldownTextChange={config.setRequestErrorCooldownText}
           onInvalidKeyStatusCodesTextChange={config.setInvalidKeyStatusCodesText}
           onInvalidKeyKeywordsTextChange={config.setInvalidKeyKeywordsText}
           setResponseRuleRows={config.setResponseRuleRows}

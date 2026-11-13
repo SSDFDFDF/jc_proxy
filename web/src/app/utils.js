@@ -136,9 +136,7 @@ export function emptyVendorConfig() {
       retry: {
         enabled: true,
         max_attempts: 2,
-        rate_limit: true,
-        server_error: true,
-        network_error: true,
+        network_error: false,
         status_codes: []
       }
     },
@@ -151,15 +149,15 @@ export function emptyVendorConfig() {
     error_policy: {
       auto_disable: {
         enabled: true,
-        status_codes: [401],
-        keywords: ['incorrect_api_key', 'invalid_api_key']
+        status_codes: [],
+        keywords: []
       },
       cooldown: {
-        no_default_backoff: false,
+        request_error: { enabled: false, duration: 0 },
         response_rules: []
       },
       failover: {
-        request_error: true,
+        request_error: false,
         max_attempts: 5,
         response_status_codes: []
       },
@@ -194,7 +192,9 @@ export function withVendorDefaults(vendor) {
         : [],
       retry: {
         ...base.aggregate.retry,
-        ...(next.aggregate?.retry || {}),
+        enabled: next.aggregate?.retry?.enabled ?? base.aggregate.retry.enabled,
+        max_attempts: next.aggregate?.retry?.max_attempts || base.aggregate.retry.max_attempts,
+        network_error: next.aggregate?.retry?.network_error ?? base.aggregate.retry.network_error,
         status_codes: Array.isArray(next.aggregate?.retry?.status_codes)
           ? [...next.aggregate.retry.status_codes]
           : [...base.aggregate.retry.status_codes]
@@ -229,8 +229,10 @@ export function withVendorDefaults(vendor) {
       },
       cooldown: {
         ...base.error_policy.cooldown,
-        ...(next.error_policy?.cooldown || {}),
-        no_default_backoff: next.error_policy?.cooldown?.no_default_backoff ?? base.error_policy.cooldown.no_default_backoff,
+        request_error: {
+          duration: next.error_policy?.cooldown?.request_error?.duration || 0,
+          enabled: next.error_policy?.cooldown?.request_error?.enabled ?? ((next.error_policy?.cooldown?.request_error?.duration || 0) > 0)
+        },
         response_rules: Array.isArray(next.error_policy?.cooldown?.response_rules)
           ? next.error_policy.cooldown.response_rules.map((rule) => ({
               ...rule,
@@ -266,6 +268,7 @@ export function withVendorDefaults(vendor) {
 export function buildNewVendorConfig(baseURL, provider = 'generic') {
   const cfg = emptyVendorConfig()
   cfg.provider = provider
+  if (provider === 'aggregate') cfg.error_policy = { masking: cfg.error_policy.masking }
   if (provider !== 'aggregate') {
     cfg.upstream.base_url = baseURL || ''
   }

@@ -72,10 +72,9 @@ func captureResponsePreview(body io.ReadCloser, limit int, header http.Header) (
 	}
 	reader := &io.LimitedReader{R: body, N: int64(limit)}
 	raw, err := io.ReadAll(reader)
-	if err != nil {
-		return capturedResponsePreview{}, err
-	}
-	return capturedResponsePreview{raw: raw, decoded: maybeDecompressPreview(raw, header), complete: reader.N > 0}, nil
+	// Even an interrupted body can contain enough text to match an explicit
+	// policy. Keep these bytes for analysis; they are never forwarded as complete.
+	return capturedResponsePreview{raw: raw, decoded: maybeDecompressPreview(raw, header), complete: err == nil && reader.N > 0}, err
 }
 
 func maybeDecompressPreview(data []byte, header http.Header) []byte {
@@ -123,6 +122,10 @@ func (r *Router) responseCopyBuffer(streaming bool) ([]byte, func()) {
 
 func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, body io.Reader, vg *vendorGateway, attempt *upstreamAttempt, decision keyDecision, interim *interimResponseSender) error {
 	defer resp.Body.Close()
+	responseVendor := attempt.responseVendor
+	if responseVendor == nil {
+		responseVendor = vg
+	}
 	// Downstream write failures (including panics) still count as attempted
 	// traffic, but must not poison upstream health. finish is exactly once.
 	defer attempt.finish(vg, keyDecision{action: keyActionInterrupted}, -1)
@@ -202,7 +205,7 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 			}
 			if !hasBody && expectsUpstreamResponseBody(attempt.request, resp) {
 				finishReadFailure(errors.New("empty upstream response"))
-				writeHTTPError(w, interim, "upstream returned an empty response", http.StatusBadGateway)
+				writeMaskableGatewayError(w, interim, responseVendor, "upstream returned an empty response", http.StatusBadGateway)
 				return nil
 			}
 			commitUpstream()
@@ -227,7 +230,7 @@ func (r *Router) writeUpstreamResponse(w http.ResponseWriter, req *http.Request,
 			if resp.StatusCode >= http.StatusBadRequest {
 				commitUpstream()
 			} else {
-				writeHTTPError(w, interim, "upstream response interrupted", http.StatusBadGateway)
+				writeMaskableGatewayError(w, interim, responseVendor, "upstream response interrupted", http.StatusBadGateway)
 			}
 			return nil
 		}
@@ -285,23 +288,20 @@ func commitFinalResponse(interim *interimResponseSender, fn func()) {
 // request error should trigger a retry at the aggregate level (i.e. try
 // a different child vendor).
 func aggregateRetryable(statusCode int, err error, retry config.AggregateRetryConfig) bool {
-	if !boolOrDefault(retry.Enabled, true) {
+	if !aggregateRetryEnabled(retry) {
 		return false
 	}
 	if err != nil {
-		return boolOrDefault(retry.NetworkError, true)
+		return boolOrDefault(retry.NetworkError, false)
 	}
 	// Aggregate retries are failure recovery only; never discard a successful
 	// response because a custom status list is overly broad.
 	if statusCode < http.StatusBadRequest {
 		return false
 	}
-	switch statusCode {
-	case http.StatusTooManyRequests:
-		return boolOrDefault(retry.RateLimit, true)
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusInternalServerError:
-		return boolOrDefault(retry.ServerError, true)
-	default:
-		return containsStatusCode(retry.StatusCodes, statusCode)
-	}
+	return containsStatusCode(retry.StatusCodes, statusCode)
+}
+
+func aggregateRetryEnabled(retry config.AggregateRetryConfig) bool {
+	return boolOrDefault(retry.Enabled, true) && (len(retry.StatusCodes) > 0 || boolOrDefault(retry.NetworkError, false))
 }

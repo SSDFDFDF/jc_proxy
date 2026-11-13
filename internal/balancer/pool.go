@@ -67,18 +67,25 @@ func (s loadScore) less(other loadScore) bool {
 	return s.secondary < other.secondary
 }
 
+type keyHealthPolicyState struct {
+	revision   string
+	generation uint64
+}
+
 type Pool struct {
 	strategy    string
 	keys        []*KeyState
 	rrIdx       int
 	exploration *explorationState // shared across overlapping router generations
 
-	rng               *rand.Rand
-	mu                *sync.Mutex // shared by all overlapping router generations of this vendor
-	nowf              func() time.Time
-	pickerScratch     []int // reusable scratch slice for random picks; protected by mu
-	performance       config.PerformanceSettings
-	customPerformance bool
+	rng                       *rand.Rand
+	mu                        *sync.Mutex // shared by all overlapping router generations of this vendor
+	nowf                      func() time.Time
+	pickerScratch             []int // reusable scratch slice for random picks; protected by mu
+	performance               config.PerformanceSettings
+	customPerformance         bool
+	keyHealthPolicy           *keyHealthPolicyState // shared across router generations; guarded by mu
+	keyHealthPolicyGeneration uint64                // policy used by this router generation
 }
 
 func NewPool(strategy string, keys []string) (*Pool, error) {
@@ -408,6 +415,17 @@ func (p *Pool) ShareRuntimeStateFrom(prev *Pool) {
 	}
 	prev.mu.Lock()
 	defer prev.mu.Unlock()
+	if p.keyHealthPolicy != nil {
+		revision := p.keyHealthPolicy.revision
+		if prev.keyHealthPolicy == nil {
+			prev.keyHealthPolicy = &keyHealthPolicyState{revision: revision, generation: 1}
+		} else if prev.keyHealthPolicy.revision != revision {
+			prev.keyHealthPolicy.revision = revision
+			prev.keyHealthPolicy.generation++
+		}
+		p.keyHealthPolicy = prev.keyHealthPolicy
+		p.keyHealthPolicyGeneration = p.keyHealthPolicy.generation
+	}
 	p.mu = prev.mu
 	p.exploration = prev.exploration
 	index := make(map[string]*KeyState, len(prev.keys))
@@ -440,6 +458,16 @@ func (p *Pool) ShareRuntimeStateFrom(prev *Pool) {
 	for _, removed := range index {
 		removed.retired = true
 	}
+}
+
+// SetKeyHealthPolicyRevision configures an unpublished pool. Publication shares
+// a policy generation so old attempts cannot change health after a policy edit,
+// including an edit followed by restoring the original rules.
+func (p *Pool) SetKeyHealthPolicyRevision(revision string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.keyHealthPolicy = &keyHealthPolicyState{revision: revision, generation: 1}
+	p.keyHealthPolicyGeneration = 1
 }
 
 func (p *Pool) Retire() {

@@ -204,20 +204,13 @@ type ErrorPolicyConfig struct {
 
 type ErrorAutoDisableConfig struct {
 	Enabled     *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	StatusCodes []int    `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
-	Keywords    []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
+	StatusCodes []int    `yaml:"status_codes" json:"status_codes"`
+	Keywords    []string `yaml:"keywords" json:"keywords"`
 }
 
 type ErrorCooldownConfig struct {
-	RequestError     ErrorCooldownRule           `yaml:"request_error" json:"request_error"`
-	Unauthorized     ErrorCooldownRule           `yaml:"unauthorized" json:"unauthorized"`
-	PaymentRequired  ErrorCooldownRule           `yaml:"payment_required" json:"payment_required"`
-	Forbidden        ErrorCooldownRule           `yaml:"forbidden" json:"forbidden"`
-	RateLimit        ErrorCooldownRule           `yaml:"rate_limit" json:"rate_limit"`
-	ServerError      ErrorCooldownRule           `yaml:"server_error" json:"server_error"`
-	OpenAISlowDown   ErrorCooldownRule           `yaml:"openai_slow_down" json:"openai_slow_down"`
-	NoDefaultBackoff bool                        `yaml:"no_default_backoff" json:"no_default_backoff"`
-	ResponseRules    []ErrorResponseCooldownRule `yaml:"response_rules,omitempty" json:"response_rules,omitempty"`
+	RequestError  ErrorCooldownRule           `yaml:"request_error" json:"request_error"`
+	ResponseRules []ErrorResponseCooldownRule `yaml:"response_rules,omitempty" json:"response_rules,omitempty"`
 }
 
 type ErrorCooldownRule struct {
@@ -234,31 +227,25 @@ type ErrorResponseCooldownRule struct {
 
 type ErrorFailoverConfig struct {
 	RequestError        *bool `yaml:"request_error" json:"request_error"`
-	Unauthorized        *bool `yaml:"unauthorized" json:"unauthorized"`
-	PaymentRequired     *bool `yaml:"payment_required" json:"payment_required"`
-	Forbidden           *bool `yaml:"forbidden" json:"forbidden"`
-	RateLimit           *bool `yaml:"rate_limit" json:"rate_limit"`
-	ServerError         *bool `yaml:"server_error" json:"server_error"`
-	ResponseStatusCodes []int `yaml:"response_status_codes,omitempty" json:"response_status_codes,omitempty"`
+	ResponseStatusCodes []int `yaml:"response_status_codes" json:"response_status_codes"`
 	MaxAttempts         int   `yaml:"max_attempts" json:"max_attempts"`
 }
 
 // ErrorMaskingConfig defines error masking: matched upstream error responses
 // (and gateway-synthesized upstream failures) are replaced with a uniform
-// synthetic response before they reach the client. Masking is
-// presentation-only for the client; key health decisions (auto-disable,
-// cooldown, failover) still run on the real upstream response.
+// synthetic response before they reach the client. Health classification uses
+// the real upstream response. Child rules may explicitly extend key cooldown;
+// aggregate rules only control the final response presentation.
 type ErrorMaskingConfig struct {
 	Enabled *bool              `yaml:"enabled" json:"enabled"`
 	Rules   []ErrorMaskingRule `yaml:"rules,omitempty" json:"rules,omitempty"`
 }
 
-// ErrorMaskingRule matches upstream errors the same way cooldown
-// response_rules do (status codes and/or body keywords, first match wins) and
-// prescribes the replacement the client sees instead.
+// ErrorMaskingRule matches status codes OR body keywords, first match wins.
+// Cooldown response rules require both when both filters are configured.
 type ErrorMaskingRule struct {
 	// Matching. At least one of StatusCodes / Keywords must be non-empty.
-	// Both set means both must match.
+	// Either a listed status code or any keyword can match.
 	StatusCodes []int    `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
 	Keywords    []string `yaml:"keywords,omitempty" json:"keywords,omitempty"`
 
@@ -306,8 +293,6 @@ type AggregateChild struct {
 type AggregateRetryConfig struct {
 	Enabled      *bool `yaml:"enabled" json:"enabled"`
 	MaxAttempts  int   `yaml:"max_attempts" json:"max_attempts"`
-	RateLimit    *bool `yaml:"rate_limit" json:"rate_limit"`
-	ServerError  *bool `yaml:"server_error" json:"server_error"`
 	NetworkError *bool `yaml:"network_error" json:"network_error"`
 	StatusCodes  []int `yaml:"status_codes,omitempty" json:"status_codes,omitempty"`
 }
@@ -1025,6 +1010,9 @@ func (c *Config) validate(requireVendors bool) error {
 					return fmt.Errorf("vendor %q aggregate child %q cannot select keys in passthrough mode", vendorName, childEntry.Name)
 				}
 			}
+			if err := validateAggregateErrorPolicy(vendor.ErrorPolicy, vendorName); err != nil {
+				return err
+			}
 			if err := validateAggregateRetry(vendor.Aggregate.Retry, vendorName); err != nil {
 				return err
 			}
@@ -1073,85 +1061,50 @@ func (c *Config) validate(requireVendors bool) error {
 	return nil
 }
 
+// Only normalize representation and attempt limits. Empty policies stay inert.
 func applyErrorPolicyDefaults(policy *ErrorPolicyConfig) {
-	if policy == nil {
-		return
+	if policy.AutoDisable.StatusCodes == nil {
+		policy.AutoDisable.StatusCodes = []int{}
 	}
-
-	if policy.AutoDisable.Enabled == nil {
-		policy.AutoDisable.Enabled = boolPtr(true)
+	if policy.AutoDisable.Keywords == nil {
+		policy.AutoDisable.Keywords = []string{}
 	}
-	if policy.AutoDisable.StatusCodes == nil && policy.AutoDisable.Keywords == nil {
-		policy.AutoDisable.StatusCodes = []int{http.StatusUnauthorized}
-		policy.AutoDisable.Keywords = []string{"incorrect_api_key", "invalid_api_key"}
-	}
-
-	applyCooldownRuleDefaults(&policy.Cooldown.RequestError, 2*time.Second)
-	applyCooldownRuleDefaults(&policy.Cooldown.Unauthorized, 30*time.Minute)
-	applyCooldownRuleDefaults(&policy.Cooldown.PaymentRequired, 3*time.Hour)
-	applyCooldownRuleDefaults(&policy.Cooldown.Forbidden, 30*time.Minute)
-	applyCooldownRuleDefaults(&policy.Cooldown.RateLimit, 5*time.Second)
-	applyCooldownRuleDefaults(&policy.Cooldown.ServerError, 2*time.Second)
-	applyCooldownRuleDefaults(&policy.Cooldown.OpenAISlowDown, 15*time.Minute)
-
-	if policy.Failover.RequestError == nil {
-		policy.Failover.RequestError = boolPtr(true)
-	}
-	if policy.Failover.Unauthorized == nil {
-		policy.Failover.Unauthorized = boolPtr(true)
-	}
-	if policy.Failover.PaymentRequired == nil {
-		policy.Failover.PaymentRequired = boolPtr(true)
-	}
-	if policy.Failover.Forbidden == nil {
-		policy.Failover.Forbidden = boolPtr(true)
-	}
-	if policy.Failover.RateLimit == nil {
-		policy.Failover.RateLimit = boolPtr(true)
-	}
-	if policy.Failover.ServerError == nil {
-		policy.Failover.ServerError = boolPtr(true)
+	if policy.Failover.ResponseStatusCodes == nil {
+		policy.Failover.ResponseStatusCodes = []int{}
 	}
 	if policy.Failover.MaxAttempts <= 0 {
 		policy.Failover.MaxAttempts = 5
 	}
-
-	if policy.Masking.Enabled == nil {
-		policy.Masking.Enabled = boolPtr(true)
-	}
-}
-
-func applyCooldownRuleDefaults(rule *ErrorCooldownRule, duration time.Duration) {
-	if rule == nil {
-		return
-	}
-	if rule.Enabled == nil {
-		rule.Enabled = boolPtr(true)
-	}
-	if rule.Duration <= 0 {
-		rule.Duration = duration
-	}
 }
 
 func applyAggregateRetryDefaults(retry *AggregateRetryConfig) {
-	if retry.Enabled == nil {
-		retry.Enabled = boolPtr(true)
-	}
 	if retry.MaxAttempts <= 0 {
 		retry.MaxAttempts = 2
 	}
-	if retry.RateLimit == nil {
-		retry.RateLimit = boolPtr(true)
+	if retry.StatusCodes == nil {
+		retry.StatusCodes = []int{}
 	}
-	if retry.ServerError == nil {
-		retry.ServerError = boolPtr(true)
+}
+
+// Aggregate entries own presentation and child switching, not key health.
+func validateAggregateErrorPolicy(policy ErrorPolicyConfig, vendorName string) error {
+	auto := policy.AutoDisable
+	cooldown := policy.Cooldown
+	failover := policy.Failover
+	if auto.Enabled != nil || len(auto.StatusCodes) > 0 || hasNonEmptyString(auto.Keywords) ||
+		cooldown.RequestError.Enabled != nil || cooldown.RequestError.Duration != 0 || len(cooldown.ResponseRules) > 0 ||
+		failover.RequestError != nil || len(failover.ResponseStatusCodes) > 0 || failover.MaxAttempts != 0 {
+		return fmt.Errorf("vendor %q aggregate key health and key failover policies must be configured on child vendors", vendorName)
 	}
-	if retry.NetworkError == nil {
-		retry.NetworkError = boolPtr(true)
+	for _, rule := range policy.Masking.Rules {
+		if rule.Cooldown != 0 {
+			return fmt.Errorf("vendor %q aggregate masking cannot change key cooldown; configure cooldown on child vendors", vendorName)
+		}
 	}
-	if len(retry.StatusCodes) == 0 {
-		retry.StatusCodes = nil
+	if err := validateErrorMaskingRules(policy.Masking); err != nil {
+		return fmt.Errorf("vendor %q: %w", vendorName, err)
 	}
+	return nil
 }
 
 func validateErrorPolicy(policy ErrorPolicyConfig) error {
@@ -1164,24 +1117,6 @@ func validateErrorPolicy(policy ErrorPolicyConfig) error {
 	if err := validateCooldownRule("request_error", policy.Cooldown.RequestError); err != nil {
 		return err
 	}
-	if err := validateCooldownRule("unauthorized", policy.Cooldown.Unauthorized); err != nil {
-		return err
-	}
-	if err := validateCooldownRule("payment_required", policy.Cooldown.PaymentRequired); err != nil {
-		return err
-	}
-	if err := validateCooldownRule("forbidden", policy.Cooldown.Forbidden); err != nil {
-		return err
-	}
-	if err := validateCooldownRule("rate_limit", policy.Cooldown.RateLimit); err != nil {
-		return err
-	}
-	if err := validateCooldownRule("server_error", policy.Cooldown.ServerError); err != nil {
-		return err
-	}
-	if err := validateCooldownRule("openai_slow_down", policy.Cooldown.OpenAISlowDown); err != nil {
-		return err
-	}
 	if err := validateResponseCooldownRules(policy.Cooldown.ResponseRules); err != nil {
 		return err
 	}
@@ -1192,7 +1127,7 @@ func validateErrorPolicy(policy ErrorPolicyConfig) error {
 }
 
 func validateCooldownRule(name string, rule ErrorCooldownRule) error {
-	if boolValue(rule.Enabled, true) && rule.Duration <= 0 {
+	if boolValue(rule.Enabled, rule.Duration > 0) && rule.Duration <= 0 {
 		return fmt.Errorf("cooldown.%s.duration must be > 0 when enabled", name)
 	}
 	if rule.Duration < 0 {
@@ -1202,9 +1137,6 @@ func validateCooldownRule(name string, rule ErrorCooldownRule) error {
 }
 
 func validateAggregateRetry(retry AggregateRetryConfig, vendorName string) error {
-	if !boolValue(retry.Enabled, true) {
-		return nil
-	}
 	if retry.MaxAttempts < 1 || retry.MaxAttempts > 5 {
 		return fmt.Errorf("vendor %q aggregate.retry.max_attempts must be between 1 and 5", vendorName)
 	}

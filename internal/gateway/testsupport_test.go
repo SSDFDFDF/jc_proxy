@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"testing"
+	"time"
 
 	"jc_proxy/internal/config"
 	"jc_proxy/internal/keystore"
@@ -83,4 +84,18 @@ func mutateTestVendor(t *testing.T, cfg *config.Config, name string, fn func(*co
 		t.Fatalf("vendor %q not found in config", name)
 	}
 	fn(&cfg.Vendors[idx].VendorConfig)
+}
+
+// Explicit policy for tests that exercise retry/health actions. Empty-policy
+// tests deliberately do not use this fixture.
+func testExplicitErrorPolicy() config.ErrorPolicyConfig {
+	return config.ErrorPolicyConfig{
+		AutoDisable: config.ErrorAutoDisableConfig{StatusCodes: []int{401}},
+		Cooldown:    config.ErrorCooldownConfig{RequestError: config.ErrorCooldownRule{Duration: 2 * time.Second}, ResponseRules: []config.ErrorResponseCooldownRule{{StatusCodes: []int{429}, Duration: 5 * time.Second}}},
+		Failover:    config.ErrorFailoverConfig{RequestError: configBoolPtr(true), ResponseStatusCodes: []int{401, 429, 500, 502, 503, 504}, MaxAttempts: 5},
+	}
+}
+
+func testExplicitAggregateRetry() config.AggregateRetryConfig {
+	return config.AggregateRetryConfig{StatusCodes: []int{429, 500, 502, 503, 504}, NetworkError: configBoolPtr(true), MaxAttempts: 2}
 }

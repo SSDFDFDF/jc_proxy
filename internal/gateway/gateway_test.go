@@ -1198,6 +1198,8 @@ func TestRouterReturnsBadGatewayWhenUpstreamBodyStallsBeforeFirstByte(t *testing
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -1257,6 +1259,8 @@ func TestRouterAbortsClientConnectionWhenSuccessfulStreamBreaksMidBody(t *testin
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -1454,6 +1458,8 @@ func TestRouterTracksUpstreamStatusStats(t *testing.T) {
 		}),
 	}
 
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	router, err := newTestRouter(cfg, map[string][]string{"openai": {"k1"}})
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
@@ -1516,6 +1522,8 @@ func TestRouterAutoDisablesInvalidKey(t *testing.T) {
 			},
 		},
 	}
+
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
 
 	router, err := NewWithUpstreamKeyRecords(cfg, ctrl.records, ctrl)
 	if err != nil {
@@ -1588,6 +1596,8 @@ func TestRouterAutoDisablePersistenceIsAsync(t *testing.T) {
 			},
 		}),
 	}
+
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
 
 	router, err := NewWithUpstreamKeyRecords(cfg, baseStore.records, keyStore)
 	if err != nil {
@@ -2139,7 +2149,7 @@ func TestRouterAggregateFlushesStreamingSuccessWithoutWaitingForEOF(t *testing.T
 	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
 	defer closeRelease()
 
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -2295,6 +2305,8 @@ func TestRouterAggregateChildUsesOnlySelectedKeys(t *testing.T) {
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "child", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2345,6 +2357,8 @@ func TestRouterAggregateRetriesDuplicateVendorChildIndependently(t *testing.T) {
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "agg", func(vc *config.VendorConfig) { vc.Aggregate.Retry = testExplicitAggregateRetry() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2381,8 +2395,8 @@ func TestRouterAggregateDoesNotRetrySameKeyAcrossOverlappingChildren(t *testing.
 				Upstream:    config.UpstreamConfig{BaseURL: upstream.URL},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
-					Cooldown: config.ErrorCooldownConfig{NoDefaultBackoff: true},
-					Failover: config.ErrorFailoverConfig{MaxAttempts: 3},
+					Cooldown: config.ErrorCooldownConfig{},
+					Failover: config.ErrorFailoverConfig{MaxAttempts: 3, ResponseStatusCodes: []int{429}},
 				},
 			},
 			"agg": {
@@ -2398,6 +2412,8 @@ func TestRouterAggregateDoesNotRetrySameKeyAcrossOverlappingChildren(t *testing.
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "agg", func(vc *config.VendorConfig) { vc.Aggregate.Retry = testExplicitAggregateRetry() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2459,7 +2475,7 @@ func TestRouterAggregateHonorsGlobalUpstreamAttemptBudget(t *testing.T) {
 
 func TestRouterAggregateNeverRetriesSuccessfulResponseFromCustomStatusList(t *testing.T) {
 	attempts := 0
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2486,7 +2502,7 @@ func TestRouterAggregateNeverRetriesSuccessfulResponseFromCustomStatusList(t *te
 }
 
 func TestRouterAggregateSkipsChildWhenSelectedKeysUnavailable(t *testing.T) {
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	seed := aggregateTestSeed()
 	seed["child_a"] = []string{"child-a-key", "child-a-other"}
 	mutateTestVendor(t, cfg, "agg", func(vc *config.VendorConfig) {
@@ -2517,7 +2533,7 @@ func TestRouterAggregateSkipsChildWhenSelectedKeysUnavailable(t *testing.T) {
 func TestRouterAggregateRetriesBufferedPostOnRateLimit(t *testing.T) {
 	var attempts []string
 	var bodies []string
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -2573,7 +2589,7 @@ func TestRouterAggregateRetriesBufferedPostOnRateLimit(t *testing.T) {
 func TestRouterAggregateRetriesNextChildWhenVendorKeyFailoverLimitReached(t *testing.T) {
 	attemptsA := 0
 	attemptsB := 0
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	seed := aggregateTestSeed()
 	seed["child_a"] = []string{"child-a-key-1", "child-a-key-2"}
 	mutateTestVendor(t, cfg, "child_a", func(vc *config.VendorConfig) {
@@ -2626,7 +2642,7 @@ func TestRouterAggregateRetriesNextChildWhenVendorKeyFailoverLimitReached(t *tes
 func TestRouterAggregateDoesNotRetryBufferedPostOnServerError(t *testing.T) {
 	attemptsA := 0
 	attemptsB := 0
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -2679,7 +2695,7 @@ func TestRouterAggregateDoesNotRetryBufferedPostOnServerError(t *testing.T) {
 func TestRouterAggregateDoesNotRetryBufferedPostOnNetworkError(t *testing.T) {
 	attemptsA := 0
 	attemptsB := 0
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -2725,7 +2741,7 @@ func TestRouterAggregateDoesNotRetryBufferedPostOnNetworkError(t *testing.T) {
 func TestRouterAggregateDoesNotRetryMultipartPost(t *testing.T) {
 	attemptsA := 0
 	attemptsB := 0
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -2816,7 +2832,7 @@ func TestRouterAggregateInterimProcessingKeepsFinalStatus(t *testing.T) {
 	release := make(chan struct{})
 	interimInterval := 10 * time.Millisecond
 
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	mutateTestVendor(t, cfg, "child_a", func(vc *config.VendorConfig) {
 		vc.Upstream.InterimResponseInterval = &interimInterval
 	})
@@ -2947,6 +2963,8 @@ func TestRouterStillClassifiesErrorResponseOnClientDisconnect(t *testing.T) {
 		},
 	}
 
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	router, err := NewWithUpstreamKeyRecords(cfg, ctrl.records, ctrl)
 	if err != nil {
 		t.Fatalf("init router failed: %v", err)
@@ -2996,6 +3014,8 @@ func TestRouterFailsOverBufferedPostOnRateLimit(t *testing.T) {
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -3099,6 +3119,8 @@ func TestRouterRetriesSafeGetOnRequestError(t *testing.T) {
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "openai", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatalf("prepare config failed: %v", err)
 	}
@@ -3157,12 +3179,8 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 				},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
-					Cooldown: config.ErrorCooldownConfig{
-						RateLimit: config.ErrorCooldownRule{Enabled: configBoolPtr(false)},
-					},
-					Failover: config.ErrorFailoverConfig{
-						RateLimit: configBoolPtr(false),
-					},
+					Cooldown: config.ErrorCooldownConfig{},
+					Failover: config.ErrorFailoverConfig{},
 				},
 			},
 		}),
@@ -3196,7 +3214,7 @@ func TestRouterRespectsDisabledRateLimitFailoverAndCooldown(t *testing.T) {
 	}
 }
 
-func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testing.T) {
+func TestRouterEmptyCooldownKeepsExplicitFailover(t *testing.T) {
 	attempts := make([]string, 0, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
@@ -3219,11 +3237,9 @@ func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testi
 				},
 				LoadBalance: "round_robin",
 				ErrorPolicy: config.ErrorPolicyConfig{
-					Cooldown: config.ErrorCooldownConfig{
-						NoDefaultBackoff: true,
-					},
+					Cooldown: config.ErrorCooldownConfig{},
 					Failover: config.ErrorFailoverConfig{
-						RateLimit: configBoolPtr(true),
+						ResponseStatusCodes: []int{429},
 					},
 				},
 			},
@@ -3257,10 +3273,10 @@ func TestRouterNoDefaultBackoffDisablesResponseCooldownButKeepsFailover(t *testi
 		t.Fatalf("first key last_status = %#v, want %d", got, http.StatusTooManyRequests)
 	}
 	if got := stats[0]["failures"]; got != 0 {
-		t.Fatalf("no_default_backoff should not record cooldown failures, got %#v", got)
+		t.Fatalf("empty cooldown should not record cooldown failures, got %#v", got)
 	}
 	if got := stats[0]["backoff_remaining_seconds"]; got != 0 {
-		t.Fatalf("no_default_backoff should not back off key, got %#v", got)
+		t.Fatalf("empty cooldown should not back off key, got %#v", got)
 	}
 }
 
@@ -3284,12 +3300,8 @@ func TestRouterRespectsDisabledInvalidKeyAutoDisable(t *testing.T) {
 					AutoDisable: config.ErrorAutoDisableConfig{
 						Enabled: configBoolPtr(false),
 					},
-					Cooldown: config.ErrorCooldownConfig{
-						Unauthorized: config.ErrorCooldownRule{Enabled: configBoolPtr(false)},
-					},
-					Failover: config.ErrorFailoverConfig{
-						Unauthorized: configBoolPtr(false),
-					},
+					Cooldown: config.ErrorCooldownConfig{},
+					Failover: config.ErrorFailoverConfig{},
 				},
 			},
 		}),
@@ -3691,6 +3703,8 @@ func TestRouterBudgetExhaustionForwardsUpstreamStatus(t *testing.T) {
 			},
 		}),
 	}
+	mutateTestVendor(t, cfg, "child_a", func(vc *config.VendorConfig) { vc.ErrorPolicy = testExplicitErrorPolicy() })
+
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}
@@ -3731,6 +3745,7 @@ func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Conf
 					BaseURL: "https://child-a.test",
 				},
 				LoadBalance: "round_robin",
+				ErrorPolicy: testExplicitErrorPolicy(),
 			},
 			"child_b": {
 				Provider: "generic",
@@ -3738,6 +3753,7 @@ func newAggregateRetryTestConfig(retry config.AggregateRetryConfig) *config.Conf
 					BaseURL: "https://child-b.test",
 				},
 				LoadBalance: "round_robin",
+				ErrorPolicy: testExplicitErrorPolicy(),
 			},
 			"agg": {
 				Provider:    "aggregate",

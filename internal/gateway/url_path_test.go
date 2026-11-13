@@ -63,7 +63,7 @@ func TestRouterPreservesEncodedSlashAtURLJoin(t *testing.T) {
 }
 
 func TestAggregateRetryKeepsOriginalEscapedPath(t *testing.T) {
-	cfg := newAggregateRetryTestConfig(config.AggregateRetryConfig{MaxAttempts: 2})
+	cfg := newAggregateRetryTestConfig(testExplicitAggregateRetry())
 	mutateTestVendor(t, cfg, "child_a", func(v *config.VendorConfig) { v.PathRewrites = map[string]string{"/v1/*": "/a/*"} })
 	mutateTestVendor(t, cfg, "child_b", func(v *config.VendorConfig) { v.PathRewrites = map[string]string{"/v1/*": "/b/*"} })
 	if err := cfg.PrepareAndValidate(); err != nil {

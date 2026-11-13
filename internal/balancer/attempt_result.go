@@ -35,6 +35,7 @@ func (p *Pool) CompleteAttempt(idx int, version int64, result AttemptResult) boo
 	if !p.releaseInflightLocked(idx) {
 		return false
 	}
+	currentPolicy := p.keyHealthPolicy == nil || p.keyHealthPolicyGeneration == p.keyHealthPolicy.generation
 	current := p.currentVersionLocked(idx, []int64{version})
 	state := p.keys[idx]
 	h := state.stats
@@ -60,7 +61,7 @@ func (p *Pool) CompleteAttempt(idx int, version int64, result AttemptResult) boo
 	} else {
 		h.recordErrorLocked(result.StatusCode, result.Reason, !current)
 	}
-	if !current {
+	if !current || !currentPolicy {
 		return false
 	}
 	switch result.Action {

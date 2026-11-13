@@ -15,6 +15,7 @@ import (
 
 type preparedProxyRequest struct {
 	vendor           *vendorGateway
+	responseVendor   *vendorGateway // route owner controls final error presentation
 	path             routedPath
 	bodySource       *requestBodySource
 	allowedKeyIdxs   []int
@@ -120,6 +121,7 @@ func (e *requestExecution) markTried(v *vendorGateway, selectedKey string, idx i
 }
 
 type upstreamAttempt struct {
+	responseVendor  *vendorGateway
 	idx             int
 	selectedVersion int64
 	selectedKey     string
@@ -134,7 +136,7 @@ type proxyError struct {
 	message    string
 }
 
-type aggregateRetryHook func(statusCode int, err error, bodySource *requestBodySource) bool
+type aggregateRetryHook func(statusCode int, err error, bodySource *requestBodySource, requestStarted bool) bool
 
 type vendorRequestOutcome int
 
@@ -175,7 +177,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	prepared, proxyErr := r.prepareNonAggregateRequest(req, vg, upstreamPath)
 	if proxyErr != nil {
-		http.Error(w, proxyErr.message, proxyErr.statusCode)
+		writeMaskableGatewayError(w, nil, vg, proxyErr.message, proxyErr.statusCode)
 		return
 	}
 	r.serveVendorRequest(w, req, prepared)
@@ -275,9 +277,10 @@ func (r *Router) prepareNonAggregateRequest(req *http.Request, vg *vendorGateway
 	}
 
 	return &preparedProxyRequest{
-		vendor:     vg,
-		path:       vg.rewrites.applyPath(upstreamPath),
-		bodySource: bodySource,
+		vendor:         vg,
+		responseVendor: vg,
+		path:           vg.rewrites.applyPath(upstreamPath),
+		bodySource:     bodySource,
 	}, nil
 }
 
@@ -290,7 +293,7 @@ func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, 
 	if bodySource == nil {
 		var err error
 		allowReplay := child.vendor.shouldBufferRequestBody(req.Method)
-		if boolOrDefault(agg.aggRetry.Enabled, true) {
+		if aggregateRetryEnabled(agg.aggRetry) {
 			allowReplay = true
 		}
 		bodySource, err = prepareRequestBody(req, allowReplay)
@@ -304,6 +307,7 @@ func (r *Router) prepareAggregateRequest(req *http.Request, agg *vendorGateway, 
 
 	return &preparedProxyRequest{
 		vendor:           child.vendor,
+		responseVendor:   agg,
 		path:             child.vendor.rewrites.applyPath(path),
 		bodySource:       bodySource,
 		allowedKeyIdxs:   child.keyIdxs,
@@ -344,17 +348,17 @@ func aggregateChildAvailableForExecution(req *http.Request, execution *requestEx
 
 func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request, agg *vendorGateway, path routedPath) {
 	if err := agg.authorizeClient(req); err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeMaskableGatewayError(w, nil, agg, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
 	retry := agg.aggRetry
-	if !boolOrDefault(retry.Enabled, true) {
+	if !aggregateRetryEnabled(retry) {
 		// Retry disabled — behave like a single-attempt aggregate.
 		execution := newRequestExecution(agg.maxUpstreamAttempts())
 		prepared, proxyErr := r.prepareAggregateRequest(req, agg, path, nil, nil, execution)
 		if proxyErr != nil {
-			http.Error(w, proxyErr.message, proxyErr.statusCode)
+			writeMaskableGatewayError(w, nil, agg, proxyErr.message, proxyErr.statusCode)
 			return
 		}
 		_ = r.serveVendorRequestWithAggregateHook(w, req, prepared, nil, execution)
@@ -373,7 +377,7 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		prepared, proxyErr := r.prepareAggregateRequest(req, agg, path, exclude, bodySource, execution)
 		if proxyErr != nil {
-			http.Error(w, proxyErr.message, proxyErr.statusCode)
+			writeMaskableGatewayError(w, nil, agg, proxyErr.message, proxyErr.statusCode)
 			return
 		}
 		if prepared == nil {
@@ -385,7 +389,7 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 			bodySource = prepared.bodySource
 		}
 
-		shouldRetryAggregate := func(statusCode int, err error, source *requestBodySource) bool {
+		shouldRetryAggregate := func(statusCode int, err error, source *requestBodySource, requestStarted bool) bool {
 			if attempt >= maxAttempts-1 || source == nil {
 				return false
 			}
@@ -398,7 +402,13 @@ func (r *Router) serveAggregateRequest(w http.ResponseWriter, req *http.Request,
 			if !aggregateRetryable(statusCode, err, retry) {
 				return false
 			}
-			if !source.canRetryAggregate(statusCode, err) {
+			// Preparation failed before any upstream request was sent, so a
+			// buffered POST can switch children without duplicate execution.
+			if requestStarted {
+				if !source.canRetryAggregate(statusCode, err) {
+					return false
+				}
+			} else if !source.replayable {
 				return false
 			}
 			nextExclude := make(map[string]struct{}, len(exclude)+1)
@@ -434,6 +444,10 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 	}
 
 	vg := prepared.vendor
+	responseVendor := prepared.responseVendor
+	if responseVendor == nil {
+		responseVendor = vg
+	}
 	interim := newInterimResponseSender(w, vg.interimInterval)
 	defer interim.stop()
 
@@ -449,24 +463,28 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 		if attempts > maxAttempts {
 			// Unreachable: every retry site below is gated on retryRemaining.
 			// Kept as a guard so a future edit cannot spin this loop.
-			writeHTTPError(w, interim, "exceeded maximum failover attempts", http.StatusBadGateway)
+			writeMaskableGatewayError(w, interim, responseVendor, "exceeded maximum failover attempts", http.StatusBadGateway)
 			return vendorRequestDone
 		}
 		attempt, proxyErr := vg.newAttempt(req.Context(), req, prepared.path, prepared.bodySource, triedManagedKeyIdx, prepared.allowedKeyIdxs)
 		if proxyErr != nil {
-			writeMaskableGatewayError(w, interim, vg, proxyErr.message, proxyErr.statusCode)
+			if aggregateHook != nil && aggregateHook(proxyErr.statusCode, nil, prepared.bodySource, false) {
+				return vendorRequestRetryAggregateChild
+			}
+			writeMaskableGatewayError(w, interim, responseVendor, proxyErr.message, proxyErr.statusCode)
 			return vendorRequestDone
 		}
 		if attempt == nil {
 			return vendorRequestDone
 		}
+		attempt.responseVendor = responseVendor
 		if !execution.consumeAttempt() {
 			// Also unreachable: retryRemaining and the aggregate hook both
 			// require remaining budget before another attempt is started.
 			if vg.usesManagedUpstreamKeys() {
 				vg.pool.Release(attempt.idx)
 			}
-			writeHTTPError(w, interim, "exceeded maximum upstream attempts", http.StatusBadGateway)
+			writeMaskableGatewayError(w, interim, responseVendor, "exceeded maximum upstream attempts", http.StatusBadGateway)
 			return vendorRequestDone
 		}
 		execution.markTried(vg, attempt.selectedKey, attempt.idx)
@@ -485,7 +503,7 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 				// Our forced read deadline also cancels the HTTP/1 request
 				// context. Still send the failure instead of an implicit 200.
 				if req.Context().Err() == nil || errors.Is(err, errClientUploadTimeout) {
-					writeHTTPError(w, interim, "read request body failed", http.StatusBadRequest)
+					writeMaskableGatewayError(w, interim, responseVendor, "read request body failed", http.StatusBadRequest)
 				}
 				return vendorRequestDone
 			}
@@ -499,13 +517,13 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 			if canRetry && retryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, prepared.allowedKeyIdxs) {
 				continue
 			}
-			if aggregateHook != nil && aggregateHook(0, err, prepared.bodySource) {
+			if aggregateHook != nil && aggregateHook(0, err, prepared.bodySource, true) {
 				return vendorRequestRetryAggregateChild
 			}
 			// No upstream response exists to forward, so a gateway error is the
 			// only honest answer here. Masking rules can still normalize what the
 			// client sees (e.g. 502 -> 500).
-			writeMaskableGatewayError(w, interim, vg, "upstream request failed", http.StatusBadGateway)
+			writeMaskableGatewayError(w, interim, responseVendor, "upstream request failed", http.StatusBadGateway)
 			return vendorRequestDone
 		}
 
@@ -526,14 +544,25 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 }
 
 func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, vg *vendorGateway, attempt *upstreamAttempt, bodySource *requestBodySource, triedManagedKeyIdx map[int]struct{}, allowedKeyIdxs []int, interim *interimResponseSender, aggregateHook aggregateRetryHook, vendorRetryRemaining bool) upstreamResponseOutcome {
+	responseVendor := attempt.responseVendor
+	if responseVendor == nil {
+		responseVendor = vg
+	}
 	decision := keyDecision{action: keyActionSuccess, statusCode: resp.StatusCode}
 	var bodyReader io.Reader = resp.Body
 	if resp.StatusCode >= http.StatusBadRequest {
 		preview, err := captureResponsePreview(resp.Body, 2048, resp.Header)
+		var maskRule config.ErrorMaskingRule
+		var maskMatched bool
+		if responseVendor != vg {
+			decision, maskRule, maskMatched = analyzeErrorResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview.decoded, responseVendor.errorPolicy.Masking)
+		} else {
+			decision, maskRule, maskMatched = analyzeErrorResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview.decoded)
+		}
 		if err != nil {
 			_ = resp.Body.Close()
-			// Preserve a known HTTP failure even if previewing its body fails.
-			decision = classifyResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, nil)
+			// Preserve the known HTTP failure and any captured text even if
+			// previewing the remainder fails. Settle once before deciding retry.
 			decision.reason = compactReason(decision.reason, fmt.Sprintf("read upstream response failed: %v", err))
 			attempt.finish(vg, decision, -1)
 			if isCanceledUpstreamError(req.Context(), err) {
@@ -545,16 +574,17 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			if bodySource.canRetryRequestError(retryDecision) && vendorRetryRemaining && vg.hasAvailableKey(triedManagedKeyIdx, allowedKeyIdxs) {
 				return upstreamResponseRetryVendorKey
 			}
-			if aggregateHook != nil && aggregateHook(0, err, bodySource) {
+			if aggregateHook != nil && aggregateHook(0, err, bodySource, true) {
 				return upstreamResponseRetryAggregateChild
 			}
-			writeMaskableGatewayError(w, interim, vg, "upstream request failed", http.StatusBadGateway)
+			if maskMatched {
+				writeMaskedResponse(w, interim, buildMaskedResponse(maskRule, resp.Header.Get("Retry-After")))
+				return upstreamResponseDone
+			}
+			writeMaskableGatewayError(w, interim, responseVendor, "upstream request failed", http.StatusBadGateway)
 			return upstreamResponseDone
 		}
 
-		var maskRule config.ErrorMaskingRule
-		var maskMatched bool
-		decision, maskRule, maskMatched = analyzeErrorResponse(vg.provider, vg.errorPolicy, resp.StatusCode, resp.Header, preview.decoded)
 		attempt.finish(vg, decision, -1)
 		// Preserve separate vendor/aggregate retry policies, the global budget
 		// and non-idempotent replay restrictions. Delivery has one exit below.
@@ -562,7 +592,7 @@ func (r *Router) handleUpstreamResponse(w http.ResponseWriter, req *http.Request
 			_ = resp.Body.Close()
 			return upstreamResponseRetryVendorKey
 		}
-		if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource) {
+		if aggregateHook != nil && aggregateHook(resp.StatusCode, nil, bodySource, true) {
 			_ = resp.Body.Close()
 			return upstreamResponseRetryAggregateChild
 		}

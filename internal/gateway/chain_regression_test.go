@@ -84,31 +84,19 @@ func TestDefaultDisableIgnoresReflectedModelName(t *testing.T) {
 	}
 }
 
-func TestDefaultCredentialKeywordsRequireErrorCode(t *testing.T) {
+func TestCredentialKeywordsAreOnlyExplicitTextRules(t *testing.T) {
 	r, _ := routerWithMasking(t, "http://unused.invalid", []string{"key"}, nil)
 	policy := r.vendors["openai"].errorPolicy
-	for _, tc := range []struct {
-		body    string
-		disable bool
-	}{
-		{`{"error":{"code":"invalid_api_key"}}`, true},
-		{`{"error":{"type":"incorrect_api_key"}}`, true},
-		{`{"error":"invalid_api_key"}`, true},
-		{`{"code":"INVALID_API_KEY"}`, true},
-		{`{"error":{"message":"incorrect_api_key","code":"model_not_found"}}`, false},
-		{`{"error":{"param":"invalid_api_key"}}`, false},
-		{`{"input":{"code":"invalid_api_key"},"error":{"type":"invalid_request_error"}}`, false},
-		{`invalid_api_key`, false},
-		{`{"error":{"code":"invalid_api_key`, false},
-	} {
-		d := classifyResponse("openai", policy, 400, http.Header{"Content-Type": {"application/json"}}, []byte(tc.body))
-		if (d.action == keyActionDisable) != tc.disable {
-			t.Errorf("body=%s decision=%+v", tc.body, d)
+	for _, body := range []string{`{"error":{"code":"invalid_api_key"}}`, `{"error":{"message":"incorrect_api_key"}}`, `invalid_api_key`, `quota exhausted`} {
+		if d := classifyResponse("openai", policy, 400, nil, []byte(body)); d.action != keyActionObserve {
+			t.Fatalf("empty policy: %+v", d)
 		}
 	}
-	policy.AutoDisable.Keywords = []string{"quota exhausted"}
-	if d := classifyResponse("openai", policy, 400, nil, []byte("quota exhausted")); d.action != keyActionDisable {
-		t.Fatal("custom text policy changed")
+	policy.AutoDisable.Keywords = []string{"invalid_api_key", "quota exhausted"}
+	for _, body := range []string{`{"error":{"code":"invalid_api_key"}}`, `{"error":{"message":"INVALID_API_KEY"}}`, `invalid_api_key`, `quota exhausted`} {
+		if d := classifyResponse("openai", policy, 400, nil, []byte(body)); d.action != keyActionDisable {
+			t.Fatalf("explicit text policy: %+v", d)
+		}
 	}
 }
 

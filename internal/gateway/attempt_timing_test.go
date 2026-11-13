@@ -158,7 +158,7 @@ func TestTimingBatchPersistenceReloadAndRetry(t *testing.T) {
 }
 
 func TestTimingNetworkFailoverRecordsEachKey(t *testing.T) {
-	cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{"openai": {Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid"}}})}
+	cfg := &config.Config{Vendors: testVendorsWithoutClientAuth(map[string]config.VendorConfig{"openai": {ErrorPolicy: testExplicitErrorPolicy(), Upstream: config.UpstreamConfig{BaseURL: "http://unused.invalid"}}})}
 	if err := cfg.PrepareAndValidate(); err != nil {
 		t.Fatal(err)
 	}

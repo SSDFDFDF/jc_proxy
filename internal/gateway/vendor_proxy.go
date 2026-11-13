@@ -131,39 +131,11 @@ func (v *vendorGateway) shouldBufferRequestBody(method string) bool {
 	if v == nil || !v.usesManagedUpstreamKeys() || v.managedKeyCount < 2 {
 		return false
 	}
-
 	if isSafeRetryMethod(method) {
-		if boolOrDefault(v.errorPolicy.Failover.RequestError, true) {
-			return true
-		}
-		if len(v.errorPolicy.Failover.ResponseStatusCodes) > 0 {
-			return true
-		}
-		for _, statusCode := range []int{
-			http.StatusUnauthorized,
-			http.StatusPaymentRequired,
-			http.StatusForbidden,
-			http.StatusTooManyRequests,
-			529,
-			http.StatusInternalServerError,
-			http.StatusBadGateway,
-			http.StatusServiceUnavailable,
-			http.StatusGatewayTimeout,
-		} {
-			if shouldFailoverResponse(statusCode, v.errorPolicy) {
-				return true
-			}
-		}
-		return false
+		return boolOrDefault(v.errorPolicy.Failover.RequestError, false) || len(v.errorPolicy.Failover.ResponseStatusCodes) > 0
 	}
-
-	for _, statusCode := range []int{
-		http.StatusUnauthorized,
-		http.StatusPaymentRequired,
-		http.StatusForbidden,
-		http.StatusTooManyRequests,
-	} {
-		if shouldFailoverResponse(statusCode, v.errorPolicy) {
+	for _, code := range v.errorPolicy.Failover.ResponseStatusCodes {
+		if isRetryableStatusForUnsafeMethod(code) {
 			return true
 		}
 	}

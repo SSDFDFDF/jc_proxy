@@ -28,7 +28,7 @@ func BenchmarkResponsePipeline(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			r := newBenchRouter(b, "http://unused.invalid")
 			v := r.vendors["openai"]
-			v.errorPolicy.Cooldown.NoDefaultBackoff = true
+			v.errorPolicy.Cooldown = config.ErrorCooldownConfig{}
 			if tc.mask {
 				v.errorPolicy.Masking.Rules = []config.ErrorMaskingRule{{Keywords: []string{"temporarily"}, StatusCode: 500}}
 			}

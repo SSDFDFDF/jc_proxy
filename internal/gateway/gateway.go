@@ -406,6 +406,7 @@ func newRouterWithUpstreamKeyRecords(cfg *config.Config, upstreamKeys map[string
 			aggPool:            newAggregatePool(vendor.LoadBalance, entries),
 			aggRetry:           vendor.Aggregate.Retry,
 			maxAttemptsBudget:  vendor.MaxUpstreamAttempts,
+			errorPolicy:        config.ErrorPolicyConfig{Masking: vendor.ErrorPolicy.Masking},
 		}
 		vendors[name] = agg
 		vendorsByID[entry.ID] = agg
@@ -494,7 +495,8 @@ func (r *Router) ShareRuntimeStateFrom(prev *Router) {
 		vendor.pool.ShareRuntimeStateFrom(prevVendor.pool)
 	}
 	for id, old := range prev.vendorsByID {
-		if _, exists := r.vendorsByID[id]; !exists && old.pool != nil {
+		current := r.vendorsByID[id]
+		if old.pool != nil && (current == nil || current.pool == nil) {
 			old.pool.Retire()
 		}
 	}
@@ -561,6 +563,7 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 	if err != nil {
 		return nil, fmt.Errorf("vendor %s init key pool: %w", name, err)
 	}
+	pool.SetKeyHealthPolicyRevision(keyHealthPolicyRevision(vendor.ErrorPolicy))
 
 	client := &http.Client{
 		Transport: transports.Transport(vendor.Upstream),

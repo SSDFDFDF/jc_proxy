@@ -300,7 +300,13 @@ func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.Vend
 		// {} or null fields inside it restore strategy-specific defaults.
 		next.Performance = prev.Performance
 	}
-	next.ErrorPolicy = mergeErrorPolicyForAdminUpsert(prev.ErrorPolicy, next.ErrorPolicy)
+	// Changing the entry's role starts a new policy scope. Carrying omitted
+	// supplier fields into an aggregate would inject unsupported key settings.
+	prevAggregate := config.NormalizeProvider(prev.Provider, "") == "aggregate"
+	nextAggregate := config.NormalizeProvider(next.Provider, "") == "aggregate"
+	if prevAggregate == nextAggregate {
+		next.ErrorPolicy = mergeErrorPolicyForAdminUpsert(prev.ErrorPolicy, next.ErrorPolicy)
+	}
 	return next
 }
 
@@ -313,24 +319,13 @@ func mergeErrorPolicyForAdminUpsert(prev, next config.ErrorPolicyConfig) config.
 		next.AutoDisable.Keywords = prev.AutoDisable.Keywords
 	}
 
+	next.Failover.RequestError = mergeBoolPtrForAdminUpsert(prev.Failover.RequestError, next.Failover.RequestError)
 	next.Cooldown.RequestError = mergeCooldownRuleForAdminUpsert(prev.Cooldown.RequestError, next.Cooldown.RequestError)
-	next.Cooldown.Unauthorized = mergeCooldownRuleForAdminUpsert(prev.Cooldown.Unauthorized, next.Cooldown.Unauthorized)
-	next.Cooldown.PaymentRequired = mergeCooldownRuleForAdminUpsert(prev.Cooldown.PaymentRequired, next.Cooldown.PaymentRequired)
-	next.Cooldown.Forbidden = mergeCooldownRuleForAdminUpsert(prev.Cooldown.Forbidden, next.Cooldown.Forbidden)
-	next.Cooldown.RateLimit = mergeCooldownRuleForAdminUpsert(prev.Cooldown.RateLimit, next.Cooldown.RateLimit)
-	next.Cooldown.ServerError = mergeCooldownRuleForAdminUpsert(prev.Cooldown.ServerError, next.Cooldown.ServerError)
-	next.Cooldown.OpenAISlowDown = mergeCooldownRuleForAdminUpsert(prev.Cooldown.OpenAISlowDown, next.Cooldown.OpenAISlowDown)
-
-	next.Failover.Unauthorized = mergeBoolPtrForAdminUpsert(prev.Failover.Unauthorized, next.Failover.Unauthorized)
-	next.Failover.PaymentRequired = mergeBoolPtrForAdminUpsert(prev.Failover.PaymentRequired, next.Failover.PaymentRequired)
-	next.Failover.Forbidden = mergeBoolPtrForAdminUpsert(prev.Failover.Forbidden, next.Failover.Forbidden)
-	next.Failover.RateLimit = mergeBoolPtrForAdminUpsert(prev.Failover.RateLimit, next.Failover.RateLimit)
-	next.Failover.ServerError = mergeBoolPtrForAdminUpsert(prev.Failover.ServerError, next.Failover.ServerError)
 
 	// Masking is editable in the console, so an explicit payload wins. The
 	// preservation branch remains as a safety net for API clients (and older
 	// console builds) whose payload carries no masking state at all.
-	if next.Masking.Enabled == nil && len(next.Masking.Rules) == 0 {
+	if next.Masking.Enabled == nil && next.Masking.Rules == nil {
 		next.Masking = prev.Masking
 	}
 

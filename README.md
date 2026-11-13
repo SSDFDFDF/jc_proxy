@@ -7,7 +7,7 @@
 - 按路径转发到不同上游，例如 `/openai/...`、`/anthropic/...`
 - 支持 `round_robin`、`random`、`least_used`、`least_requests`，以及 `lowest_latency`、`highest_success`、`adaptive` 三种性能感知 Key 策略
 - 每个托管 Key 缓存最近 5 次尝试的头耗时/整体耗时，均值随现有统计批量持久化；密钥中心单行显示 `响应/耗时 1s/30s`（详情在悬浮提示），支持手机卡片布局
-- 内置错误分类、自动 cooldown、自动禁用失效 Key、故障切换
+- 按显式错误规则禁用 Key、退避、故障切换与屏蔽；空策略仅统计并透传
 - 支持流式响应转发
 - 支持管理后台、上游 Key 存储和运行时配置更新
 - 支持文件或 PostgreSQL 存储

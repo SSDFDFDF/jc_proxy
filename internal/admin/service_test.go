@@ -185,16 +185,13 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 			Keywords:    []string{"bad_key"},
 		},
 		Cooldown: config.ErrorCooldownConfig{
-			RateLimit:      config.ErrorCooldownRule{Enabled: testBoolPtr(true), Duration: 37 * time.Second},
-			OpenAISlowDown: config.ErrorCooldownRule{Enabled: testBoolPtr(true), Duration: 11 * time.Minute},
+			RequestError: config.ErrorCooldownRule{Enabled: testBoolPtr(true), Duration: 37 * time.Second},
 			ResponseRules: []config.ErrorResponseCooldownRule{
 				{StatusCodes: []int{http.StatusTooManyRequests}, Duration: 9 * time.Second},
 			},
 		},
 		Failover: config.ErrorFailoverConfig{
 			RequestError: testBoolPtr(true),
-			RateLimit:    testBoolPtr(false),
-			ServerError:  testBoolPtr(false),
 		},
 		Masking: config.ErrorMaskingConfig{
 			Rules: []config.ErrorMaskingRule{
@@ -254,20 +251,11 @@ func TestUpsertVendorPreservesHiddenErrorPolicyFields(t *testing.T) {
 	if len(got.ErrorPolicy.AutoDisable.Keywords) != 1 || got.ErrorPolicy.AutoDisable.Keywords[0] != "incorrect_api_key" {
 		t.Fatalf("AutoDisable.Keywords = %#v, want [incorrect_api_key]", got.ErrorPolicy.AutoDisable.Keywords)
 	}
-	if got.ErrorPolicy.Cooldown.RateLimit.Duration != 37*time.Second {
-		t.Fatalf("Cooldown.RateLimit.Duration = %v, want %v", got.ErrorPolicy.Cooldown.RateLimit.Duration, 37*time.Second)
+	if got.ErrorPolicy.Cooldown.RequestError.Duration != 37*time.Second {
+		t.Fatalf("Cooldown.RequestError.Duration = %v, want %v", got.ErrorPolicy.Cooldown.RequestError.Duration, 37*time.Second)
 	}
-	if got.ErrorPolicy.Cooldown.RateLimit.Enabled == nil || !*got.ErrorPolicy.Cooldown.RateLimit.Enabled {
-		t.Fatalf("Cooldown.RateLimit.Enabled = %#v, want true preserved", got.ErrorPolicy.Cooldown.RateLimit.Enabled)
-	}
-	if got.ErrorPolicy.Cooldown.OpenAISlowDown.Duration != 11*time.Minute {
-		t.Fatalf("Cooldown.OpenAISlowDown.Duration = %v, want %v", got.ErrorPolicy.Cooldown.OpenAISlowDown.Duration, 11*time.Minute)
-	}
-	if got.ErrorPolicy.Failover.RateLimit == nil || *got.ErrorPolicy.Failover.RateLimit {
-		t.Fatalf("Failover.RateLimit = %#v, want false preserved", got.ErrorPolicy.Failover.RateLimit)
-	}
-	if got.ErrorPolicy.Failover.ServerError == nil || *got.ErrorPolicy.Failover.ServerError {
-		t.Fatalf("Failover.ServerError = %#v, want false preserved", got.ErrorPolicy.Failover.ServerError)
+	if got.ErrorPolicy.Cooldown.RequestError.Enabled == nil || !*got.ErrorPolicy.Cooldown.RequestError.Enabled {
+		t.Fatalf("Cooldown.RequestError.Enabled = %#v, want true preserved", got.ErrorPolicy.Cooldown.RequestError.Enabled)
 	}
 	if got.ErrorPolicy.Failover.RequestError == nil || *got.ErrorPolicy.Failover.RequestError {
 		t.Fatalf("Failover.RequestError = %#v, want false updated", got.ErrorPolicy.Failover.RequestError)

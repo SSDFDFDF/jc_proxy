@@ -105,66 +105,8 @@ vendors:
     path_rewrites:
       "/v1/chat/completions": "/v1/fim/completions"
       "/v1/files/*": "/v1/storage/*"
-    backoff:
-      threshold: 3
-      duration: 3h
-    error_policy:
-      auto_disable:
-        enabled: true
-        status_codes: [401]
-        # 内置认证标识只匹配 error.code/type 等结构化字段，不匹配反射的模型名/消息。
-        # 其他自定义文本关键词仍是全文匹配，应谨慎配置不可逆自动禁用。
-        keywords: [incorrect_api_key, invalid_api_key]
-      cooldown:
-        # 按顺序匹配自定义退避规则；可只配 status_codes，
-        # 也可叠加 keywords 做更细粒度匹配。
-        response_rules:
-          - status_codes: [401, 403]
-            duration: 30m
-          - status_codes: [402]
-            duration: 3h
-          - status_codes: [429]
-            duration: 5s
-            retry_after: "override" # ignore | override | max
-          - status_codes: [500, 502, 503, 504, 529]
-            duration: 2s
-          - status_codes: [500, 502, 503, 504, 529]
-            keywords: ["slow down"]
-            duration: 15m
-            retry_after: "max"
-      failover:
-        request_error: true
-        max_attempts: 5
-        response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
-      # 错误屏蔽：命中规则的上游错误响应（以及网关自产的上游失败错误，如 502
-      # "upstream request failed"、503 "all vendor keys in cooldown or disabled"）
-      # 在下发客户端前被统一替换，隐藏上游真实状态码、响应头与错误体。
-      # 匹配语义与 cooldown.response_rules 相同（status_codes / keywords，
-      # 先配置先命中）；key 健康决策（禁用/退避/故障转移）仍基于真实响应。
-      masking:
-        enabled: true
-        rules:
-          # 例：上游 405 统一替换为 429，并让 key 退避 45s
-          - status_codes: [405]
-            status_code: 429
-            # 可选：自定义响应体，不配则默认 {"error":{"message":...,"type":"gateway_error"}}
-            # body: '{"error":{"message":"rate limited"}}'
-            # 可选：message 填入默认 JSON 响应体的 message 字段
-            # message: "rate limited, retry later"
-            # 可选：响应 Content-Type，默认 application/json
-            # content_type: "application/json"
-            # 可选：Retry-After 处理：preserve（默认，透传上游值）/ ignore / 固定时长如 "30s"
-            retry_after: "30s"
-            # 可选：命中时将 key 退避该时长（与分类退避取较长者，不会降级禁用决策）
-            cooldown: 45s
-          # 例：按关键字屏蔽（隐藏上游敏感错误详情），统一替换为 500
-          - keywords: ["hard limited", "internal error"]
-            status_code: 500
-          # 例：status_codes + keywords 同时命中才生效
-          - status_codes: [400]
-            keywords: ["sensitive keyword"]
-            status_code: 418
-            retry_after: "ignore"
+    # 空策略仅统计并透传错误；按需配置规则，见 docs/gateway-behavior.md 第 5 节。
+    error_policy: {}
     resin:
       enabled: true
       url: "http://127.0.0.1:2260/my-token"
@@ -194,29 +136,8 @@ vendors:
       Anthropic-Version: "2023-06-01"
     path_rewrites:
       "/v1/messages": "/v1/messages"
-    backoff:
-      threshold: 3
-      duration: 3h
-    error_policy:
-      auto_disable:
-        enabled: true
-        status_codes: [401]
-        keywords: [incorrect_api_key, invalid_api_key]
-      cooldown:
-        response_rules:
-          - status_codes: [401, 403]
-            duration: 30m
-          - status_codes: [402]
-            duration: 3h
-          - status_codes: [429]
-            duration: 5s
-            retry_after: "override"
-          - status_codes: [500, 502, 503, 504, 529]
-            duration: 2s
-      failover:
-        request_error: true
-        max_attempts: 5
-        response_status_codes: [401, 402, 403, 429, 500, 502, 503, 504, 529]
+    # 空策略仅统计并透传错误；按需配置规则，见 docs/gateway-behavior.md 第 5 节。
+    error_policy: {}
     resin:
       enabled: false
       url: ""

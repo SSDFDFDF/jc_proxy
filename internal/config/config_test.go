@@ -268,33 +268,13 @@ func TestLoadDefaultsAdminToDisabledWithoutCIDRRestriction(t *testing.T) {
 		t.Fatalf("Server.WriteTimeout = %v, want 0", cfg.Server.WriteTimeout)
 	}
 	policy := mustVendor(t, cfg, "openai").ErrorPolicy
-	if !boolValue(policy.AutoDisable.Enabled, false) {
-		t.Fatal("ErrorPolicy.AutoDisable.Enabled = false, want true")
+	if len(policy.AutoDisable.StatusCodes) != 0 || len(policy.AutoDisable.Keywords) != 0 || len(policy.Cooldown.ResponseRules) != 0 || len(policy.Failover.ResponseStatusCodes) != 0 || len(policy.Masking.Rules) != 0 {
+		t.Fatalf("empty error policy gained rules: %#v", policy)
 	}
-	if len(policy.AutoDisable.StatusCodes) != 1 || policy.AutoDisable.StatusCodes[0] != 401 {
-		t.Fatalf("ErrorPolicy.AutoDisable.StatusCodes = %v, want [401]", policy.AutoDisable.StatusCodes)
+	if policy.Cooldown.RequestError.Duration != 0 || boolValue(policy.Cooldown.RequestError.Enabled, false) || boolValue(policy.Failover.RequestError, false) {
+		t.Fatalf("empty error policy enabled request-error actions: %#v", policy)
 	}
-	if len(policy.AutoDisable.Keywords) != 2 || policy.AutoDisable.Keywords[0] != "incorrect_api_key" {
-		t.Fatalf("ErrorPolicy.AutoDisable.Keywords = %v, want default keywords", policy.AutoDisable.Keywords)
-	}
-	if !boolValue(policy.Cooldown.RequestError.Enabled, false) || policy.Cooldown.RequestError.Duration != 2*time.Second {
-		t.Fatalf("request_error cooldown = (%v, %v)", boolValue(policy.Cooldown.RequestError.Enabled, false), policy.Cooldown.RequestError.Duration)
-	}
-	if !boolValue(policy.Failover.RateLimit, false) {
-		t.Fatal("ErrorPolicy.Failover.RateLimit = false, want true")
-	}
-	if len(policy.Cooldown.ResponseRules) != 0 {
-		t.Fatalf("len(ErrorPolicy.Cooldown.ResponseRules) = %d, want 0", len(policy.Cooldown.ResponseRules))
-	}
-	if len(policy.Failover.ResponseStatusCodes) != 0 {
-		t.Fatalf("len(ErrorPolicy.Failover.ResponseStatusCodes) = %d, want 0", len(policy.Failover.ResponseStatusCodes))
-	}
-	if policy.Masking.Enabled == nil || !*policy.Masking.Enabled {
-		t.Fatalf("ErrorPolicy.Masking.Enabled = %#v, want true by default", policy.Masking.Enabled)
-	}
-	if len(policy.Masking.Rules) != 0 {
-		t.Fatalf("len(ErrorPolicy.Masking.Rules) = %d, want 0", len(policy.Masking.Rules))
-	}
+
 }
 
 func TestLoadBytesSupportsCustomErrorPolicyRules(t *testing.T) {
@@ -387,9 +367,7 @@ vendors:
 }
 
 // TestExampleConfigStaysLoadable guards the shipped config.example.yaml
-// (including the documented error_policy.masking section) against drift: if
-// the example stops parsing or fails validation, documentation is lying about
-// what the binary accepts.
+// against drift and ensures that its empty policies do not acquire actions.
 func TestExampleConfigStaysLoadable(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
 	if err != nil {
@@ -403,15 +381,9 @@ func TestExampleConfigStaysLoadable(t *testing.T) {
 	if !ok {
 		t.Fatal("openai vendor missing from config.example.yaml")
 	}
-	if vendor.ErrorPolicy.Masking.Enabled == nil || !*vendor.ErrorPolicy.Masking.Enabled {
-		t.Fatalf("openai masking.Enabled = %#v, want true", vendor.ErrorPolicy.Masking.Enabled)
-	}
-	if len(vendor.ErrorPolicy.Masking.Rules) == 0 {
-		t.Fatal("config.example.yaml documents no masking rules")
-	}
-	first := vendor.ErrorPolicy.Masking.Rules[0]
-	if len(first.StatusCodes) != 1 || first.StatusCodes[0] != http.StatusMethodNotAllowed || first.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("first documented masking rule = %#v, want 405 -> 429", first)
+	policy := vendor.ErrorPolicy
+	if len(policy.AutoDisable.StatusCodes) != 0 || len(policy.AutoDisable.Keywords) != 0 || len(policy.Cooldown.ResponseRules) != 0 || len(policy.Failover.ResponseStatusCodes) != 0 || len(policy.Masking.Rules) != 0 || policy.Cooldown.RequestError.Duration != 0 || boolValue(policy.Failover.RequestError, false) {
+		t.Fatalf("example acquired error actions: %+v", policy)
 	}
 }
 
@@ -455,8 +427,8 @@ vendors:
 	}
 
 	masking := mustVendor(t, cfg, "openai").ErrorPolicy.Masking
-	if masking.Enabled == nil || !*masking.Enabled {
-		t.Fatalf("Masking.Enabled = %#v, want true default materialized", masking.Enabled)
+	if !boolValue(masking.Enabled, len(masking.Rules) > 0) {
+		t.Fatal("explicit masking rules should be enabled")
 	}
 	if len(masking.Rules) != 3 {
 		t.Fatalf("len(masking.rules) = %d, want 3", len(masking.Rules))
@@ -901,7 +873,6 @@ func TestPrepareAndValidateRejectsNegativeUpstreamInterimResponseInterval(t *tes
 	}
 }
 
-
 func preserveEnv(t *testing.T, keys ...string) {
 	t.Helper()
 
@@ -954,4 +925,3 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
-
