@@ -304,6 +304,10 @@ func mergeVendorConfigForAdminUpsert(prev, next config.VendorConfig) config.Vend
 	// supplier fields into an aggregate would inject unsupported key settings.
 	prevAggregate := config.NormalizeProvider(prev.Provider, "") == "aggregate"
 	nextAggregate := config.NormalizeProvider(next.Provider, "") == "aggregate"
+	if !nextAggregate && next.Plugins == nil {
+		// Older admin clients omit plugins. An explicit [] clears the chain.
+		next.Plugins = prev.Plugins
+	}
 	if prevAggregate == nextAggregate {
 		next.ErrorPolicy = mergeErrorPolicyForAdminUpsert(prev.ErrorPolicy, next.ErrorPolicy)
 	}

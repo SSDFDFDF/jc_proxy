@@ -451,6 +451,21 @@ func (r *Router) serveVendorRequestWithAggregateHook(w http.ResponseWriter, req 
 	interim := newInterimResponseSender(w, vg.interimInterval)
 	defer interim.stop()
 
+	if len(vg.plugins) > 0 {
+		bodySource, proxyErr := vg.applyRequestPlugins(req, prepared.path, prepared.bodySource)
+		if proxyErr != nil {
+			if req.Context().Err() == nil {
+				writeMaskableGatewayError(w, interim, responseVendor, proxyErr.message, proxyErr.statusCode)
+			}
+			return vendorRequestDone
+		}
+		// The aggregate loop owns prepared.bodySource and must retain the
+		// original request, even when this child transformed its copy.
+		local := *prepared
+		local.bodySource = bodySource
+		prepared = &local
+	}
+
 	triedManagedKeyIdx := execution.getOrCreateTriedKeyIndexes(vg)
 	maxAttempts := vg.errorPolicy.Failover.MaxAttempts
 	if maxAttempts <= 0 {

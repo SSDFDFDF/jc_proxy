@@ -9,6 +9,7 @@
 - 每个托管 Key 缓存最近 5 次尝试的头耗时/整体耗时，均值随现有统计批量持久化；密钥中心单行显示 `响应/耗时 1s/30s`（详情在悬浮提示），支持手机卡片布局
 - 按显式错误规则禁用 Key、退避、故障切换与屏蔽；空策略仅统计并透传
 - 支持流式响应转发
+- 支持原始供应商的请求插件：Go 原生接口优先，可选 JavaScript 脚本，见 [插件配置与接口](docs/gateway-plugins.md)
 - 支持管理后台、上游 Key 存储和运行时配置更新
 - 支持文件或 PostgreSQL 存储
 
@@ -23,6 +24,7 @@ internal/keystore/      上游 Key 存储
 internal/config/        配置加载与校验
 web/                    管理后台前端源码
 config.example.yaml     示例配置
+Makefile                构建、测试与开发命令
 ```
 
 ## 快速开始
@@ -43,10 +45,26 @@ cp config.example.yaml config.yaml
 3. 启动服务
 
 ```bash
-go run ./cmd/jc_proxy -config ./config.yaml
+make run CONFIG=./config.yaml
 ```
 
 默认监听地址由 `server.listen` 决定，示例配置中为 `:8092`。
+
+## 构建与开发
+
+需要 Go 1.26、Node.js/npm 和 GNU Make。`make build` 每次都会重新构建前端，再将最新资源嵌入网关二进制。前端依赖仅在首次执行或依赖清单变更时按锁文件安装。
+
+```bash
+make build          # 生成 bin/jc_proxy 和 bin/jc_proxy_upgrade
+make test           # Go + 前端测试
+make test-race      # Go 全量 race 检查
+make check          # 测试 + go vet
+make bench-plugins  # 插件性能基准
+make clean          # 清理构建产物
+make help           # 查看全部常用命令
+```
+
+例如 `make bench-plugins BENCHTIME=1s BENCH_COUNT=5` 可调整基准参数。`make build` 支持 `-j` 并行构建；`make clean` 保留配置文件、运行数据和已安装的前端依赖。
 
 ## Render 部署
 

@@ -4,6 +4,7 @@ import { CLIENT_HEADER_PRESET_OPTIONS, CLIENT_HEADER_PRESET_PREVIEWS, DEFAULT_CL
 import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, normalizeKeys, panelClass, parseKeysText, recommendedClientHeaderPreset } from '../app/utils'
 import { PerformanceSettings } from '../components/PerformanceSettings'
 import { MapRowsEditor } from '../components/MapRowsEditor'
+import { RequestPluginsEditor } from '../components/RequestPluginsEditor'
 
 const DEFAULT_EXPANDED_SECTIONS = {
   clientKeys: true,
@@ -11,7 +12,8 @@ const DEFAULT_EXPANDED_SECTIONS = {
   errorPolicy: true,
   resin: false,
   clientHeaders: true,
-  requestTransforms: false
+  requestTransforms: false,
+  plugins: false
 }
 
 function countTextItems(text) {
@@ -748,7 +750,10 @@ export function VendorsPage({
                     <select
                       className="select-base"
                       value={vendorDraft.provider || 'generic'}
-                      onChange={(e) => onMutateVendorDraft((draft) => { draft.provider = e.target.value })}
+                      onChange={(e) => onMutateVendorDraft((draft) => {
+                        draft.provider = e.target.value
+                        if (draft.provider === 'aggregate') draft.plugins = []
+                      })}
                     >
                       <option value="generic">generic</option>
                       <option value="openai">openai</option>
@@ -1481,6 +1486,15 @@ export function VendorsPage({
                 keyPlaceholder="/from/path 或 /from/*"
                 valuePlaceholder="/to/path 或 /to/*"
               />
+            </CollapsibleSection>
+            <CollapsibleSection
+              title="请求插件"
+              description="仅本供应商生效；聚合转发到本供应商时同样执行。"
+              summary={`${(vendorDraft.plugins || []).length} 个插件`}
+              open={expandedSections.plugins}
+              onToggle={() => toggleSection('plugins')}
+            >
+              <RequestPluginsEditor plugins={vendorDraft.plugins || []} disabled={busy} onChange={(plugins) => onMutateVendorDraft((draft) => { draft.plugins = plugins })} />
             </CollapsibleSection>
             </>)}
           </div>

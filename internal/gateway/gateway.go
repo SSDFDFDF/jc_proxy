@@ -59,6 +59,7 @@ type vendorGateway struct {
 	rewrites              rewriteMatcher
 	resinRuntime          *resin.RuntimeConfig
 	keyCtrl               UpstreamKeyController
+	plugins               []RequestPlugin
 
 	// Aggregate fields
 	isAggregate bool
@@ -531,6 +532,10 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 	name := entry.Name
 	vendorID := entry.ID
 	vendor := entry.VendorConfig
+	plugins, err := loadRequestPlugins(vendor.Plugins)
+	if err != nil {
+		return nil, fmt.Errorf("vendor %s: %w", name, err)
+	}
 	baseURL, err := url.Parse(strings.TrimSpace(vendor.Upstream.BaseURL))
 	if err != nil {
 		return nil, fmt.Errorf("vendor %s parse upstream base_url: %w", name, err)
@@ -610,6 +615,7 @@ func buildVendorGateway(entry config.VendorEntry, upstreamKeys map[string][]keys
 		rewrites:              newRewriteMatcher(vendor.PathRewrites),
 		resinRuntime:          rr,
 		keyCtrl:               keyCtrl,
+		plugins:               plugins,
 	}, nil
 }
 

@@ -228,6 +228,24 @@ func (v *vendorGateway) executeTest(ctx context.Context, req VendorTestRequest) 
 	if len(bodyBytes) > 0 {
 		upReq.ContentLength = int64(len(bodyBytes))
 	}
+	if len(v.plugins) > 0 {
+		source, proxyErr := v.applyRequestPlugins(upReq, resolvedPath, newBufferedBodySource(bodyBytes, isSafeRetryMethod(method), false))
+		if proxyErr != nil {
+			return nil, fmt.Errorf("request plugin preparation: %s", proxyErr.message)
+		}
+		if upReq.Body != nil {
+			_ = upReq.Body.Close()
+		}
+		upReq.Body, err = source.Body()
+		if err != nil {
+			return nil, err
+		}
+		upReq.GetBody = nil
+		upReq.ContentLength = source.contentLength
+		if source.modified {
+			clearTransformedBodyHeaders(upReq.Header)
+		}
+	}
 
 	startedAt := time.Now()
 	resp, err := v.client.Do(upReq)

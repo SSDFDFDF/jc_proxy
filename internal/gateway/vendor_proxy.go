@@ -110,6 +110,9 @@ func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetUR
 		return nil, err
 	}
 	upReq.Header = v.forwardHeaders(headers, selectedKey)
+	if bodySource != nil && bodySource.modified {
+		clearTransformedBodyHeaders(upReq.Header)
+	}
 	if upReq.Header.Get("User-Agent") == "" {
 		upReq.Header["User-Agent"] = []string{""}
 	}
@@ -118,6 +121,12 @@ func (v *vendorGateway) newUpstreamRequest(ctx context.Context, method, targetUR
 		upReq.ContentLength = bodySource.contentLength
 	}
 	return upReq, nil
+}
+
+func clearTransformedBodyHeaders(headers http.Header) {
+	for _, name := range []string{"Content-Length", "Content-Encoding", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest"} {
+		headers.Del(name)
+	}
 }
 
 func (v *vendorGateway) hasAvailableKey(excluded map[int]struct{}, allowedKeyIdxs []int) bool {

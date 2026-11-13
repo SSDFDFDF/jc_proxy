@@ -176,6 +176,7 @@ export function withVendorDefaults(vendor) {
   const clientKeys = normalizeKeys(Array.isArray(next.client_auth?.keys) ? next.client_auth.keys : [])
   return {
     provider: next.provider || base.provider,
+    plugins: Array.isArray(next.plugins) ? next.plugins : [],
     max_upstream_attempts: next.max_upstream_attempts > 0 ? next.max_upstream_attempts : base.max_upstream_attempts,
     upstream: {
       ...base.upstream,

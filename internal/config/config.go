@@ -148,7 +148,8 @@ type UpstreamKeyStorePGSQLConfig struct {
 }
 
 type VendorConfig struct {
-	Provider string `yaml:"provider" json:"provider"`
+	Provider string         `yaml:"provider" json:"provider"`
+	Plugins  []PluginConfig `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 	// MaxUpstreamAttempts is the request-level hard budget shared by key
 	// failover and aggregate child switching.
 	MaxUpstreamAttempts int                 `yaml:"max_upstream_attempts" json:"max_upstream_attempts"`
@@ -974,6 +975,9 @@ func (c *Config) validate(requireVendors bool) error {
 		vendorName := c.Vendors[i].Name
 		vendorID := c.Vendors[i].ID
 		vendor := c.Vendors[i].VendorConfig
+		if err := validatePlugins(vendor.Plugins, NormalizeProvider(vendor.Provider, vendorName) == "aggregate"); err != nil {
+			return fmt.Errorf("vendor %q: %w", vendorName, err)
+		}
 		if vendor.MaxUpstreamAttempts < 1 || vendor.MaxUpstreamAttempts > MaxUpstreamAttemptsLimit {
 			return fmt.Errorf("vendor %q max_upstream_attempts must be between 1 and %d", vendorName, MaxUpstreamAttemptsLimit)
 		}

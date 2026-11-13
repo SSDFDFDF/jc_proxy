@@ -105,6 +105,17 @@ vendors:
     path_rewrites:
       "/v1/chat/completions": "/v1/fim/completions"
       "/v1/files/*": "/v1/storage/*"
+    # 可选请求插件，仅原始供应商可配置。默认不启用；按数组顺序执行。
+    # 优先使用原生 Go 实现；builtin / script / source 三选一。
+    # plugins:
+    #   - name: "history-filter"
+    #     builtin: "codex-history-filter"
+    #     # script: "./plugins/codex-history-filter.js" # 改用脚本时移除 builtin
+    #     methods: [POST]
+    #     paths: ["/v1/responses", "/responses"] # 匹配路径重写后的路径
+    #     timeout: 100ms
+    #     max_body_bytes: 4194304
+    # 完整接口、性能与限制见 docs/gateway-plugins.md。
     # 空策略仅统计并透传错误；按需配置规则，见 docs/gateway-behavior.md 第 5 节。
     error_policy: {}
     resin:

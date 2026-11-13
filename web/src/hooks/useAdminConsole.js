@@ -633,6 +633,11 @@ export function useAdminConsole() {
       next.client_headers.drop = textToList(dropHeadersText)
       next.inject_headers = rowsToMap(injectRows)
       next.path_rewrites = rowsToMap(rewriteRows)
+      next.plugins = (next.plugins || []).map((plugin) => ({
+        ...plugin,
+        methods: (plugin.methods || []).map((value) => value.trim()).filter(Boolean),
+        paths: (plugin.paths || []).map((value) => value.trim()).filter(Boolean)
+      }))
       next.client_auth.keys = normalizeKeys(next.client_auth.keys || [])
       if (next.client_auth.keys.length === 0) next.client_auth.enabled = true
 

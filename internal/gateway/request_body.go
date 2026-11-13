@@ -16,6 +16,7 @@ import (
 const maxReplayableRequestBodyBytes = 4 << 20
 
 type requestBodySource struct {
+	modified      bool
 	replayable    bool
 	safeRetry     bool
 	contentLength int64
@@ -143,14 +144,37 @@ func prepareRequestBody(req *http.Request, allowReplay bool) (*requestBodySource
 	}
 
 	raw := buf[:len(buf):len(buf)]
-	return &requestBodySource{
-		replayable:    true,
-		safeRetry:     safeRetry,
-		contentLength: int64(len(raw)),
+	return newBufferedBodySource(raw, safeRetry, false), nil
+}
+
+// bufferedRequestBody exposes immutable buffered bytes to native plugins, so
+// transforming an already replayable request does not copy it through ReadAll.
+// Keeping the buffer here avoids adding fields to every requestBodySource.
+type bufferedRequestBody struct {
+	raw    []byte
+	offset int
+}
+
+func (b *bufferedRequestBody) Read(dst []byte) (int, error) {
+	if b.offset == len(b.raw) {
+		return 0, io.EOF
+	}
+	n := copy(dst, b.raw[b.offset:])
+	b.offset += n
+	return n, nil
+}
+
+func (b *bufferedRequestBody) Close() error { return nil }
+
+func newBufferedBodySource(raw []byte, safeRetry, modified bool) *requestBodySource {
+	return &requestBodySource{replayable: true, safeRetry: safeRetry, contentLength: int64(len(raw)), modified: modified,
 		newBody: func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(raw)), nil
+			if len(raw) == 0 {
+				return http.NoBody, nil
+			}
+			return &bufferedRequestBody{raw: raw}, nil
 		},
-	}, nil
+	}
 }
 
 func newSingleUseBodySource(body io.ReadCloser, contentLength int64, safeRetry bool) *requestBodySource {

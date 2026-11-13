@@ -2,6 +2,18 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildNewVendorConfig, emptyVendorConfig, withVendorDefaults } from './utils.js'
 
+test('vendor edits preserve plugin order, scripts and options without aliasing saved config', () => {
+  const plugins = [
+    { name: 'native', builtin: 'codex-history-filter', methods: ['POST'], paths: ['/v1/responses'] },
+    { name: 'custom', source: 'function onRequest(r) { return r.body; }', enabled: false, timeout: 20_000_000, max_body_bytes: 1024 }
+  ]
+  const draft = withVendorDefaults({ plugins })
+  assert.deepEqual(draft.plugins, plugins)
+  draft.plugins[0].methods.push('GET')
+  assert.deepEqual(plugins[0].methods, ['POST'])
+  assert.deepEqual(withVendorDefaults({ plugins: [] }).plugins, [])
+})
+
 test('new vendors use bounded uploads and empty error policies', () => {
   const config = emptyVendorConfig()
   assert.equal(config.upstream.upload_timeout, 300_000_000_000)
