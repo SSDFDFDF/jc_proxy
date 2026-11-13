@@ -102,6 +102,7 @@ function App() {
           vendorDraft={config.vendorDraft}
           upstreamKeysData={upstream.upstreamKeysData}
           runtimeStats={statsView.stats}
+          onRefreshStats={() => statsView.loadStats(false, true)}
           invalidKeyStatusCodesText={config.invalidKeyStatusCodesText}
           invalidKeyKeywordsText={config.invalidKeyKeywordsText}
           requestErrorCooldownText={config.requestErrorCooldownText}

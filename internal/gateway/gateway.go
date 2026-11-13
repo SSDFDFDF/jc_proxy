@@ -59,7 +59,7 @@ type vendorGateway struct {
 	rewrites              rewriteMatcher
 	resinRuntime          *resin.RuntimeConfig
 	keyCtrl               UpstreamKeyController
-	plugins               []RequestPlugin
+	plugins               []*loadedRequestPlugin
 
 	// Aggregate fields
 	isAggregate bool
@@ -494,6 +494,7 @@ func (r *Router) ShareRuntimeStateFrom(prev *Router) {
 			continue
 		}
 		vendor.pool.ShareRuntimeStateFrom(prevVendor.pool)
+		vendor.sharePluginStatsFrom(prevVendor)
 	}
 	for id, old := range prev.vendorsByID {
 		current := r.vendorsByID[id]

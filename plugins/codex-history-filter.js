@@ -25,23 +25,39 @@ function onRequest(request) {
     reject(400, "History filtering cannot transfer compaction context. Start a session with a text summary.");
   }
 
+  const storeDisabled = body.store !== false;
+  let reasoningRemoved = 0, idsRemoved = 0, includesRemoved = 0;
   body.store = false;
   if (Array.isArray(body.include)) {
-    body.include = body.include.filter(value => value !== "reasoning.encrypted_content");
+    body.include = body.include.filter(value => {
+      if (value !== "reasoning.encrypted_content") return true;
+      includesRemoved++;
+      return false;
+    });
   }
   const portableTypes = ["message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"];
   if (Array.isArray(body.input)) {
-    body.input = body.input.filter(item => !item || item.type !== "reasoning").map(item => {
+    body.input = body.input.filter(item => {
+      if (!item || item.type !== "reasoning") return true;
+      reasoningRemoved++;
+      return false;
+    }).map(item => {
       if (!item || typeof item !== "object") return item;
       if (item.type === "compaction" || item.type === "item_reference" || item.encrypted_content) {
         reject(400, "History filtering cannot transfer encrypted context or item references. Supply complete text history.");
       }
       const message = item.type === undefined && typeof item.role === "string" && item.content !== undefined;
-      if (message || portableTypes.includes(item.type)) delete item.id;
+      // JSON.parse never produces undefined; this includes id:null as present.
+      if ((message || portableTypes.includes(item.type)) && item.id !== undefined) {
+        idsRemoved++;
+        delete item.id;
+      }
       // call_id pairs tools with their results. Nested resource IDs, unknown
       // item types, message content and the current reasoning settings stay.
       return item;
     });
   }
-  return JSON.stringify(body);
+  // Optional host API; compatible with gateways predating runtime summaries.
+  if (typeof reportHistory === "function") reportHistory(reasoningRemoved, idsRemoved, includesRemoved, storeDisabled);
+  return storeDisabled || reasoningRemoved || idsRemoved || includesRemoved ? JSON.stringify(body) : request.body;
 }

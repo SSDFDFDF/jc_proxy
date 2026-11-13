@@ -19,6 +19,8 @@
 cmd/jc_proxy/           程序入口
 cmd/jc_proxy_upgrade/   数据结构升级命令
 internal/gateway/       网关转发与 Key 策略
+internal/plugins/       原生插件接口与独立实现（codexhistory/）
+plugins/                可直接加载的 JavaScript 示例与许可证
 internal/admin/         管理后台与配置管理
 internal/keystore/      上游 Key 存储
 internal/config/        配置加载与校验

@@ -723,6 +723,7 @@ func (s *Service) Stats(query RuntimeStatsQuery) map[string]any {
 	if r == nil {
 		return map[string]any{
 			"vendors": map[string][]map[string]any{},
+			"plugins": map[string][]gateway.PluginStats{},
 			"meta": RuntimeStatsMeta{
 				VendorID: strings.TrimSpace(query.VendorID),
 				Filter:   normalizeRuntimeStatsFilter(query.Filter),
@@ -733,7 +734,9 @@ func (s *Service) Stats(query RuntimeStatsQuery) map[string]any {
 			},
 		}
 	}
-	return buildRuntimeStatsResponse(r.VendorStats(), query)
+	out := buildRuntimeStatsResponse(r.VendorStats(), query)
+	out["plugins"] = r.PluginStats(strings.TrimSpace(query.VendorID))
+	return out
 }
 
 func (s *Service) VendorTestMeta(vendorID string) (*VendorTestMetaResponse, error) {

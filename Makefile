@@ -73,7 +73,7 @@ fmt:
 	$(GOFMT) -w cmd internal
 
 bench-plugins: web
-	$(GO) test ./internal/gateway -run '^$$' -bench '^BenchmarkRequestPlugins$$' \
+	$(GO) test ./internal/gateway -run '^$$' -bench '^Benchmark(RequestPlugins|PluginObservation)$$' \
 		-benchmem -cpu=1 -benchtime="$(BENCHTIME)" -count="$(BENCH_COUNT)"
 
 clean:

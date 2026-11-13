@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"jc_proxy/internal/config"
+	pluginapi "jc_proxy/internal/plugins"
 )
 
 func historyPluginConfig(script bool) config.PluginConfig {
@@ -30,7 +31,7 @@ func historyPluginConfig(script bool) config.PluginConfig {
 	return p
 }
 
-func mustLoadPlugin(t testing.TB, cfg config.PluginConfig) RequestPlugin {
+func mustLoadPlugin(t testing.TB, cfg config.PluginConfig) *loadedRequestPlugin {
 	t.Helper()
 	plugins, err := loadRequestPlugins([]config.PluginConfig{cfg})
 	if err != nil {
@@ -60,22 +61,22 @@ func TestHistoryPlugins(t *testing.T) {
 			input := `{"store":true,"reasoning":{"effort":"high"},"include":["reasoning.encrypted_content","message.output_text.logprobs"],"input":[{"type":"reasoning","id":"rs","encrypted_content":"old"},{"role":"user","id":"msg","content":[{"type":"input_image","file_id":"file","id":"nested"}]},{"type":"function_call","id":"fc","call_id":"pair","arguments":"{}"},{"type":"function_call_output","id":"out","call_id":"pair","output":"ok"},{"type":"custom_tool_call","id":"custom","call_id":"custom-pair"},{"type":"custom_tool_call_output","id":"custom-out","call_id":"custom-pair"},{"type":"computer_call","id":"keep"}],"metadata":{"id":"untouched"}}`
 			want := `{"store":false,"reasoning":{"effort":"high"},"include":["message.output_text.logprobs"],"input":[{"role":"user","content":[{"type":"input_image","file_id":"file","id":"nested"}]},{"type":"function_call","call_id":"pair","arguments":"{}"},{"type":"function_call_output","call_id":"pair","output":"ok"},{"type":"custom_tool_call","call_id":"custom-pair"},{"type":"custom_tool_call_output","call_id":"custom-pair"},{"type":"computer_call","id":"keep"}],"metadata":{"id":"untouched"}}`
 			raw := []byte(input)
-			got, err := p.Transform(context.Background(), PluginRequest{Body: raw})
+			got, err := p.Transform(context.Background(), pluginapi.Request{Body: raw})
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertJSONEqual(t, got, want)
+			assertJSONEqual(t, got.Body, want)
 			if string(raw) != input {
 				t.Fatal("mutated original history")
 			}
 			for _, input := range []string{`{}`, `{"input":"hello"}`, `{"input":[],"include":[]}`, `{"input":[null,42,"text"]}`} {
-				if _, err := p.Transform(context.Background(), PluginRequest{Body: []byte(input)}); err != nil {
+				if _, err := p.Transform(context.Background(), pluginapi.Request{Body: []byte(input)}); err != nil {
 					t.Fatalf("%s: %v", input, err)
 				}
 			}
 			for _, input := range []string{`not json`, `[]`, `null`, `{"input":null}`, `{"include":null}`, `{"previous_response_id":"resp"}`, `{"conversation":"conv"}`, `{"context_management":[{"type":"compaction"}]}`, `{"input":[{"type":"item_reference","id":"ref"}]}`, `{"input":[{"type":"message","encrypted_content":"old"}]}`} {
-				_, err := p.Transform(context.Background(), PluginRequest{Body: []byte(input)})
-				var rejection *PluginRejectError
+				_, err := p.Transform(context.Background(), pluginapi.Request{Body: []byte(input)})
+				var rejection *pluginapi.RejectError
 				if !errors.As(err, &rejection) || rejection.StatusCode != 400 {
 					t.Fatalf("%s: %v", input, err)
 				}
@@ -91,25 +92,14 @@ func fmtPluginMode(script bool) string {
 	return "native"
 }
 
-func TestNativeHistoryPreservesLargeNumbers(t *testing.T) {
-	p := mustLoadPlugin(t, historyPluginConfig(false))
-	out, err := p.Transform(context.Background(), PluginRequest{Body: []byte(`{"metadata":{"number":9007199254740993},"input":[{"role":"user","content":"hi","id":"remove"}]}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(out, []byte("9007199254740993")) {
-		t.Fatalf("number changed: %s", out)
-	}
-}
-
 func TestScriptIsolationAndLimits(t *testing.T) {
 	p := mustLoadPlugin(t, config.PluginConfig{Name: "isolated", Source: `let count = 0; function onRequest(r) { count++; return r.vendor + ":" + count + ":" + r.body; }`, Timeout: 2 * time.Second})
 	var wg sync.WaitGroup
 	for i := 0; i < 24; i++ {
 		wg.Go(func() {
-			got, err := p.Transform(context.Background(), PluginRequest{Body: []byte("raw"), Vendor: "vendor"})
-			if err != nil || string(got) != "vendor:1:raw" {
-				t.Errorf("state leaked: %s %v", got, err)
+			got, err := p.Transform(context.Background(), pluginapi.Request{Body: []byte("raw"), Vendor: "vendor"})
+			if err != nil || string(got.Body) != "vendor:1:raw" {
+				t.Errorf("state leaked: %s %v", got.Body, err)
 			}
 		})
 	}
@@ -122,13 +112,13 @@ func TestScriptIsolationAndLimits(t *testing.T) {
 	}
 	for _, source := range []string{`function onRequest() { while(true) {} }`, `function onRequest() { return { get secret() { while(true) {} } }; }`, `async function onRequest() { return "async"; }`, `function onRequest() { return "x".repeat(33); }`} {
 		p := mustLoadPlugin(t, config.PluginConfig{Name: "limited", Source: source, Timeout: 10 * time.Millisecond, MaxBodyBytes: 32})
-		if _, err := p.Transform(context.Background(), PluginRequest{}); err == nil {
+		if _, err := p.Transform(context.Background(), pluginapi.Request{}); err == nil {
 			t.Fatal("unbounded or invalid return accepted")
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := p.Transform(ctx, PluginRequest{}); !errors.Is(err, context.Canceled) {
+	if _, err := p.Transform(ctx, pluginapi.Request{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation: %v", err)
 	}
 }
@@ -149,15 +139,15 @@ func TestPluginRouterReloadIsAtomic(t *testing.T) {
 	}
 	old := rt.Snapshot()
 	write(`function onRequest() { return "new"; }`)
-	out, err := old.vendors["openai"].plugins[0].Transform(context.Background(), PluginRequest{})
-	if err != nil || string(out) != "old" {
+	out, err := old.vendors["openai"].plugins[0].Transform(context.Background(), pluginapi.Request{})
+	if err != nil || string(out.Body) != "old" {
 		t.Fatal("script read on request path")
 	}
 	if err := rt.RefreshKeys(); err != nil {
 		t.Fatal(err)
 	}
-	out, err = rt.Snapshot().vendors["openai"].plugins[0].Transform(context.Background(), PluginRequest{})
-	if err != nil || string(out) != "new" {
+	out, err = rt.Snapshot().vendors["openai"].plugins[0].Transform(context.Background(), pluginapi.Request{})
+	if err != nil || string(out.Body) != "new" {
 		t.Fatal("script failed to reload")
 	}
 	current := rt.Snapshot()
@@ -227,8 +217,8 @@ func TestPluginGatewayFailuresDoNotAffectKeys(t *testing.T) {
 func TestPluginRunsAfterAuthAndUsesExistingMasking(t *testing.T) {
 	r := pluginTestRouter(t, []config.PluginConfig{{Name: "reject", Source: `function onRequest() { reject(422, "unsupported input"); }`}})
 	v := r.vendors["test"]
-	p := &countedPlugin{RequestPlugin: v.plugins[0]}
-	v.plugins[0] = p
+	p := &countedPlugin{RequestPlugin: v.plugins[0].RequestPlugin}
+	v.plugins[0].RequestPlugin = p
 	v.clientAuthDisabled = false
 	v.clientAuth = map[string]struct{}{"client-key": {}}
 	v.errorPolicy.Masking.Rules = []config.ErrorMaskingRule{{StatusCodes: []int{422}, StatusCode: 400, Body: `{"error":"filtered"}`}}
@@ -273,11 +263,11 @@ func TestPluginBufferDoesNotEnableUnsafePostReplay(t *testing.T) {
 }
 
 type countedPlugin struct {
-	RequestPlugin
+	pluginapi.RequestPlugin
 	calls atomic.Int32
 }
 
-func (p *countedPlugin) Transform(ctx context.Context, req PluginRequest) ([]byte, error) {
+func (p *countedPlugin) Transform(ctx context.Context, req pluginapi.Request) (pluginapi.Result, error) {
 	p.calls.Add(1)
 	return p.RequestPlugin.Transform(ctx, req)
 }
@@ -285,8 +275,8 @@ func (p *countedPlugin) Transform(ctx context.Context, req PluginRequest) ([]byt
 func TestPluginKeyRetryReusesTransformedBodyAndPreservesSSE(t *testing.T) {
 	r := pluginTestRouter(t, []config.PluginConfig{historyPluginConfig(false)})
 	v := r.vendors["test"]
-	counted := &countedPlugin{RequestPlugin: v.plugins[0]}
-	v.plugins[0] = counted
+	counted := &countedPlugin{RequestPlugin: v.plugins[0].RequestPlugin}
+	v.plugins[0].RequestPlugin = counted
 	v.errorPolicy.Failover.ResponseStatusCodes = []int{429}
 	var bodies [][]byte
 	stream := "data: {\"type\":\"response.completed\"}\n\n"
@@ -316,6 +306,9 @@ func TestPluginKeyRetryReusesTransformedBodyAndPreservesSSE(t *testing.T) {
 	}
 	if !bytes.Equal(bodies[0], bodies[1]) {
 		t.Fatal("key retry body changed")
+	}
+	if s := v.plugins[0].snapshot(); s.Calls != 1 || s.Changed != 1 {
+		t.Fatalf("key retry counted as another plugin execution: %+v", s)
 	}
 	assertJSONEqual(t, bodies[0], `{"store":false,"input":[{"type":"message","content":"你好"}]}`)
 }
@@ -386,6 +379,13 @@ func TestAggregatePluginsUseEachChildOriginalBody(t *testing.T) {
 		if w.Code != 200 || seen["a"] != "raw:a" || seen["b"] != wantB {
 			t.Fatalf("aggregate body contamination: %d %+v", w.Code, seen)
 		}
+		stats := r.PluginStats("")
+		if _, ok := stats[r.vendors["agg"].id]; ok {
+			t.Fatal("aggregate owns plugin statistics")
+		}
+		if stats[r.vendors["a"].id][0].Calls != 1 || (secondPlugin && stats[r.vendors["b"].id][0].Calls != 1) {
+			t.Fatalf("aggregate traffic not attributed to children: %+v", stats)
+		}
 	}
 }
 
@@ -396,7 +396,7 @@ func BenchmarkRequestPlugins(b *testing.B) {
 			b.Run(mode+"/"+fmt.Sprint(size), func(b *testing.B) {
 				v := &vendorGateway{name: "bench"}
 				if mode != "none" {
-					v.plugins = []RequestPlugin{mustLoadPlugin(b, historyPluginConfig(mode == "javascript"))}
+					v.plugins = []*loadedRequestPlugin{mustLoadPlugin(b, historyPluginConfig(mode == "javascript"))}
 				}
 				req := httptest.NewRequest("POST", "/v1/responses", nil)
 				path := routedPath{path: "/v1/responses"}

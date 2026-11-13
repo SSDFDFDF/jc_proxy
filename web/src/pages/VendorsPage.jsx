@@ -5,6 +5,7 @@ import { buildVendorRequestEndpoint, buttonClass, clone, generateClientKey, norm
 import { PerformanceSettings } from '../components/PerformanceSettings'
 import { MapRowsEditor } from '../components/MapRowsEditor'
 import { RequestPluginsEditor } from '../components/RequestPluginsEditor'
+import { RequestPluginStats } from '../components/RequestPluginStats'
 
 const DEFAULT_EXPANDED_SECTIONS = {
   clientKeys: true,
@@ -99,6 +100,7 @@ export function VendorsPage({
   vendorDraft,
   upstreamKeysData,
   runtimeStats,
+  onRefreshStats,
   invalidKeyStatusCodesText,
   invalidKeyKeywordsText,
   requestErrorCooldownText,
@@ -1494,6 +1496,7 @@ export function VendorsPage({
               open={expandedSections.plugins}
               onToggle={() => toggleSection('plugins')}
             >
+              <RequestPluginStats stats={runtimeStats?.plugins ? runtimeStats.plugins[selectedVendorID] || [] : undefined} onRefresh={onRefreshStats} disabled={busy} />
               <RequestPluginsEditor plugins={vendorDraft.plugins || []} disabled={busy} onChange={(plugins) => onMutateVendorDraft((draft) => { draft.plugins = plugins })} />
             </CollapsibleSection>
             </>)}

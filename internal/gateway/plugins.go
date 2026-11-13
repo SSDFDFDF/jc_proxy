@@ -6,77 +6,32 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/dop251/goja"
 	"jc_proxy/internal/config"
+	"jc_proxy/internal/plugins"
+	"jc_proxy/internal/plugins/codexhistory"
 )
 
-// RequestPlugin is the request-body extension point. Implementations must be
-// safe for concurrent use and must treat Body as immutable. A transform never
-// receives credentials or an upstream response and cannot change routing,
-// authentication or retry policy.
-type RequestPlugin interface {
-	Name() string
-	Matches(method, path string) bool
-	BodyLimit() int64
-	Transform(context.Context, PluginRequest) ([]byte, error)
+// Factories run once per router build; concrete implementations live outside
+// the gateway and are shared by concurrent requests.
+var builtinRequestPlugins = map[string]func(config.PluginConfig) plugins.RequestPlugin{
+	"codex-history-filter": codexhistory.New,
 }
-
-type PluginRequest struct {
-	Body     []byte `json:"body"`
-	Method   string `json:"method"`
-	Path     string `json:"path"`
-	VendorID string `json:"vendor_id"`
-	Vendor   string `json:"vendor"`
-	Provider string `json:"provider"`
-}
-
-// PluginRejectError is an intentional client rejection, separate from script
-// execution failures. Neither kind is an upstream attempt or a key failure.
-type PluginRejectError struct {
-	StatusCode int
-	Message    string
-}
-
-func (e *PluginRejectError) Error() string { return e.Message }
 
 type scriptRequestPlugin struct {
-	pluginMatcher
+	plugins.Matcher
 	program *goja.Program
 }
 
-type pluginMatcher struct{ cfg config.PluginConfig }
-
-func (p pluginMatcher) Name() string     { return p.cfg.Name }
-func (p pluginMatcher) BodyLimit() int64 { return p.cfg.BodyLimit() }
-func (p pluginMatcher) Matches(method, path string) bool {
-	methodOK := len(p.cfg.Methods) == 0
-	for _, m := range p.cfg.Methods {
-		if method == m {
-			methodOK = true
-			break
-		}
-	}
-	if !methodOK {
-		return false
-	}
-	if len(p.cfg.Paths) == 0 {
-		return true
-	}
-	for _, pattern := range p.cfg.Paths {
-		if pattern == path || (strings.HasSuffix(pattern, "*") && strings.HasPrefix(path, strings.TrimSuffix(pattern, "*"))) {
-			return true
-		}
-	}
-	return false
-}
-
-func loadRequestPlugins(configs []config.PluginConfig) ([]RequestPlugin, error) {
-	var out []RequestPlugin
+func loadRequestPlugins(configs []config.PluginConfig) ([]*loadedRequestPlugin, error) {
+	var out []*loadedRequestPlugin
 	for _, cfg := range configs {
 		if !cfg.IsEnabled() {
 			continue
@@ -86,7 +41,7 @@ func loadRequestPlugins(configs []config.PluginConfig) ([]RequestPlugin, error) 
 			if !ok {
 				return nil, fmt.Errorf("plugin %q: unknown builtin %q", cfg.Name, cfg.Builtin)
 			}
-			out = append(out, factory(cfg))
+			out = append(out, observeRequestPlugin(factory(cfg), cfg, ""))
 			continue
 		}
 		source := cfg.Source
@@ -120,43 +75,65 @@ func loadRequestPlugins(configs []config.PluginConfig) ([]RequestPlugin, error) 
 		if err != nil {
 			return nil, fmt.Errorf("plugin %q: compile failed", cfg.Name)
 		}
-		p := &scriptRequestPlugin{pluginMatcher: pluginMatcher{cfg: cfg}, program: program}
+		p := &scriptRequestPlugin{Matcher: plugins.NewMatcher(cfg), program: program}
 		// Reject invalid initialization before a candidate router is persisted.
 		if _, err := p.execute(context.Background(), nil); err != nil {
 			return nil, fmt.Errorf("plugin %q: initialization failed", cfg.Name)
 		}
-		out = append(out, p)
+		out = append(out, observeRequestPlugin(p, cfg, source))
 	}
 	return out, nil
 }
 
-func (p *scriptRequestPlugin) Transform(ctx context.Context, req PluginRequest) ([]byte, error) {
+func (p *scriptRequestPlugin) Transform(ctx context.Context, req plugins.Request) (plugins.Result, error) {
 	return p.execute(ctx, &req)
 }
 
-func (p *scriptRequestPlugin) execute(parent context.Context, req *PluginRequest) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(parent, p.cfg.ExecutionTimeout())
+func (p *scriptRequestPlugin) execute(parent context.Context, req *plugins.Request) (plugins.Result, error) {
+	ctx, cancel := context.WithTimeout(parent, p.ExecutionTimeout())
 	defer cancel()
 	vm := goja.New()
 	vm.SetMaxCallStackSize(256)
 	stop := context.AfterFunc(ctx, func() { vm.Interrupt(ctx.Err()) })
 	defer stop()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return plugins.Result{}, err
 	}
-	var rejection *PluginRejectError
+	var summary plugins.Summary
+	// Optional numeric report: no free text, body/ID retention or extra parse.
+	_ = vm.Set("reportHistory", func(call goja.FunctionCall) goja.Value {
+		var counts [3]int64
+		for i := range counts {
+			value := call.Argument(i)
+			t := value.ExportType()
+			if t != reflect.TypeFor[int64]() && t != reflect.TypeFor[float64]() {
+				panic(vm.NewTypeError("reportHistory counts must be non-negative integers"))
+			}
+			n := value.ToFloat()
+			if math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > 64<<20 || n != math.Trunc(n) {
+				panic(vm.NewTypeError("reportHistory counts must be integers between 0 and 67108864"))
+			}
+			counts[i] = int64(n)
+		}
+		if call.Argument(3).ExportType() != reflect.TypeFor[bool]() {
+			panic(vm.NewTypeError("reportHistory storeDisabled must be a boolean"))
+		}
+		summary = plugins.Summary{Reported: true, ReasoningRemoved: counts[0], IDsRemoved: counts[1], IncludesRemoved: counts[2], StoreDisabled: call.Argument(3).ToBoolean()}
+		return goja.Undefined()
+	})
+	var rejection *plugins.RejectError
 	_ = vm.Set("reject", func(status int, message string) {
 		if status < 400 || status > 499 || message == "" || len(message) > 512 {
 			panic(vm.NewTypeError("reject requires a 4xx status and a message of 1-512 bytes"))
 		}
-		rejection = &PluginRejectError{StatusCode: status, Message: message}
+		rejection = &plugins.RejectError{StatusCode: status, Message: message}
 		panic(vm.NewGoError(rejection))
 	})
 	hook, err := vm.RunProgram(p.program)
 	if err == nil && req != nil {
 		fn, ok := goja.AssertFunction(hook)
 		if !ok {
-			return nil, errors.New("onRequest must be a function")
+			return plugins.Result{}, errors.New("onRequest must be a function")
 		}
 		// Use a value copy: script mutation cannot affect another plugin/vendor.
 		result, callErr := fn(goja.Undefined(), vm.ToValue(map[string]any{
@@ -165,36 +142,36 @@ func (p *scriptRequestPlugin) execute(parent context.Context, req *PluginRequest
 		}))
 		err = callErr
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return plugins.Result{}, ctx.Err()
 		}
 		if rejection != nil {
-			return nil, rejection
+			return plugins.Result{}, rejection
 		}
 		if err == nil {
 			if goja.IsUndefined(result) || goja.IsNull(result) {
-				return req.Body, nil
+				return plugins.Result{Body: req.Body, Summary: summary}, nil
 			}
 			if value, ok := result.(goja.String); ok {
 				raw := value.String()
 				if int64(len(raw)) > p.BodyLimit() {
-					return nil, errors.New("plugin output exceeds body limit")
+					return plugins.Result{}, errPluginOutputLimit
 				}
-				return []byte(raw), nil
+				return plugins.Result{Body: []byte(raw), Summary: summary}, nil
 			}
-			return nil, errors.New("onRequest must return a string, null or undefined")
+			return plugins.Result{}, errors.New("onRequest must return a string, null or undefined")
 		}
 	}
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return plugins.Result{}, ctx.Err()
 	}
-	return nil, err
+	return plugins.Result{}, err
 }
 
 // applyRequestPlugins leaves source holding the original bytes for aggregate
 // failover. The returned body belongs only to this vendor and is reused across
 // key retries, so non-idempotent transforms run once per vendor dispatch.
 func (v *vendorGateway) applyRequestPlugins(req *http.Request, path routedPath, source *requestBodySource) (*requestBodySource, *proxyError) {
-	var matchedStorage [16]RequestPlugin
+	var matchedStorage [16]*loadedRequestPlugin
 	matched := matchedStorage[:0]
 	for _, plugin := range v.plugins {
 		if plugin.Matches(req.Method, path.path) {
@@ -206,14 +183,17 @@ func (v *vendorGateway) applyRequestPlugins(req *http.Request, path routedPath, 
 	}
 	encoding := strings.TrimSpace(req.Header.Get("Content-Encoding"))
 	if encoding != "" && !strings.EqualFold(encoding, "identity") {
+		matched[0].blocked("content_encoding", 0)
 		return nil, &proxyError{http.StatusUnsupportedMediaType, "request plugins require identity Content-Encoding"}
 	}
 	limit := matched[0].BodyLimit()
 	if source != nil && source.contentLength > limit {
+		matched[0].blocked("input_too_large", int(source.contentLength))
 		return nil, &proxyError{http.StatusRequestEntityTooLarge, "request body exceeds plugin limit"}
 	}
 	body, err := source.Body()
 	if err != nil {
+		matched[0].blocked("read_failed", 0)
 		return nil, &proxyError{http.StatusBadRequest, "read request body failed"}
 	}
 	if body != nil {
@@ -230,36 +210,44 @@ func (v *vendorGateway) applyRequestPlugins(req *http.Request, path routedPath, 
 		var overflow bool
 		raw, overflow, err = readReplayableRequestBody(body, limit)
 		if err != nil {
+			matched[0].blocked("read_failed", 0)
 			return nil, &proxyError{http.StatusBadRequest, "read request body failed"}
 		}
 		if overflow {
+			matched[0].blocked("input_too_large", int(limit)+1)
 			return nil, &proxyError{http.StatusRequestEntityTooLarge, "request body exceeds plugin limit"}
 		}
 	}
 	if !utf8.Valid(raw) {
+		matched[0].blocked("invalid_utf8", len(raw))
 		return nil, &proxyError{http.StatusBadRequest, "request plugins require a UTF-8 body"}
 	}
 	if source != nil && !buffered {
 		*source = *newBufferedBodySource(raw, source.safeRetry, false)
 	}
-	input := PluginRequest{Body: raw, Method: req.Method, Path: path.path, VendorID: v.id, Vendor: v.name, Provider: v.provider}
+	input := plugins.Request{Body: raw, Method: req.Method, Path: path.path, VendorID: v.id, Vendor: v.name, Provider: v.provider}
+	changed := false
 	for _, plugin := range matched {
 		if int64(len(input.Body)) > plugin.BodyLimit() {
+			plugin.blocked("input_too_large", len(input.Body))
 			return nil, &proxyError{http.StatusRequestEntityTooLarge, "request body exceeds plugin limit"}
 		}
-		output, err := plugin.Transform(req.Context(), input)
+		output, pluginChanged, err := plugin.transform(req.Context(), input)
 		if err != nil {
-			var rejected *PluginRejectError
+			var rejected *plugins.RejectError
 			if errors.As(err, &rejected) {
 				return nil, &proxyError{rejected.StatusCode, rejected.Message}
 			}
 			// Do not echo exceptions: scripts may throw request contents.
 			return nil, &proxyError{http.StatusInternalServerError, fmt.Sprintf("request plugin %q failed", plugin.Name())}
 		}
-		input.Body = output
-		if int64(len(output)) > plugin.BodyLimit() {
-			return nil, &proxyError{http.StatusInternalServerError, fmt.Sprintf("request plugin %q output exceeds body limit", plugin.Name())}
-		}
+		input.Body = output.Body
+		changed = pluginChanged
 	}
-	return newBufferedBodySource(input.Body, isSafeRetryMethod(req.Method), !bytes.Equal(input.Body, raw)), nil
+	// Reuse the comparison from observation for the common single-plugin path.
+	// A chain may undo an earlier transform, so compare its final bytes once.
+	if len(matched) > 1 {
+		changed = !bytes.Equal(input.Body, raw)
+	}
+	return newBufferedBodySource(input.Body, isSafeRetryMethod(req.Method), changed), nil
 }
